@@ -1,0 +1,9 @@
+#!/bin/bash
+# Foxglove WebSocket bridge for this robot, like the bridge a real robot would run for remote monitoring.
+# Only this robot's namespace is exposed (all robots share one DDS domain, so the default would list the whole
+# fleet from every container). The container always listens on 8765; docker-compose maps a distinct host port
+# per robot. Meshes for the URDF panel are served from the ROS packages installed in this image.
+ns="${ROBOT_NAMESPACE:?}"
+exec ros2 run foxglove_bridge foxglove_bridge --ros-args -r __node:=foxglove_bridge \
+    -p port:=8765 -p address:=0.0.0.0 \
+    -p "topic_whitelist:=['^/${ns}/.*', '^/rosout$']"

@@ -1,0 +1,128 @@
+# Isaac Sim 6.0 (WebRTC streaming) + one ROS 2 Jazzy container per Clearpath A300.
+# Robots and sim talk over a private bridge network with FastDDS (UDP only), like robots on a LAN.
+name: a300-fleet
+
+x-robot: &robot
+  image: a300-robot:jazzy
+  build: ./robot
+  networks: [ros]
+  stdin_open: true
+  tty: true
+  depends_on: [isaac-sim]
+  environment: &robot-env
+    RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+    FASTRTPS_DEFAULT_PROFILES_FILE: /dds/fastdds_udp.xml
+    ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+    DISPLAY: ${DISPLAY:-:0}
+    XAUTHORITY: /tmp/.docker.xauth
+    QT_X11_NO_MITSHM: "1"
+  volumes: &robot-volumes
+    - /tmp/.X11-unix:/tmp/.X11-unix
+    - /tmp/.docker.xauth:/tmp/.docker.xauth
+    - ./docker/fastdds_udp.xml:/dds/fastdds_udp.xml:ro
+    - ./scripts:/scripts:ro
+
+services:
+  # One-shot: named volumes are created root-owned, Isaac Sim runs as uid 1234.
+  volume-init:
+    image: alpine:3.16.3
+    user: root
+    command: chown -R 1234:1234 /cache /ov-data /logs /config /compute
+    volumes:
+      - isaac-cache:/cache
+      - isaac-ov-data:/ov-data
+      - isaac-logs:/logs
+      - isaac-config:/config
+      - isaac-compute:/compute
+    networks: [ros]
+
+  isaac-sim:
+    image: nvcr.io/nvidia/isaac-sim:6.0.0
+    container_name: a300-isaac-sim
+    hostname: isaac-sim
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+    networks: [ros]
+    command: ["--exec", "/sim/scripts/setup_scene.py"]
+    environment:
+      ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+      NVIDIA_DRIVER_CAPABILITIES: all
+      ISAACSIM_HOST: ${ISAACSIM_HOST:-127.0.0.1}
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      FASTRTPS_DEFAULT_PROFILES_FILE: /dds/fastdds_udp.xml
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      ROBOT_NAMESPACES: ${ROBOT_NAMESPACES}
+      CAMERA_WIDTH: ${CAMERA_WIDTH:-640}
+      CAMERA_HEIGHT: ${CAMERA_HEIGHT:-360}
+      CAMERA_FRAME_SKIP: ${CAMERA_FRAME_SKIP:-0}
+      FORCE_REIMPORT: ${FORCE_REIMPORT:-0}
+      FLEET_DEBUG: ${FLEET_DEBUG:-0}
+      CAMERA_STREAMS: ${CAMERA_STREAMS:-color,depth}
+      SIM_RATE_HZ: ${SIM_RATE_HZ:-20}
+      FLEET_MERGE_FIXED: ${FLEET_MERGE_FIXED:-0}
+      PHYSICS_HZ: ${PHYSICS_HZ:-60}
+      FLEET_SETTINGS: ${FLEET_SETTINGS:-}
+    ports:
+      - "49100:49100/tcp"   # WebRTC signalling
+      - "47998:47998/udp"   # WebRTC media
+    volumes:
+      - ./sim:/sim
+      - ./docker/fastdds_udp.xml:/dds/fastdds_udp.xml:ro
+      - isaac-cache:/isaac-sim/.cache
+      - isaac-ov-data:/isaac-sim/.local/share/ov/data
+      - isaac-logs:/isaac-sim/.nvidia-omniverse/logs
+      - isaac-config:/isaac-sim/.nvidia-omniverse/config
+      - isaac-compute:/isaac-sim/.nv/ComputeCache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  a300_0000:
+    <<: *robot
+    container_name: a300_0000
+    ports:
+      - "8765:8765/tcp"   # Foxglove bridge (ws://<host>:8765)
+    hostname: cpr-a300-0000
+    environment:
+      <<: *robot-env
+      ROBOT_NAMESPACE: a300_0000
+      ROS_NAMESPACE: a300_0000  # also set by the entrypoint; needed in `docker exec` shells
+
+  a300_0001:
+    <<: *robot
+    container_name: a300_0001
+    ports:
+      - "8766:8765/tcp"   # Foxglove bridge (ws://<host>:8766)
+    hostname: cpr-a300-0001
+    environment:
+      <<: *robot-env
+      ROBOT_NAMESPACE: a300_0001
+      ROS_NAMESPACE: a300_0001  # also set by the entrypoint; needed in `docker exec` shells
+
+  a300_0002:
+    <<: *robot
+    container_name: a300_0002
+    ports:
+      - "8767:8765/tcp"   # Foxglove bridge (ws://<host>:8767)
+    hostname: cpr-a300-0002
+    environment:
+      <<: *robot-env
+      ROBOT_NAMESPACE: a300_0002
+      ROS_NAMESPACE: a300_0002  # also set by the entrypoint; needed in `docker exec` shells
+
+networks:
+  ros:
+    driver: bridge
+
+volumes:
+  isaac-cache:
+  isaac-ov-data:
+  isaac-logs:
+  isaac-config:
+  isaac-compute:

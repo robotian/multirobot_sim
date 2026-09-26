@@ -1,0 +1,4 @@
+#!/bin/bash
+# Show this robot's D435i stream in rqt_image_view (default: colour; pass "depth" for the depth image).
+stream="${1:-color}"
+exec ros2 run rqt_image_view rqt_image_view "/${ROBOT_NAMESPACE:?}/sensors/camera_0/${stream}/image"

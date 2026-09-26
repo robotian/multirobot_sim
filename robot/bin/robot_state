@@ -1,0 +1,18 @@
+#!/bin/bash
+# What the Clearpath robot service does on the real A300: build the robot description from
+# /etc/clearpath/robot.yaml and run robot_state_publisher, so the full TF tree (base_link -> chassis ->
+# wheels, top plate, camera_0_link, ...) is published under the robot's namespace. The sim only publishes
+# odom -> base_link and camera_0_link -> camera_0_color_optical_frame; wheel poses come from platform/joint_states.
+set -e
+ns="${ROBOT_NAMESPACE:?}"
+ros2 run clearpath_generator_common generate_description -s /etc/clearpath > /dev/null
+xacro /etc/clearpath/robot.urdf.xacro -o /etc/clearpath/robot.urdf
+# robot_description contains commas/colons, so it has to travel in a params file rather than a -p argument
+python3 - <<'PY'
+import json
+urdf = open("/etc/clearpath/robot.urdf").read()
+open("/tmp/robot_description.yaml", "w").write("/**:\n  ros__parameters:\n    robot_description: " + json.dumps(urdf) + "\n")
+PY
+exec ros2 run robot_state_publisher robot_state_publisher --ros-args \
+    -r __ns:=/"$ns" -r joint_states:=platform/joint_states -r /tf:=tf -r /tf_static:=tf_static \
+    --params-file /tmp/robot_description.yaml

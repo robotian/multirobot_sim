@@ -1,0 +1,4 @@
+# Rebuilt by scripts/gen_urdf.sh and the sim's first start
+sim/assets/
+sim/generated/
+__pycache__/

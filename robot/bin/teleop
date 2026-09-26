@@ -1,0 +1,4 @@
+#!/bin/bash
+# Keyboard teleop for this robot. `ros2 run` ignores ROS_NAMESPACE, so the namespace is applied explicitly;
+# cmd_vel then resolves to /<ROBOT_NAMESPACE>/cmd_vel, which the sim subscribes to.
+exec ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r __ns:=/"${ROBOT_NAMESPACE:?}" "$@"

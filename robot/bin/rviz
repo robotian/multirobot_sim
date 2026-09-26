@@ -1,0 +1,6 @@
+#!/bin/bash
+# RViz for this robot: fixed frame odom, RobotModel, TF and the D435i colour image, with the sim's
+# namespaced TF topics remapped onto /tf and /tf_static.
+ns="${ROBOT_NAMESPACE:?}"
+sed "s/__NS__/$ns/g" /opt/clearpath/a300.rviz.tmpl > /tmp/a300.rviz
+exec ros2 run rviz2 rviz2 -d /tmp/a300.rviz --ros-args -r /tf:=/"$ns"/tf -r /tf_static:=/"$ns"/tf_static "$@"
