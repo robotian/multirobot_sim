@@ -8,6 +8,7 @@ set -e
 export ROBOT_SERIAL="${ROBOT_NAMESPACE//_/-}"
 mkdir -p /etc/clearpath
 sed -e "s/__NS__/${ROBOT_NAMESPACE}/g" -e "s/__SERIAL__/${ROBOT_SERIAL}/g" \
+    -e "s/__RMW__/${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}/g" \
     /opt/clearpath/robot.yaml.tmpl > /etc/clearpath/robot.yaml
 
 source /opt/ros/jazzy/setup.bash

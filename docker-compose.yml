@@ -1,6 +1,18 @@
 # Isaac Sim 6.0 (WebRTC streaming) + one ROS 2 Jazzy container per Clearpath A300.
-# Robots and sim talk over a private bridge network with FastDDS (UDP only), like robots on a LAN.
+# Robots and sim talk over a private bridge network like robots on a LAN. The ROS 2 middleware is chosen in .env:
+#   FLEET_RMW=rmw_zenoh_cpp    (as on the real robots; every session connects to the zenoh-router service)
+#   FLEET_RMW=rmw_fastrtps_cpp (FastDDS over UDP only, docker/fastdds_udp.xml)
 name: a300-fleet
+
+x-rmw-env: &rmw-env
+  RMW_IMPLEMENTATION: ${FLEET_RMW:-rmw_zenoh_cpp}   # not read from RMW_IMPLEMENTATION: a ROS-configured host shell would override .env
+  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+  # rmw_zenoh_cpp: every session is a client of the router (ZENOH_ROUTER can point at a real robot's router).
+  # The default "peer" mode needs direct links between sessions, but they only listen on loopback, so peers in
+  # different containers could not see each other.
+  ZENOH_CONFIG_OVERRIDE: mode="client";connect/endpoints=["${ZENOH_ROUTER:-tcp/zenoh-router:7447}"]
+  # rmw_fastrtps_cpp
+  FASTRTPS_DEFAULT_PROFILES_FILE: /dds/fastdds_udp.xml
 
 x-robot: &robot
   image: a300-robot:jazzy
@@ -8,11 +20,9 @@ x-robot: &robot
   networks: [ros]
   stdin_open: true
   tty: true
-  depends_on: [isaac-sim]
+  depends_on: [isaac-sim, zenoh-router]
   environment: &robot-env
-    RMW_IMPLEMENTATION: rmw_fastrtps_cpp
-    FASTRTPS_DEFAULT_PROFILES_FILE: /dds/fastdds_udp.xml
-    ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+    <<: *rmw-env
     DISPLAY: ${DISPLAY:-:0}
     XAUTHORITY: /tmp/.docker.xauth
     QT_X11_NO_MITSHM: "1"
@@ -36,13 +46,34 @@ services:
       - isaac-compute:/compute
     networks: [ros]
 
+  # rmw_zenoh_cpp router that all sessions (sim and robots) connect to. Idle when using FastDDS.
+  zenoh-router:
+    image: a300-robot:jazzy
+    build: ./robot
+    container_name: zenoh-router
+    hostname: zenoh-router
+    networks: [ros]
+    entrypoint: ["/bin/bash", "-c", "exec ros2 run rmw_zenoh_cpp rmw_zenohd"]
+    environment:
+      RMW_IMPLEMENTATION: rmw_zenoh_cpp
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/7447"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
   isaac-sim:
-    image: nvcr.io/nvidia/isaac-sim:6.0.0
+    image: a300-isaac-sim:6.0.0
+    build:
+      context: ./docker
+      dockerfile: isaac-sim.Dockerfile
     container_name: a300-isaac-sim
     hostname: isaac-sim
     depends_on:
       volume-init:
         condition: service_completed_successfully
+      zenoh-router:
+        condition: service_healthy
     networks: [ros]
     command: ["--exec", "/sim/scripts/setup_scene.py"]
     environment:
@@ -50,9 +81,7 @@ services:
       PRIVACY_CONSENT: "Y"
       NVIDIA_DRIVER_CAPABILITIES: all
       ISAACSIM_HOST: ${ISAACSIM_HOST:-127.0.0.1}
-      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
-      FASTRTPS_DEFAULT_PROFILES_FILE: /dds/fastdds_udp.xml
-      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      <<: *rmw-env
       ROBOT_NAMESPACES: ${ROBOT_NAMESPACES}
       CAMERA_WIDTH: ${CAMERA_WIDTH:-640}
       CAMERA_HEIGHT: ${CAMERA_HEIGHT:-360}

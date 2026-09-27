@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-jazzy-rqt-image-view \
         ros-jazzy-image-transport-plugins \
         ros-jazzy-foxglove-bridge \
+        ros-jazzy-rmw-zenoh-cpp \
         gettext-base x11-apps \
     && rm -rf /var/lib/apt/lists/*
 

@@ -14,41 +14,71 @@ import xml.etree.ElementTree as ET
 from ament_index_python.packages import get_package_share_directory
 
 
+# Vertex-clustering cell for meshes converted below. d435.dae has 231k triangles for a 90 mm sensor; with three
+# robots rendered by a path tracer that alone cost ~30% of the frame rate.
+DECIMATE_CELL = 0.001  # m
+
+
 def dae_to_obj(text, dst):
     """Merge every <geometry> of a Collada file into one Wavefront OBJ (+ .mtl with the diffuse colour).
 
     The importer silently drops the RealSense d435.dae (it ends up as an empty Xform in the USD, so the camera
     is invisible in the sim) although it accepts Blender-exported Collada. Its geometries carry no node
-    transforms, so a plain merge is enough. Per-vertex normals are kept when the file provides them.
+    transforms, so a plain merge is enough. The mesh is decimated by vertex clustering (DECIMATE_CELL) and
+    per-vertex normals are averaged per cluster when the file provides them.
     """
     ns = {"c": "http://www.collada.org/2005/11/COLLADASchema"}
     root = ET.fromstring(text)
     diffuse = root.findtext(".//c:diffuse/c:color", default="0.75 0.75 0.75 1", namespaces=ns).split()[:3]
     name = os.path.splitext(os.path.basename(dst))[0]
-    lines = [f"mtllib {name}.mtl", "usemtl body"]
-    base = 1
+    clusters = {}  # grid cell -> index; sums of position / normal and member count
+    verts, norms, counts = [], [], []
+    faces = set()
+    has_normals = False
     for mesh in root.iterfind(".//c:geometry/c:mesh", ns):
         sources = {s.get("id"): [float(v) for v in s.findtext("c:float_array", namespaces=ns).split()]
                    for s in mesh.iterfind("c:source", ns)}
         vertices = mesh.find("c:vertices", ns)
         pos_id = next(i.get("source")[1:] for i in vertices.iterfind("c:input", ns) if i.get("semantic") == "POSITION")
         pos = sources[pos_id]
-        n_vert = len(pos) // 3
-        # a NORMAL source aligned 1:1 with the positions (as in d435.dae) -> smooth shading
+        # a NORMAL source aligned 1:1 with the positions (as in d435.dae)
         normals = next((v for k, v in sources.items() if k != pos_id and len(v) == len(pos)), None)
-        lines += ["v %g %g %g" % tuple(pos[i * 3:i * 3 + 3]) for i in range(n_vert)]
-        if normals:
-            lines += ["vn %g %g %g" % tuple(normals[i * 3:i * 3 + 3]) for i in range(n_vert)]
+        has_normals = has_normals or normals is not None
+        remap = []
+        for i in range(len(pos) // 3):
+            p = pos[i * 3:i * 3 + 3]
+            key = tuple(round(c / DECIMATE_CELL) for c in p)
+            if key not in clusters:
+                clusters[key] = len(verts)
+                verts.append([0.0, 0.0, 0.0])
+                norms.append([0.0, 0.0, 0.0])
+                counts.append(0)
+            k = clusters[key]
+            counts[k] += 1
+            for axis in range(3):
+                verts[k][axis] += p[axis]
+                if normals:
+                    norms[k][axis] += normals[i * 3 + axis]
+            remap.append(k)
         for tri in mesh.iterfind("c:triangles", ns):
             stride = 1 + max(int(i.get("offset")) for i in tri.iterfind("c:input", ns))
-            idx = [int(v) for v in tri.findtext("c:p", namespaces=ns).split()][::stride]
+            idx = [remap[int(v)] for v in tri.findtext("c:p", namespaces=ns).split()][::stride]
             for a, b, c in zip(idx[0::3], idx[1::3], idx[2::3]):
-                lines.append("f " + " ".join(f"{base + v}//{base + v}" if normals else f"{base + v}" for v in (a, b, c)))
-        base += n_vert
+                if a != b and b != c and a != c:
+                    faces.add((a, b, c))  # keeps winding, drops exact duplicates
+    lines = [f"mtllib {name}.mtl", "usemtl body"]
+    lines += ["v %g %g %g" % tuple(c / n for c in v) for v, n in zip(verts, counts)]
+    if has_normals:
+        for nv in norms:
+            length = sum(c * c for c in nv) ** 0.5 or 1.0
+            lines.append("vn %g %g %g" % tuple(c / length for c in nv))
+    for a, b, c in sorted(faces):
+        lines.append("f " + " ".join(f"{v + 1}//{v + 1}" if has_normals else f"{v + 1}" for v in (a, b, c)))
     with open(dst, "w") as f:
         f.write("\n".join(lines) + "\n")
     with open(dst[:-4] + ".mtl", "w") as f:
         f.write("newmtl body\nKd %s\nKa 0 0 0\nKs 0.1 0.1 0.1\nNs 20\n" % " ".join(diffuse))
+    print(f"{os.path.basename(dst)}: {len(faces)} triangles after decimation")
 
 
 def copy_mesh(src, dst):

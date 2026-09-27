@@ -1,5 +1,6 @@
 # Clearpath A300 configuration, identical for every robot.
-# __NS__ / __SERIAL__ are substituted per robot (see scripts/gen_urdf.sh).
+# The double-underscore placeholders (namespace, serial, middleware) are filled in per robot by
+# robot/entrypoint.sh and scripts/gen_urdf.sh; the middleware is the one selected by FLEET_RMW in .env.
 serial_number: __SERIAL__
 version: 0
 system:
@@ -8,6 +9,8 @@ system:
       ip: 192.168.131.1
   ros2:
     namespace: __NS__
+    middleware:
+      implementation: __RMW__
 platform:
   controller: ps4
   battery:
