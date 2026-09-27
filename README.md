@@ -1,19 +1,19 @@
 # A300 fleet in Isaac Sim
 
-Three identical Clearpath A300 robots, each with a RealSense D435i facing forward, simulated in NVIDIA Isaac Sim 6.0 and driven over ROS 2 Jazzy.
+A configurable number (0–8, three if `.env` doesn't say otherwise) of identical Clearpath A300 robots, each with a RealSense D435i facing forward, simulated in NVIDIA Isaac Sim 6.0 and driven over ROS 2 Jazzy.
 
 - **Isaac Sim** runs in one container and is streamed to you over WebRTC (no local GUI).
-- **Each robot** has its own ROS 2 container, standing in for the robot's onboard computer. It talks to the sim over a private Docker network, as a real robot would over a LAN. The middleware is `rmw_zenoh_cpp` (as on the real robots) through a `zenoh-router` container, or Fast DDS; see *Middleware*.
+- **Each robot** has its own ROS 2 container, standing in for the robot's onboard computer. It talks to the sim over a private Docker network, as a real robot would over a LAN. The middleware is `rmw_zenoh_cpp` (as on the real robots, through a `zenoh-router` container) or Fast DDS; see *Middleware*.
 - Inside a robot container you can view the camera, drive with the keyboard, open RViz and run a Foxglove bridge.
 
 ```
                  ┌──────────────────── docker network "ros" (rmw_zenoh_cpp via zenoh-router, or FastDDS) ────┐
- WebRTC client ──┤ isaac-sim  (3 × A300 + D435i, ROS 2 bridge)                                                │
+ WebRTC client ──┤ isaac-sim  (N × A300 + D435i, ROS 2 bridge)                                                │
  49100/tcp       │    ▲ cmd_vel        │ odom, joint_states, tf, camera images                                │
  47998/udp       │    │                ▼                                                                      │
-                 │ a300_0000   a300_0001   a300_0002   ← robot_state_publisher, teleop, RViz, foxglove_bridge │
+                 │ a300_0000   a300_0001   ...        ← robot_state_publisher, teleop, RViz, foxglove_bridge  │
                  └────────────────────────────────────────────────────────────────────────────────────────────┘
-                                8765         8766         8767   (Foxglove WebSocket, host ports)
+                                8765         8766       (N = NUM_ROBOTS, Foxglove WebSocket on 8765 + index)
 ```
 
 ## Requirements
@@ -34,9 +34,9 @@ scripts/gen_urdf.sh
 # 2. Allow the containers to open windows on your display (once per login)
 scripts/x11_auth.sh
 
-# 3. Start the router, the simulation and the three robots
+# 3. Start the router, the simulation and the robots (NUM_ROBOTS in .env, default 3; see "Number of robots")
 docker compose up -d
-docker compose logs -f isaac-sim     # wait for "[fleet] simulation running with 3 robots"
+docker compose logs -f isaac-sim     # wait for "[fleet] simulation running with N robots"
 ```
 
 The first start is slow: Isaac Sim compiles shaders and imports the URDF to USD. Later starts reuse the caches. `sim/assets/` and `sim/generated/` are not in git; `scripts/gen_urdf.sh` and the first start create them, so run the script after every fresh clone.
@@ -45,9 +45,25 @@ Then open the WebRTC Streaming Client and connect to `ISAACSIM_HOST` (from `.env
 
 Stop everything with `docker compose down`.
 
+## Number of robots
+
+`NUM_ROBOTS` in `.env` (0–8, default 3) sets how many robots are simulated: the sim spawns `a300_0000 … a300_<N-1>` and compose starts the matching robot containers. To change it use the helper, which also restarts the sim (it has to spawn a different number of robots) and removes robot containers that are no longer wanted:
+
+```bash
+scripts/fleet.sh 5        # set NUM_ROBOTS=5 in .env and (re)start the sim and 5 robots
+scripts/fleet.sh          # (re)start with the current NUM_ROBOTS
+scripts/fleet.sh down     # stop and remove everything
+```
+
+Robot *i* always gets the same container name (`a300_000i`), hostname (`cpr-a300-000i`) and Foxglove port (`8765 + i`), whatever the total.
+
+You can also edit `NUM_ROBOTS` by hand and run `docker compose up -d`, which works for increasing the count. After lowering it, `docker compose up` leaves the surplus robot containers running (compose does not stop services of inactive profiles), so use `scripts/fleet.sh`.
+
+More robots cost frame rate, roughly linearly (RTX 4080 SUPER, FastDDS, async rendering): about 40 fps with 1 robot, 23 with 2, 11 with 5. Set `SIM_RATE_HZ` to about the frame rate you get (`FLEET_DEBUG=1` prints it), or the sim does not run in real time; see *Faster streaming*. How a count above 8 could be added is described under *Changing the robots*.
+
 ## Using the robots
 
-Run these on the host. `a300_0000` can be replaced by `a300_0001` or `a300_0002`.
+Run these on the host. `a300_0000` can be replaced by any other robot (`a300_0001`, …).
 
 | Task | Command |
 |---|---|
@@ -68,12 +84,13 @@ Every robot runs a `foxglove_bridge` that exposes only its own namespace. In Fox
 | `a300_0000` | `ws://<host>:8765` |
 | `a300_0001` | `ws://<host>:8766` |
 | `a300_0002` | `ws://<host>:8767` |
+| `a300_000i` | `ws://<host>:<8765 + i>` |
 
 The transforms are on `/<robot>/tf` and `/<robot>/tf_static`, not on `/tf`. If the 3D panel shows no frames, enable those topics in its settings.
 
 ### ROS interface
 
-All topics live under the robot's namespace (`a300_0000`, `a300_0001`, `a300_0002`).
+All topics live under the robot's namespace (`a300_0000`, `a300_0001`, …).
 
 | Topic | Type | Notes |
 |---|---|---|
@@ -93,7 +110,7 @@ All topics live under the robot's namespace (`a300_0000`, `a300_0001`, `a300_000
 
 | Value | Setup |
 |---|---|
-| `rmw_zenoh_cpp` (default) | Every session, including Isaac Sim's, runs in zenoh *client* mode and connects to the `zenoh-router` service (`tcp/zenoh-router:7447`). Set `ZENOH_ROUTER=tcp/<host>:7447` to use another router, e.g. a real robot's. |
+| `rmw_zenoh_cpp` (default if `.env` doesn't say otherwise; this repo's checked-in `.env` currently has `rmw_fastrtps_cpp`) | Every session, including Isaac Sim's, runs in zenoh *client* mode and connects to the `zenoh-router` service (`tcp/zenoh-router:7447`). Set `ZENOH_ROUTER=tcp/<host>:7447` to use another router, e.g. a real robot's. |
 | `rmw_fastrtps_cpp` | FastDDS over UDP only (`docker/fastdds_udp.xml`); the router container just idles. |
 
 ### Switching the middleware
@@ -117,37 +134,55 @@ Check that it took effect with `docker exec a300_0000 bash -c 'echo $RMW_IMPLEME
 What follows from the switch:
 - Nothing else needs changing: Isaac Sim only loads its zenoh libraries when `FLEET_RMW=rmw_zenoh_cpp`, and each robot's `/etc/clearpath/robot.yaml` picks up the new value at container start. `scripts/gen_urdf.sh` does not need to be re-run, since the URDF does not depend on the middleware.
 - `zenoh-router` keeps running but idles under FastDDS, and `ZENOH_ROUTER` has no effect.
-- FastDDS is about 3–4 fps cheaper in the sim, so `SIM_RATE_HZ` can go back up to 18–20 in `.env`.
+- FastDDS is about 3–4 fps cheaper in the sim, so `SIM_RATE_HZ` can be raised accordingly in `.env`.
 
 ### Notes
 
 - The variable is deliberately not called `RMW_IMPLEMENTATION`: a host shell that exports it (for example from `~/.bashrc`) would silently override `.env`.
 - The bundled ROS 2 libraries of Isaac Sim have no zenoh, so the sim runs from `docker/isaac-sim.Dockerfile`, which adds a system ROS 2 Jazzy. Its entrypoint only sources it when `FLEET_RMW=rmw_zenoh_cpp`.
 - `peer` mode, the rmw_zenoh_cpp default, does not work between containers: sessions listen on loopback only, so peers in different containers never see each other. That is why the sessions are clients.
-- Zenoh costs about 3–4 frames per second in the sim compared with FastDDS, which is why `SIM_RATE_HZ` defaults to 15.
+- Zenoh costs about 3–4 frames per second in the sim compared with FastDDS, so lower `SIM_RATE_HZ` (about 15 for 3 robots on zenoh).
 - `ros2` CLI tools in a container may print `Unable to connect to any locator of scouted peer` warnings from zenoh; they are harmless. `ros2 topic list --no-daemon --spin-time 4` gives the most reliable listing.
 
 ## Configuration
 
 Edit `.env` and restart with `docker compose up -d`.
 
+"Default" below is the fallback in `docker-compose.yml`, used only if a variable is missing from `.env` entirely. This repo's checked-in `.env` sets most of them explicitly, currently: `NUM_ROBOTS=2`, `FLEET_RMW=rmw_fastrtps_cpp`, `SIM_RATE_HZ=22`, `FLEET_SETTINGS` = async rendering (see below) — a state tuned in earlier testing on this machine, not a recommendation for yours.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `FLEET_RMW` | `rmw_zenoh_cpp` | ROS 2 middleware, see *Middleware* |
 | `ZENOH_ROUTER` | `tcp/zenoh-router:7447` | router the zenoh sessions connect to |
 | `ISAACSIM_HOST` | `127.0.0.1` | address the WebRTC client uses to reach the sim (the machine's LAN IP for remote clients; the `.env` in this repo holds this machine's LAN IP, change it for yours) |
-| `ROBOT_NAMESPACES` | `a300_0000,a300_0001,a300_0002` | robots spawned in the sim; must match the robot services in `docker-compose.yml` |
+| `NUM_ROBOTS` | `3` | number of robots (0–8), see *Number of robots*; `.env` also derives `COMPOSE_PROFILES=n${NUM_ROBOTS}` from it, which selects the robot containers |
 | `ROS_DOMAIN_ID` | `0` | |
 | `CAMERA_WIDTH` / `CAMERA_HEIGHT` | `640` / `360` | D435i image size |
 | `CAMERA_FRAME_SKIP` | `0` | publish every (N+1)th sim frame |
-| `CAMERA_STREAMS` | `color,depth` | drop one to save frame time |
-| `SIM_RATE_HZ` | `15` | rendered frames per second of simulated time |
+| `CAMERA_STREAMS` | `color,depth` | streams to publish; `none` turns the cameras off completely |
+| `SIM_RATE_HZ` | `20` | frames per second of simulated time; keep it close to the frame rate the sim reaches (see *Faster streaming*) |
 | `PHYSICS_HZ` | `60` | physics steps per second of simulated time |
 | `FLEET_DEBUG` | `0` | `1` logs real-time factor, render fps and robot pose every few seconds |
 | `FORCE_REIMPORT` | `0` | `1` re-imports the URDF into USD |
-| `FLEET_SETTINGS` | | extra Kit settings, `"/path/a=1;/path/b=text"` |
+| `FLEET_SETTINGS` | (none) | extra Kit settings, `"/path/a=1;/path/b=text"`; this repo's `.env` sets `/app/asyncRendering=true` and `/app/asyncRenderingLowLatency=true`, see *Faster streaming* |
+| `FLEET_VIEWPORT_RES` | (client window size) | e.g. `1280x720`: render the streamed viewport at a fixed size |
 
-Rendering is the bottleneck: each robot with cameras costs about 12 ms per frame. With three robots the sim keeps about real time at 15 Hz on zenoh (18–20 Hz on FastDDS) (`FLEET_DEBUG=1` shows the real-time factor). Lower `SIM_RATE_HZ`, the camera size or `CAMERA_STREAMS` if it falls under 1.0.
+Rendering is the bottleneck: each robot with cameras costs a fixed 15–20 ms per frame. The sim frame rate (`render_fps` in the `FLEET_DEBUG=1` output) is also the frame rate of the WebRTC stream. If the real-time factor falls under 1.0, lower `SIM_RATE_HZ` or the number of robots.
+
+### Faster streaming
+
+The WebRTC client shows at most the frame rate of the sim, because the sim renders the streamed viewport once per frame. Measured on an RTX 4080 SUPER with 2 robots and no client connected (the GPU stayed at 20–45% busy, the limit is CPU-side synchronisation of the camera render products):
+
+| Change | Frame rate |
+|---|---|
+| baseline | 19 fps |
+| `/app/asyncRendering=true` (+ low latency), now the default in `.env` | **23 fps** (camera images lag one frame) |
+| cameras off (`CAMERA_STREAMS=none`) | about 31–36 fps |
+| fewer robots | 1 robot about 40 fps, 5 robots 11 fps |
+| lower camera resolution, colour only, no depth, `RaytracedLighting`, hiding the Kit UI, camera `CAMERA_FRAME_SKIP`, async replicator | no change |
+| viewport at 3440×1440 instead of 1280×720 | 18 vs 19 fps, GPU load 46% vs 30% |
+
+So the levers that matter are the number of robots with cameras and async rendering. If you only need to watch the scene, `CAMERA_STREAMS=none` roughly doubles the frame rate (the robots then publish no images). `FLEET_VIEWPORT_RES=1280x720` keeps the GPU load down on a large client window at almost no cost in frame rate. Not measured: the encoder and network path with a client connected.
 
 ## Known limitations
 
@@ -159,7 +194,7 @@ Rendering is the bottleneck: each robot with cameras costs about 12 ms per frame
 ## Changing the robots
 
 - **Robot configuration:** edit `robot/config/robot.yaml.tmpl` (all robots share it), rebuild the image and run `scripts/gen_urdf.sh`. The template's `system.ros2.middleware.implementation` follows `FLEET_RMW`, so `/etc/clearpath/robot.yaml` in each robot names the same middleware the container runs. The sim re-imports the USD when the URDF changes.
-- **Adding a robot:** add a service to `docker-compose.yml` (copy an existing one, new name and Foxglove port) and add its name to `ROBOT_NAMESPACES` in `.env`.
+- **More than 8 robots:** `docker-compose.yml` defines eight robot services (`a300_0000` … `a300_0007`), each active for the profiles `n<k>` with `k` above its index. Copy the last block for `a300_0008`, give it the next Foxglove port and a profile list extended by `n9`, raise `MAX` in `scripts/fleet.sh`, and use `NUM_ROBOTS=9`. The sim needs no change.
 
 ## Layout
 
@@ -169,7 +204,7 @@ Rendering is the bottleneck: each robot with cameras costs about 12 ms per frame
 | `robot/` | robot container image: `Dockerfile`, `entrypoint.sh`, helper commands in `bin/` (`teleop`, `camera_view`, `rviz`, `robot_state`, `foxglove`), config templates (`robot.yaml.tmpl`, `a300.rviz.tmpl`) |
 | `sim/scripts/setup_scene.py` | builds the Isaac Sim scene and ROS 2 graphs |
 | `sim/assets/`, `sim/generated/` | generated URDF and meshes, cached USD |
-| `scripts/` | URDF generation, X11 setup and the drive test |
+| `scripts/` | `fleet.sh` (choose the number of robots), URDF generation, X11 setup and the drive test |
 | `docker/fastdds_udp.xml` | FastDDS profile (UDP only, since containers don't share `/dev/shm`) |
 | `docker/isaac-sim.Dockerfile`, `docker/isaac-entrypoint.sh` | Isaac Sim image with a system ROS 2 Jazzy (needed for zenoh) |
 
@@ -181,6 +216,8 @@ See `CLAUDE.md` for more detail on how the pieces fit together.
 - **`executable file not found` from `docker exec`:** the command needs the ROS environment; see *Using the robots*.
 - **RobotModel is empty in RViz:** Description Topic must be `/<robot>/robot_description` with Durability *Transient Local*. `docker exec -it <robot> rviz` sets this up.
 - **Camera is invisible in the sim:** the importer drops hand-exported Collada meshes, so `scripts/flatten_urdf.py` converts them to OBJ. Re-run `scripts/gen_urdf.sh` and restart the sim.
-- **Sim runs slower than real time:** check `FLEET_DEBUG=1`; lower `SIM_RATE_HZ`, the camera size or `CAMERA_STREAMS`.
+- **A robot container is still running after lowering `NUM_ROBOTS`:** use `scripts/fleet.sh <N>` (or `docker rm -f a300_000i`).
+- **Sim runs slower than real time:** check `FLEET_DEBUG=1`; lower `SIM_RATE_HZ` or the number of robots.
+- **The WebRTC client is choppy:** the stream cannot be faster than the sim frame rate; see *Faster streaming*.
 - **Wrong middleware in a container:** a host shell exporting `RMW_IMPLEMENTATION` does not affect the stack (use `FLEET_RMW` in `.env`); check with `docker exec a300_0000 bash -c 'echo $RMW_IMPLEMENTATION'`.
 - **Robots don't see each other's topics:** every container needs the same `ROS_DOMAIN_ID` and the same middleware. With zenoh the `zenoh-router` must be healthy; with FastDDS the shared profile is required.

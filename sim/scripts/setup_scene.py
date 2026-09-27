@@ -2,7 +2,7 @@
 
 Runs inside the streaming Kit app (isaac-sim.streaming.sh --exec /sim/scripts/setup_scene.py).
 Configuration comes from environment variables (see docker-compose.yml):
-  ROBOT_NAMESPACES   comma separated, e.g. a300_0000,a300_0001,a300_0002
+  NUM_ROBOTS         how many robots to spawn; they are called a300_0000, a300_0001, ...
   CAMERA_WIDTH/HEIGHT, CAMERA_FRAME_SKIP, FORCE_REIMPORT
 """
 import asyncio
@@ -16,7 +16,7 @@ import omni.timeline
 import omni.usd
 from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdPhysics, UsdShade
 
-NAMESPACES = [n.strip() for n in os.environ.get("ROBOT_NAMESPACES", "a300_0000,a300_0001,a300_0002").split(",") if n.strip()]
+NAMESPACES = [f"a300_{i:04d}" for i in range(int(os.environ.get("NUM_ROBOTS", "3")))]  # must match the robot services in docker-compose.yml
 CAM_W = int(os.environ.get("CAMERA_WIDTH", "640"))
 CAM_H = int(os.environ.get("CAMERA_HEIGHT", "360"))
 CAM_FRAME_SKIP = int(os.environ.get("CAMERA_FRAME_SKIP", "0"))  # 0 = publish every simulation frame
@@ -27,7 +27,8 @@ SIM_RATE_HZ = float(os.environ.get("SIM_RATE_HZ", "20"))
 PHYSICS_HZ = int(os.environ.get("PHYSICS_HZ", "60"))
 FORCE_REIMPORT = os.environ.get("FORCE_REIMPORT", "0") == "1"
 # Which D435i streams to publish. Each one costs main-thread time in the sim, so trim if the frame rate suffers.
-CAM_STREAMS = set(filter(None, os.environ.get("CAMERA_STREAMS", "color,depth").split(",")))
+# "none" turns the cameras off (no render products at all), which is what gives the streamed viewport its full frame rate.
+CAM_STREAMS = set(filter(None, os.environ.get("CAMERA_STREAMS", "color,depth").split(","))) - {"none", "off"}
 
 URDF_PATH = "/sim/assets/a300/a300.urdf"
 USD_DIR = "/sim/generated/a300"
@@ -363,6 +364,27 @@ def aim_viewport():
         log(f"could not aim viewport camera: {e}")
 
 
+def set_viewport_resolution():
+    """FLEET_VIEWPORT_RES="1280x720": render the main viewport (the one that is streamed) at a fixed size.
+
+    By default the streamed framebuffer follows the size of the WebRTC client window, and the viewport is path
+    traced at that size, which is expensive on a large window.
+    """
+    res = os.environ.get("FLEET_VIEWPORT_RES", "").lower()
+    if not res:
+        return
+    try:
+        from omni.kit.viewport.utility import get_active_viewport
+
+        w, h = (int(v) for v in res.split("x"))
+        vp = get_active_viewport()
+        vp.fill_frame = False
+        vp.resolution = (w, h)
+        log(f"viewport resolution set to {vp.resolution}, fill_frame={vp.fill_frame}")
+    except Exception as e:
+        log(f"could not set viewport resolution: {e}")
+
+
 async def debug_loop(og):
     """FLEET_DEBUG=1: log the command chain and chassis pose of the first robot every 2 s."""
     from pxr import UsdGeom as _G
@@ -426,6 +448,7 @@ async def main():
                 await app.next_update_async()
             build_ros_graph(og, usdrt_sdf, find_prim(stage, root, "chassis_link"), ns, cam_path)
         aim_viewport()
+        set_viewport_resolution()
         for _ in range(10):
             await app.next_update_async()
         omni.timeline.get_timeline_interface().play()

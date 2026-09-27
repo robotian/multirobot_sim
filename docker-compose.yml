@@ -82,7 +82,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: all
       ISAACSIM_HOST: ${ISAACSIM_HOST:-127.0.0.1}
       <<: *rmw-env
-      ROBOT_NAMESPACES: ${ROBOT_NAMESPACES}
+      NUM_ROBOTS: ${NUM_ROBOTS:-3}
       CAMERA_WIDTH: ${CAMERA_WIDTH:-640}
       CAMERA_HEIGHT: ${CAMERA_HEIGHT:-360}
       CAMERA_FRAME_SKIP: ${CAMERA_FRAME_SKIP:-0}
@@ -93,6 +93,7 @@ services:
       FLEET_MERGE_FIXED: ${FLEET_MERGE_FIXED:-0}
       PHYSICS_HZ: ${PHYSICS_HZ:-60}
       FLEET_SETTINGS: ${FLEET_SETTINGS:-}
+      FLEET_VIEWPORT_RES: ${FLEET_VIEWPORT_RES:-}
     ports:
       - "49100:49100/tcp"   # WebRTC signalling
       - "47998:47998/udp"   # WebRTC media
@@ -112,9 +113,13 @@ services:
               count: all
               capabilities: [gpu]
 
+  # Robot i is started when the profile n<NUM_ROBOTS> is active (COMPOSE_PROFILES=n${NUM_ROBOTS} in .env), i.e. when
+  # NUM_ROBOTS > i. Supports up to 8 robots; to add more, copy a block and extend the profile lists.
+
   a300_0000:
     <<: *robot
     container_name: a300_0000
+    profiles: [n1, n2, n3, n4, n5, n6, n7, n8]
     ports:
       - "8765:8765/tcp"   # Foxglove bridge (ws://<host>:8765)
     hostname: cpr-a300-0000
@@ -126,6 +131,7 @@ services:
   a300_0001:
     <<: *robot
     container_name: a300_0001
+    profiles: [n2, n3, n4, n5, n6, n7, n8]
     ports:
       - "8766:8765/tcp"   # Foxglove bridge (ws://<host>:8766)
     hostname: cpr-a300-0001
@@ -137,6 +143,7 @@ services:
   a300_0002:
     <<: *robot
     container_name: a300_0002
+    profiles: [n3, n4, n5, n6, n7, n8]
     ports:
       - "8767:8765/tcp"   # Foxglove bridge (ws://<host>:8767)
     hostname: cpr-a300-0002
@@ -144,6 +151,66 @@ services:
       <<: *robot-env
       ROBOT_NAMESPACE: a300_0002
       ROS_NAMESPACE: a300_0002  # also set by the entrypoint; needed in `docker exec` shells
+
+  a300_0003:
+    <<: *robot
+    container_name: a300_0003
+    profiles: [n4, n5, n6, n7, n8]
+    ports:
+      - "8768:8765/tcp"   # Foxglove bridge (ws://<host>:8768)
+    hostname: cpr-a300-0003
+    environment:
+      <<: *robot-env
+      ROBOT_NAMESPACE: a300_0003
+      ROS_NAMESPACE: a300_0003  # also set by the entrypoint; needed in `docker exec` shells
+
+  a300_0004:
+    <<: *robot
+    container_name: a300_0004
+    profiles: [n5, n6, n7, n8]
+    ports:
+      - "8769:8765/tcp"   # Foxglove bridge (ws://<host>:8769)
+    hostname: cpr-a300-0004
+    environment:
+      <<: *robot-env
+      ROBOT_NAMESPACE: a300_0004
+      ROS_NAMESPACE: a300_0004  # also set by the entrypoint; needed in `docker exec` shells
+
+  a300_0005:
+    <<: *robot
+    container_name: a300_0005
+    profiles: [n6, n7, n8]
+    ports:
+      - "8770:8765/tcp"   # Foxglove bridge (ws://<host>:8770)
+    hostname: cpr-a300-0005
+    environment:
+      <<: *robot-env
+      ROBOT_NAMESPACE: a300_0005
+      ROS_NAMESPACE: a300_0005  # also set by the entrypoint; needed in `docker exec` shells
+
+  a300_0006:
+    <<: *robot
+    container_name: a300_0006
+    profiles: [n7, n8]
+    ports:
+      - "8771:8765/tcp"   # Foxglove bridge (ws://<host>:8771)
+    hostname: cpr-a300-0006
+    environment:
+      <<: *robot-env
+      ROBOT_NAMESPACE: a300_0006
+      ROS_NAMESPACE: a300_0006  # also set by the entrypoint; needed in `docker exec` shells
+
+  a300_0007:
+    <<: *robot
+    container_name: a300_0007
+    profiles: [n8]
+    ports:
+      - "8772:8765/tcp"   # Foxglove bridge (ws://<host>:8772)
+    hostname: cpr-a300-0007
+    environment:
+      <<: *robot-env
+      ROBOT_NAMESPACE: a300_0007
+      ROS_NAMESPACE: a300_0007  # also set by the entrypoint; needed in `docker exec` shells
 
 networks:
   ros:
