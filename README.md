@@ -70,7 +70,7 @@ Each slot's model comes from `ROBOT_MODEL_<i>` in `.env` (`i` = 0–7, matching 
 | `a300` (default) | Clearpath A300 | skid-steer, native |
 | `a200` | Clearpath A200 | skid-steer, native |
 | `j100` | Clearpath Jackal | skid-steer, native |
-| `r100` | Clearpath Ridgeback | skid-steer **approximation** — see below |
+| `r100` | Clearpath Ridgeback | omnidirectional — see below |
 
 Leaving `ROBOT_MODEL_<i>` unset defaults that slot to `a300` (matches every earlier version of this project). To mix models:
 
@@ -86,7 +86,7 @@ then `scripts/fleet.sh` (or `docker compose up -d --force-recreate`) to apply it
 
 Two things worth knowing:
 - **A slot's numeric suffix is its slot index, not a per-model count.** Two Jackals in slots 1 and 4 show up as `j100_0001` and `j100_0004`, not `j100_0000`/`j100_0001`.
-- **Ridgeback is Clearpath's holonomic mecanum-wheel platform**, but this sim drives it through the same skid-steer OmniGraph as the other three models, using its real `diff_4wd.yaml` numbers (see `MODEL_PARAMS` in `sim/scripts/setup_scene.py`) rather than its native `omni_4wd.yaml` mecanum controller — it drives and turns like the others, but can't strafe sideways.
+- **Ridgeback is Clearpath's holonomic mecanum-wheel platform and drives omnidirectionally here** — it can strafe sideways and combine translation with rotation, unlike the other three models. Forward/back and rotation use the same real `diff_4wd.yaml` OmniGraph as the others; sideways motion is patched in separately (a script node sets the chassis's lateral velocity directly each tick), because Ridgeback's own URDF gives every wheel a plain cylinder collision shape — the angled-roller detail is mesh-only — which can't physically produce sideways thrust no matter how it's driven kinematically. See `MODEL_PARAMS`/`BODY_DRIVE_SCRIPT` in `sim/scripts/setup_scene.py` for the full reasoning. One known limitation: a small *pure* in-place rotation command from a standstill (e.g. 0.5 rad/s alone) is mostly absorbed by static friction between the wheels and ground and barely turns the robot; a larger command, or any rotation combined with translation, comes through close to correctly.
 - **Running all four distinct models at once (4 robots, no repeats) crashed the sim with a `PhysX Internal CUDA error`** on the machine this was built on. Every individual model, and every combination of up to 3 distinct models tried, worked fine; only the specific 4-distinct-model combination reproduced it. Not root-caused — if you hit it, try fewer distinct models simultaneously.
 - Robots also keep a fixed spacing regardless of model size (fine for A300/A200/Jackal; Ridgeback is larger and might feel tight next to another robot).
 - **A `ROBOT_MODEL_<i>` for a slot `NUM_ROBOTS` doesn't reach is silently ignored** — that slot just never starts, so e.g. `NUM_ROBOTS=2` with `ROBOT_MODEL_2` set gives you slots 0/1 (defaulting to a300 if unset) and no slot 2 at all, not the model you configured. `scripts/fleet.sh` now warns about this (`ROBOT_MODEL_<i> ... is not running`) instead of leaving it to be found by getting the wrong robot.
@@ -255,7 +255,7 @@ Besides the robots, the sim spawns some static scene dressing in `build_world()`
 - **One router:** all zenoh sessions share a single `zenoh-router`. A real fleet would have a router per robot; that topology is not simulated.
 - **Raw images:** colour and depth are published uncompressed (about 30 MB/s per robot at 20 Hz), which is fine on the local machine but heavy for Wi-Fi Foxglove clients.
 - **Not tested against real robots:** interoperability with the real robots' zenoh router (`ZENOH_ROUTER`) has not been tried.
-- **Ridgeback has no native holonomic control**, and running all four distinct models at once can crash the sim — see *Robot models*.
+- **Ridgeback's in-place rotation is weak from a standstill** for small commands (static friction absorbs most of it; a larger command or one combined with translation works fine) — see *Robot models*. Running all four distinct models at once can also crash the sim — see *Robot models*.
 - **Robot spacing** is a fixed constant regardless of model size — see *Robot models*.
 
 ## Changing the robots

@@ -1,9 +1,13 @@
 # Clearpath Ridgeback (model code r100) configuration, shared by every robot assigned this model
 # (ROBOT_MODEL=r100, see .env's ROBOT_MODEL_<i>). Sibling files robot.a300/a200/j100.yaml.tmpl cover the other
 # supported models.
-# Ridgeback is Clearpath's holonomic mecanum-wheel platform; this sim drives it via the same skid-steer-style
-# differential OmniGraph as the other models (real diff_4wd.yaml constants, see sim/scripts/setup_scene.py's
-# MODEL_PARAMS) rather than its native omni_4wd.yaml mecanum kinematics, so it can turn/drive but not strafe.
+# Ridgeback is Clearpath's holonomic mecanum-wheel platform and drives omnidirectionally in this sim: forward/
+# back and rotation use the same real diff_4wd.yaml differential OmniGraph as the other models, and a separate
+# BodyDrive script node patches in real sideways (linear.y) motion, which the wheels' plain cylinder collision
+# geometry can't produce on its own -- see sim/scripts/setup_scene.py's MODEL_PARAMS/BODY_DRIVE_SCRIPT comments
+# for the full reasoning, including a known limitation: a small *pure* in-place rotation command from a
+# standstill is mostly absorbed by static friction (verified live), while a larger one or any rotation combined
+# with translation comes through close to correctly.
 # The double-underscore placeholders (namespace, serial, domain, middleware) are filled in per robot by
 # robot/entrypoint.sh and scripts/gen_urdf.sh; the middleware is the one selected by FLEET_RMW in .env, the
 # domain by ROS_DOMAIN_ID. clearpath_generator_common's `generate_bash` turns this into /etc/clearpath/setup.bash

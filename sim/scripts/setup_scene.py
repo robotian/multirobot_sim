@@ -69,15 +69,105 @@ LAVENDER_BASE_Z = 0.05
 # articulation root there exactly like a200. Moral: re-check ArticulationRootAPI after *any* URDF-shape change,
 # not just when adding a new model -- targeting the wrong link fails at runtime ("Articulation controller
 # failed") with no error at import time, so nothing catches a wrong guess until the robot won't drive.
-# Ridgeback (r100) is Clearpath's holonomic mecanum platform; it also ships an omni_4wd.yaml for its native
-# strafing controller, but this sim drives it the same skid-steer way as the others, via its diff_4wd.yaml
-# numbers below -- it can turn and drive forward/back like the rest of the fleet, but not strafe sideways.
+# Ridgeback (r100) is Clearpath's holonomic mecanum platform. It drives omnidirectionally: real diff_4wd.yaml-
+# style wheel driving (same as the other three models, wheel_separation/separation_multiplier below) handles
+# forward/back and rotation via genuine wheel-ground rolling, and BodyDrive (see its comment) separately injects
+# *just* the sideways (Vy) component the wheels structurally cannot produce, so it can strafe and combine
+# translation with rotation, not just drive forward/back and turn like the others. wheel_positions/wheel_axis/
+# mecanum_angles below are Ridgeback's real mecanum geometry, NOT currently used to drive anything (a genuine
+# per-wheel mecanum solve was tried first -- see git history / last_session.md -- but a spinning cylinder can't
+# produce the sideways thrust it computes, and layering it under BodyDrive's override fought rotation instead of
+# helping) -- kept as verified reference in case a future fix finds a use for it.
+#   wheel_positions/wheel_axis are measured from sim/assets/r100/r100.urdf (chassis_link -> {front,rear}_rocker
+#   -> *_wheel_joint, composing both joints' origins; rocker/wheel joints all have rpy="0 0 0", so a wheel's
+#   position relative to chassis_link is just its rocker's xyz plus its own xyz, and its axis is chassis-aligned).
+#     front_rocker  xyz=( 0.319, 0,      0.05), front_{left,right}_wheel_joint xyz=(0, +-0.2755, 0), axis=(0,1,0)
+#     rear_rocker   xyz=(-0.319, 0,      0.05), rear_{left,right}_wheel_joint  xyz=(0, +-0.2755, 0), axis=(0,1,0)
+#   0.319+0.2755 = 0.5945, matching (to rounding) omni_4wd.yaml's own kinematics.sum_of_robot_center_projection_
+#   on_X_Y_axis: 0.59 -- confirms these numbers against Clearpath's real control config, not just the mesh.
+#   mecanum_angles (degrees, per wheel, same order as wheel_positions) are NOT measured from the URDF --
+#   Clearpath's ROS description carries no roller-angle metadata, only the mesh -- so they're derived from the
+#   standard mecanum kinematics equations instead, for isaacsim.robot.wheeled_robots.HolonomicController's
+#   convention (isaacsim.robot.experimental.wheeled_robots.controllers.HolonomicController._build_base rotates
+#   wheelAxis by mecanum_angle about upAxis to get each wheel's effective ground-push direction; its OGN schema
+#   *says* mecanumAngles is in radians but the actual implementation applies it with degrees=True -- confirmed
+#   by reading that source, not the schema doc, and the values here are already in degrees accordingly).
+#   front_left/rear_right share one diagonal roller angle, front_right/rear_left the other, per the standard "X"
+#   mecanum wheel arrangement.
 MODEL_PARAMS = {
-    "a300": dict(chassis_link="chassis_link", wheel_radius=0.1625, wheel_separation=0.562, separation_multiplier=1.75, max_linear=2.0, max_angular=2.0),
-    "a200": dict(chassis_link="base_link", wheel_radius=0.1651, wheel_separation=0.555, separation_multiplier=1.875, max_linear=1.0, max_angular=1.0),
-    "j100": dict(chassis_link="base_link", wheel_radius=0.098, wheel_separation=0.37559, separation_multiplier=1.5, max_linear=2.0, max_angular=4.0),
-    "r100": dict(chassis_link="chassis_link", wheel_radius=0.0759, wheel_separation=0.551, separation_multiplier=1.0, max_linear=1.3, max_angular=4.0),
+    "a300": dict(chassis_link="chassis_link", drive="diff", wheel_radius=0.1625, wheel_separation=0.562, separation_multiplier=1.75, max_linear=2.0, max_angular=2.0),
+    "a200": dict(chassis_link="base_link", drive="diff", wheel_radius=0.1651, wheel_separation=0.555, separation_multiplier=1.875, max_linear=1.0, max_angular=1.0),
+    "j100": dict(chassis_link="base_link", drive="diff", wheel_radius=0.098, wheel_separation=0.37559, separation_multiplier=1.5, max_linear=2.0, max_angular=4.0),
+    "r100": dict(
+        chassis_link="chassis_link", drive="omni", wheel_radius=0.0759, wheel_separation=0.551, separation_multiplier=1.0,
+        wheel_positions=[(0.319, 0.2755, 0.05), (0.319, -0.2755, 0.05), (-0.319, 0.2755, 0.05), (-0.319, -0.2755, 0.05)],
+        wheel_axis=[0.0, 1.0, 0.0], mecanum_angles=[-135.0, -45.0, -45.0, -135.0],
+        max_linear=1.3, max_angular=4.0,
+    ),
 }
+
+# Ridgeback's real sideways motion. Forward/back and rotation are left entirely to the same real
+# DifferentialController + IsaacArticulationController wheel driving every model uses (genuine wheel-ground
+# rolling -- reliable even from a standstill, exactly like the other three models). Only linear.y is patched in
+# here, since real wheel rolling structurally cannot produce it (see MODEL_PARAMS' r100 comment). Every tick,
+# this reads the chassis' CURRENT actual world velocity, decomposes it into the chassis' own body frame,
+# replaces just the lateral component with the commanded vy (leaving the forward component -- whatever the real
+# diff-drive wheels produced -- untouched), and recomposes back to world frame; angular velocity is left alone
+# entirely (not passed to set_velocities at all), so rotation is 100% real wheel physics.
+#
+# An earlier version set the FULL (vx, vy, wz) velocity directly every tick, bypassing wheel physics for
+# everything, not just Vy, and hit the same limitation described there: a *pure*, small in-place rotation
+# command (0.5 rad/s alone, verified live) produced ~0 measured rotation, while a larger one (2.0 rad/s) or one
+# combined with any translation came through mostly intact. Switching rotation to the real diff-drive wheels
+# (this version) did NOT fix that -- it's the same underlying effect either way: from a standstill, turning in
+# place needs each wheel's contact patch to break static friction and scrub sideways (skid-steer's normal
+# mechanism), and PhysX's contact solver resists that breakaway far more than it resists continuing an already-
+# sliding motion, for both a direct velocity override *and* real wheel torque. Real wheel rolling was kept
+# anyway since it's at least as effective, and keeps rotation on the same, already-proven code path as the other
+# 3 models rather than adding a second special case to BodyDrive.
+#
+# Articulation.set_velocities()/.get_velocities() (isaacsim.core.experimental.prims) act on a floating-base
+# articulation's *root* velocity, which is what a URDF import with fix_base=False gives every robot here --
+# confirmed chassis == that root via ArticulationRootAPI, same check MODEL_PARAMS' chassis_link already relies
+# on. Constructing Articulation() needs the physics tensor view, which only exists once the timeline is playing,
+# so it's created lazily on first compute rather than in setup(), and re-tried on failure instead of latching a
+# permanent error.
+BODY_DRIVE_SCRIPT = """
+import math
+
+import omni.usd
+from pxr import UsdGeom, Gf
+
+
+def setup(db):
+    db.per_instance_state.articulation = None
+
+
+def compute(db):
+    state = db.per_instance_state
+    if state.articulation is None:
+        from isaacsim.core.experimental.prims import Articulation
+        try:
+            state.articulation = Articulation(str(db.inputs.chassisPath))
+        except Exception as e:
+            db.log_warning(f"BodyDrive: Articulation not ready yet ({e}), retrying next tick")
+            return
+
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(str(db.inputs.chassisPath))
+    rot = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0).ExtractRotation()
+    fwd = rot.TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))  # chassis' local +X axis, in world frame
+    yaw = math.atan2(fwd[1], fwd[0])
+
+    lin, _ang = state.articulation.get_velocities()
+    cur_vx_w, cur_vy_w, cur_vz_w = lin.numpy()[0]
+    cur_fwd = cur_vx_w * math.cos(yaw) + cur_vy_w * math.sin(yaw)  # decompose actual velocity into body frame
+
+    vy = db.inputs.vy  # commanded lateral speed, body frame -- the only component this overrides
+    vx_w = cur_fwd * math.cos(yaw) - vy * math.sin(yaw)
+    vy_w = cur_fwd * math.sin(yaw) + vy * math.cos(yaw)
+    state.articulation.set_velocities(linear_velocities=[[vx_w, vy_w, cur_vz_w]])
+"""
 
 ROBOT_SPACING = 1.6  # m between robots along Y
 SPAWN_Z = 0.15  # base_link height: wheel bottoms end up ~1.4 cm above the ground, then it settles
@@ -290,20 +380,15 @@ def add_camera(stage, robot_root):
 
 def build_ros_graph(og, usdrt_sdf, chassis, ns, cam_path, params):
     keys = og.Controller.Keys
-    front = ["front_left_wheel_joint", "front_right_wheel_joint"]
-    rear = ["rear_left_wheel_joint", "rear_right_wheel_joint"]
     articulation_controller = "isaacsim.core.nodes.IsaacArticulationController"
 
     nodes = [
         ("Tick", "omni.graph.action.OnPlaybackTick"),
         ("SysTime", "isaacsim.core.nodes.IsaacReadSystemTime"),
-        # --- drive: cmd_vel -> wheel velocities (4WD skid steer: both wheels of a side share a command)
+        # --- drive: cmd_vel -> wheel velocities (diff drive for every model; BodyDrive adds Ridgeback's sideways motion below)
         ("CmdVel", "isaacsim.ros2.bridge.ROS2SubscribeTwist"),
         ("BreakLin", "omni.graph.nodes.BreakVector3"),
         ("BreakAng", "omni.graph.nodes.BreakVector3"),
-        ("Diff", "isaacsim.robot.wheeled_robots.DifferentialController"),
-        ("DriveFront", articulation_controller),
-        ("DriveRear", articulation_controller),
         # --- state: odometry, tf, joint states
         ("Odom", "isaacsim.core.nodes.IsaacComputeOdometry"),
         ("PubOdom", "isaacsim.ros2.bridge.ROS2PublishOdometry"),
@@ -313,14 +398,6 @@ def build_ros_graph(og, usdrt_sdf, chassis, ns, cam_path, params):
     values = [
         ("CmdVel.inputs:nodeNamespace", ns),
         ("CmdVel.inputs:topicName", "cmd_vel"),
-        ("Diff.inputs:wheelRadius", params["wheel_radius"]),
-        ("Diff.inputs:wheelDistance", params["wheel_separation"] * params["separation_multiplier"]),
-        ("Diff.inputs:maxLinearSpeed", params["max_linear"]),
-        ("Diff.inputs:maxAngularSpeed", params["max_angular"]),
-        ("DriveFront.inputs:targetPrim", [usdrt_sdf.Path(chassis)]),
-        ("DriveFront.inputs:jointNames", front),
-        ("DriveRear.inputs:targetPrim", [usdrt_sdf.Path(chassis)]),
-        ("DriveRear.inputs:jointNames", rear),
         ("Odom.inputs:chassisPrim", [usdrt_sdf.Path(chassis)]),
         ("PubOdom.inputs:nodeNamespace", ns),
         ("PubOdom.inputs:topicName", "platform/odom"),
@@ -334,17 +411,62 @@ def build_ros_graph(og, usdrt_sdf, chassis, ns, cam_path, params):
         ("PubJoints.inputs:targetPrim", [usdrt_sdf.Path(chassis)]),
     ]
     connections = [
-        # Diff recomputes wheel speeds when a Twist arrives, the drives apply them every tick
         ("Tick.outputs:tick", "CmdVel.inputs:execIn"),
+        ("CmdVel.outputs:linearVelocity", "BreakLin.inputs:tuple"),
+        ("CmdVel.outputs:angularVelocity", "BreakAng.inputs:tuple"),
+    ]
+    create_attributes = []
+
+    # Every model, including Ridgeback, drives forward/back and rotation via real diff_4wd.yaml-style wheel
+    # rolling -- see MODEL_PARAMS' r100 comment for why Ridgeback's sideways motion needs a different mechanism
+    # (BodyDrive, added below) instead of extending this same approach to linear.y.
+    front = ["front_left_wheel_joint", "front_right_wheel_joint"]
+    rear = ["rear_left_wheel_joint", "rear_right_wheel_joint"]
+    nodes += [
+        ("Diff", "isaacsim.robot.wheeled_robots.DifferentialController"),
+        ("DriveFront", articulation_controller),
+        ("DriveRear", articulation_controller),
+    ]
+    values += [
+        ("Diff.inputs:wheelRadius", params["wheel_radius"]),
+        ("Diff.inputs:wheelDistance", params["wheel_separation"] * params["separation_multiplier"]),
+        ("Diff.inputs:maxLinearSpeed", params["max_linear"]),
+        ("Diff.inputs:maxAngularSpeed", params["max_angular"]),
+        ("DriveFront.inputs:targetPrim", [usdrt_sdf.Path(chassis)]),
+        ("DriveFront.inputs:jointNames", front),
+        ("DriveRear.inputs:targetPrim", [usdrt_sdf.Path(chassis)]),
+        ("DriveRear.inputs:jointNames", rear),
+    ]
+    connections += [
+        # Diff recomputes wheel speeds when a Twist arrives, the drives apply them every tick
         ("CmdVel.outputs:execOut", "Diff.inputs:execIn"),
         ("Tick.outputs:tick", "DriveFront.inputs:execIn"),
         ("Tick.outputs:tick", "DriveRear.inputs:execIn"),
-        ("CmdVel.outputs:linearVelocity", "BreakLin.inputs:tuple"),
-        ("CmdVel.outputs:angularVelocity", "BreakAng.inputs:tuple"),
         ("BreakLin.outputs:x", "Diff.inputs:linearVelocity"),
         ("BreakAng.outputs:z", "Diff.inputs:angularVelocity"),
         ("Diff.outputs:velocityCommand", "DriveFront.inputs:velocityCommand"),
         ("Diff.outputs:velocityCommand", "DriveRear.inputs:velocityCommand"),
+    ]
+
+    if params["drive"] == "omni":
+        # Ridgeback: BodyDrive patches in the one motion component real wheel rolling structurally cannot
+        # produce (sideways/linear.y) -- see its comment (BODY_DRIVE_SCRIPT) for the full reasoning and the
+        # comment above MODEL_PARAMS' r100 entry for the underlying wheel-collision-geometry finding.
+        nodes += [("BodyDrive", "omni.graph.scriptnode.ScriptNode")]
+        create_attributes += [
+            ("BodyDrive.inputs:vy", "double"),
+            ("BodyDrive.inputs:chassisPath", "token"),
+        ]
+        values += [
+            ("BodyDrive.inputs:chassisPath", chassis),
+            ("BodyDrive.inputs:script", BODY_DRIVE_SCRIPT),
+        ]
+        connections += [
+            ("Tick.outputs:tick", "BodyDrive.inputs:execIn"),
+            ("BreakLin.outputs:y", "BodyDrive.inputs:vy"),
+        ]
+
+    connections += [
         # state
         ("Tick.outputs:tick", "Odom.inputs:execIn"),
         ("Odom.outputs:execOut", "PubOdom.inputs:execIn"),
@@ -406,7 +528,7 @@ def build_ros_graph(og, usdrt_sdf, chassis, ns, cam_path, params):
 
     og.Controller.edit(
         {"graph_path": f"/Graphs/{ns}", "evaluator_name": "execution"},
-        {keys.CREATE_NODES: nodes, keys.SET_VALUES: values, keys.CONNECT: connections},
+        {keys.CREATE_NODES: nodes, keys.CREATE_ATTRIBUTES: create_attributes, keys.SET_VALUES: values, keys.CONNECT: connections},
     )
 
 
@@ -488,7 +610,7 @@ async def main():
         for _ in range(5):
             await app.next_update_async()
         apply_kit_settings()
-        enable_extensions(["isaacsim.ros2.bridge", "isaacsim.robot.wheeled_robots.nodes", "omni.graph.action", "omni.graph.nodes"])
+        enable_extensions(["isaacsim.ros2.bridge", "isaacsim.robot.wheeled_robots.nodes", "omni.graph.action", "omni.graph.nodes", "omni.graph.scriptnode"])
         for model in dict.fromkeys(model for _, model in ROBOTS):  # each distinct model once, first-seen order
             import_urdf_if_needed(model)
 
