@@ -2,3 +2,7 @@
 sim/assets/
 sim/generated/
 __pycache__/
+# colcon build artifacts (source packages under colcon_ws/src/ are tracked)
+colcon_ws/build/
+colcon_ws/install/
+colcon_ws/log/

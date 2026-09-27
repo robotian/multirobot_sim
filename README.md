@@ -71,9 +71,33 @@ Run these on the host. `a300_0000` can be replaced by any other robot (`a300_000
 | Camera view (colour, or `depth`) | `docker exec a300_0000 camera_view [depth]` |
 | RViz (RobotModel, TF, camera) | `docker exec -it a300_0000 rviz` |
 | Shell in the robot | `docker exec -it a300_0000 bash` |
+| Shell as the `robot` user (for the ROS workspace) | `docker exec -it -u robot a300_0000 bash` |
 | Drive test (commanded vs. measured motion) | `docker exec a300_0000 bash -c 'python3 /scripts/drive_test.py 0.5 0 4'` |
 
 Plain `docker exec <container> <ros command>` has no ROS environment. Use one of the commands above, `bash -c '…'`, or open a shell first.
+
+### ROS workspace
+
+Every robot container has a `robot` user (uid/gid 1000, matching the typical host user, so files are writable from both sides without extra chown steps) whose home directory has a `colcon_ws/src`. That directory is bind-mounted from `./colcon_ws` on the host into **every** robot container at `/home/robot/colcon_ws` — the same host folder, not a copy per robot — so a change made from inside one robot's container (or straight on the host) is immediately visible in all of them.
+
+```bash
+docker exec -it -u robot a300_0000 bash    # ROS is already sourced (system-wide, any user)
+cd ~/colcon_ws
+# put/clone packages under src/, then:
+colcon build
+source install/setup.bash
+```
+
+Or build without opening a shell, in every running robot container at once:
+
+```bash
+scripts/colcon_build.sh                    # colcon build
+scripts/colcon_build.sh --symlink-install  # extra arguments are passed straight to colcon build
+```
+
+Because `colcon_ws` is the same host folder in every container, the first container's build already produces the `build/`/`install/` that all the others see; the script still runs `colcon build` in each running robot container in turn (cheap and incremental after the first) so none of them can be left stale, and reports which ones (if any) failed.
+
+The container's main process still runs as root (the entrypoint needs it to write `/etc/clearpath/robot.yaml` and to run `robot_state`/`foxglove`); `robot` is only for workspace work via `docker exec -u robot`. `colcon_ws/build/`, `install/` and `log/` are gitignored; put packages under `colcon_ws/src/`.
 
 ### Foxglove
 
@@ -212,7 +236,8 @@ Besides the robots, the sim spawns some static scene dressing in `build_world()`
 | `robot/` | robot container image: `Dockerfile`, `entrypoint.sh`, helper commands in `bin/` (`teleop`, `camera_view`, `rviz`, `robot_state`, `foxglove`), config templates (`robot.yaml.tmpl`, `a300.rviz.tmpl`) |
 | `sim/scripts/setup_scene.py` | builds the Isaac Sim scene and ROS 2 graphs |
 | `sim/assets/`, `sim/generated/` | generated URDF and meshes, cached USD |
-| `scripts/` | `fleet.sh` (choose the number of robots), `stop_sim.sh`, URDF generation, X11 setup and the drive test |
+| `scripts/` | `fleet.sh` (choose the number of robots), `stop_sim.sh`, `colcon_build.sh`, URDF generation, X11 setup and the drive test |
+| `colcon_ws/src/` | ROS workspace shared by every robot container, see *ROS workspace* |
 | `docker/fastdds_udp.xml` | FastDDS profile (UDP only, since containers don't share `/dev/shm`) |
 | `docker/isaac-sim.Dockerfile`, `docker/isaac-entrypoint.sh` | Isaac Sim image with a system ROS 2 Jazzy (needed for zenoh) |
 | `sim/assets/lavender/` | `SM_Lavender_Nanite_01.usd` and its Materials, referenced three times as scene decoration |

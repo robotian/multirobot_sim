@@ -31,6 +31,9 @@ x-robot: &robot
     - /tmp/.docker.xauth:/tmp/.docker.xauth
     - ./docker/fastdds_udp.xml:/dds/fastdds_udp.xml:ro
     - ./scripts:/scripts:ro
+    # Shared ROS workspace: the same host folder in every robot container, so a change made from inside one
+    # robot's container (or on the host) shows up in all of them.
+    - ./colcon_ws:/home/robot/colcon_ws
 
 services:
   # One-shot: named volumes are created root-owned, Isaac Sim runs as uid 1234.
