@@ -34,6 +34,14 @@ URDF_PATH = "/sim/assets/a300/a300.urdf"
 USD_DIR = "/sim/generated/a300"
 USD_PATH = f"{USD_DIR}/a300/a300.usda"
 
+# Decorative lavender plants (SM_Lavender_Nanite_01.usd, default prim /Root). The asset's own layer is
+# centimetres (metersPerUnit 0.01) but this stage is metres, and USD does not rescale geometry across that
+# boundary by itself, so references to it need an explicit 0.01 scale. LAVENDER_BASE_Z lifts each plant so its
+# lowest point (bbox min z, measured once in the source asset) sits on the ground instead of poking through it.
+LAVENDER_USD = "/sim/assets/lavender/SM_Lavender_Nanite_01.usd"
+LAVENDER_SCALE = 0.006
+LAVENDER_BASE_Z = 0.05
+
 # Clearpath A300 drive parameters (clearpath_control/config/a300/control/diff_4wd.yaml)
 WHEEL_RADIUS = 0.1625
 WHEEL_SEPARATION = 0.562
@@ -140,6 +148,19 @@ def import_urdf_if_needed():
         f.write(stamp)
 
 
+def add_lavender(stage, path, pos, rot_z=0.0):
+    """One lavender clump (~2 x 2 x 1.3 m) from LAVENDER_USD. instanceable=True shares the (heavy) mesh data
+    and BVH between the copies instead of duplicating it per prim."""
+    prim = stage.DefinePrim(path, "Xform")
+    prim.GetReferences().AddReference(LAVENDER_USD)
+    prim.SetInstanceable(True)
+    xf = UsdGeom.Xformable(prim)
+    xf.AddTranslateOp().Set(Gf.Vec3d(pos[0], pos[1], pos[2] + LAVENDER_BASE_Z))
+    xf.AddRotateZOp().Set(rot_z)
+    xf.AddScaleOp().Set(Gf.Vec3d(LAVENDER_SCALE, LAVENDER_SCALE, LAVENDER_SCALE))
+    return prim
+
+
 def add_box(stage, path, size, pos, color):
     cube = UsdGeom.Cube.Define(stage, path)
     cube.CreateSizeAttr(1.0)
@@ -192,6 +213,11 @@ def build_world(stage):
     add_box(stage, "/World/targets/wall", (0.3, span * 2, 2.0), (9.0, 0, 1.0), (0.75, 0.75, 0.8))
     for j, (px, py) in enumerate([(5.5, -span), (6.5, span), (7.5, 0.0)]):
         add_box(stage, f"/World/targets/pillar_{j}", (0.4, 0.4, 1.5), (px, py, 0.75), palette[(j + 3) % len(palette)])
+
+    # A small lavender row alongside the robots, clear of their driving lane and of the targets/wall/pillars.
+    lavender_y = ((n - 1) / 2) * ROBOT_SPACING + 2.0
+    for i, x in enumerate([4.0, 6.5, 9.0]):
+        add_lavender(stage, f"/World/lavender/plant_{i}", (x, lavender_y, 0.0), rot_z=i * 47.0)
 
 
 def spawn_robot(stage, ns, index, count):

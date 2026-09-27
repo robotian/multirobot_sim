@@ -43,7 +43,7 @@ The first start is slow: Isaac Sim compiles shaders and imports the URDF to USD.
 
 Then open the WebRTC Streaming Client and connect to `ISAACSIM_HOST` (from `.env`; use `127.0.0.1` when it runs on the same machine).
 
-Stop everything with `docker compose down`.
+Stop everything with `scripts/stop_sim.sh` (plain `docker compose down` misses robot services outside the active `NUM_ROBOTS` profile).
 
 ## Number of robots
 
@@ -52,7 +52,7 @@ Stop everything with `docker compose down`.
 ```bash
 scripts/fleet.sh 5        # set NUM_ROBOTS=5 in .env and (re)start the sim and 5 robots
 scripts/fleet.sh          # (re)start with the current NUM_ROBOTS
-scripts/fleet.sh down     # stop and remove everything
+scripts/fleet.sh down     # stop and remove everything (same as scripts/stop_sim.sh)
 ```
 
 Robot *i* always gets the same container name (`a300_000i`), hostname (`cpr-a300-000i`) and Foxglove port (`8765 + i`), whatever the total.
@@ -184,9 +184,17 @@ The WebRTC client shows at most the frame rate of the sim, because the sim rende
 
 So the levers that matter are the number of robots with cameras and async rendering. If you only need to watch the scene, `CAMERA_STREAMS=none` roughly doubles the frame rate (the robots then publish no images). `FLEET_VIEWPORT_RES=1280x720` keeps the GPU load down on a large client window at almost no cost in frame rate. Not measured: the encoder and network path with a client connected.
 
+## Scene
+
+Besides the robots, the sim spawns some static scene dressing in `build_world()` (`sim/scripts/setup_scene.py`):
+
+- coloured target boxes (one per robot, with a physics collider — robots can drive into them), a wall and pillars, all for the cameras to look at;
+- three lavender plants (`SM_Lavender_Nanite_01.usd` under `sim/assets/lavender/`, `add_lavender()`), referenced with `instanceable=True` so the ~1.26M-triangle mesh is shared rather than tripled, and scaled by 0.01 to convert the asset's centimetre units into this stage's metres. They sit in a row off to the side of the robots' lane, with no collider (decoration only). They cost about 3–4 fps at 2 robots on this GPU — see *Faster streaming* if that's a problem, or edit/remove the `add_lavender(...)` calls.
+- They render fairly dark under the current lighting; the plant's material (converted from Unreal) needs more light than the boxes/wall to read clearly. Raising `dome`/`sun` light intensity in `build_world()` fixes it but overexposes the rest of the scene, so it hasn't been changed — worth a supplemental local light near the plants if this matters.
+
 ## Known limitations
 
-- **Frame rate:** the sim renders three robots with two cameras each through a path tracer, so the real-time factor is the limit. Zenoh adds about 3–4 fps of cost over FastDDS.
+- **Frame rate:** the sim renders the robots' cameras and the scene (including the lavender plants) through a path tracer, so the real-time factor is the limit. Zenoh adds about 3–4 fps of cost over FastDDS; the three lavender plants cost a similar amount.
 - **One router:** all zenoh sessions share a single `zenoh-router`. A real fleet would have a router per robot; that topology is not simulated.
 - **Raw images:** colour and depth are published uncompressed (about 30 MB/s per robot at 20 Hz), which is fine on the local machine but heavy for Wi-Fi Foxglove clients.
 - **Not tested against real robots:** interoperability with the real robots' zenoh router (`ZENOH_ROUTER`) has not been tried.
@@ -204,9 +212,10 @@ So the levers that matter are the number of robots with cameras and async render
 | `robot/` | robot container image: `Dockerfile`, `entrypoint.sh`, helper commands in `bin/` (`teleop`, `camera_view`, `rviz`, `robot_state`, `foxglove`), config templates (`robot.yaml.tmpl`, `a300.rviz.tmpl`) |
 | `sim/scripts/setup_scene.py` | builds the Isaac Sim scene and ROS 2 graphs |
 | `sim/assets/`, `sim/generated/` | generated URDF and meshes, cached USD |
-| `scripts/` | `fleet.sh` (choose the number of robots), URDF generation, X11 setup and the drive test |
+| `scripts/` | `fleet.sh` (choose the number of robots), `stop_sim.sh`, URDF generation, X11 setup and the drive test |
 | `docker/fastdds_udp.xml` | FastDDS profile (UDP only, since containers don't share `/dev/shm`) |
 | `docker/isaac-sim.Dockerfile`, `docker/isaac-entrypoint.sh` | Isaac Sim image with a system ROS 2 Jazzy (needed for zenoh) |
+| `sim/assets/lavender/` | `SM_Lavender_Nanite_01.usd` and its Materials, referenced three times as scene decoration |
 
 See `CLAUDE.md` for more detail on how the pieces fit together.
 
