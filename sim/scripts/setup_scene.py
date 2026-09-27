@@ -1,8 +1,11 @@
-"""Isaac Sim fleet scene: N identical Clearpath A300s, each with a RealSense D435i, bridged to ROS 2.
+"""Isaac Sim fleet scene: N Clearpath robots, each with a RealSense D435i, bridged to ROS 2.
 
 Runs inside the streaming Kit app (isaac-sim.streaming.sh --exec /sim/scripts/setup_scene.py).
 Configuration comes from environment variables (see docker-compose.yml):
-  NUM_ROBOTS         how many robots to spawn; they are called a300_0000, a300_0001, ...
+  NUM_ROBOTS         how many robots to spawn
+  ROBOT_MODELS       comma-separated model per slot (a300/a200/j100/r100, one of MODEL_PARAMS below); only the
+                     first NUM_ROBOTS entries are used. Robot i is namespaced "<its model>_%04d" % i, e.g. a
+                     Jackal (j100) in slot 1 is j100_0001 -- matches docker-compose.yml's container naming.
   CAMERA_WIDTH/HEIGHT, CAMERA_FRAME_SKIP, FORCE_REIMPORT
 """
 import asyncio
@@ -16,7 +19,10 @@ import omni.timeline
 import omni.usd
 from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdPhysics, UsdShade
 
-NAMESPACES = [f"a300_{i:04d}" for i in range(int(os.environ.get("NUM_ROBOTS", "3")))]  # must match the robot services in docker-compose.yml
+_num_robots = int(os.environ.get("NUM_ROBOTS", "3"))
+_models = [m.strip() for m in os.environ.get("ROBOT_MODELS", "a300").split(",") if m.strip()][:_num_robots]
+# ROBOTS: one (namespace, model) pair per robot, in slot order -- must match docker-compose.yml's container naming.
+ROBOTS = [(f"{model}_{i:04d}", model) for i, model in enumerate(_models)]
 CAM_W = int(os.environ.get("CAMERA_WIDTH", "640"))
 CAM_H = int(os.environ.get("CAMERA_HEIGHT", "360"))
 CAM_FRAME_SKIP = int(os.environ.get("CAMERA_FRAME_SKIP", "0"))  # 0 = publish every simulation frame
@@ -30,9 +36,16 @@ FORCE_REIMPORT = os.environ.get("FORCE_REIMPORT", "0") == "1"
 # "none" turns the cameras off (no render products at all), which is what gives the streamed viewport its full frame rate.
 CAM_STREAMS = set(filter(None, os.environ.get("CAMERA_STREAMS", "color,depth").split(","))) - {"none", "off"}
 
-URDF_PATH = "/sim/assets/a300/a300.urdf"
-USD_DIR = "/sim/generated/a300"
-USD_PATH = f"{USD_DIR}/a300/a300.usda"
+# Per-model URDF/USD paths, from scripts/gen_urdf.sh's output (sim/assets/<model>/) and the importer's cache
+# (sim/generated/<model>/, see import_urdf_if_needed).
+MODEL_ASSETS = {
+    m: {
+        "urdf": f"/sim/assets/{m}/{m}.urdf",
+        "usd_dir": f"/sim/generated/{m}",
+        "usd_path": f"/sim/generated/{m}/{m}/{m}.usda",
+    }
+    for m in ("a300", "a200", "j100", "r100")
+}
 
 # Decorative lavender plants (SM_Lavender_Nanite_01.usd, default prim /Root). The asset's own layer is
 # centimetres (metersPerUnit 0.01) but this stage is metres, and USD does not rescale geometry across that
@@ -42,12 +55,29 @@ LAVENDER_USD = "/sim/assets/lavender/SM_Lavender_Nanite_01.usd"
 LAVENDER_SCALE = 0.006
 LAVENDER_BASE_Z = 0.05
 
-# Clearpath A300 drive parameters (clearpath_control/config/a300/control/diff_4wd.yaml)
-WHEEL_RADIUS = 0.1625
-WHEEL_SEPARATION = 0.562
-SEPARATION_MULTIPLIER = 1.75  # compensates for skid-steer slip
-MAX_LINEAR = 2.0
-MAX_ANGULAR = 2.0
+# Per-model drive parameters, from each model's real clearpath_control/config/<model>/control/diff_4wd.yaml.
+# `chassis_link` is the URDF link the drive/odometry OmniGraph targets -- it must be a prim the URDF importer
+# actually gave UsdPhysics.ArticulationRootAPI, checked per model in the imported USD after generating it, not
+# assumed from the URDF structure alone (see below).
+# a300/r100 each have exactly one direct fixed-jointed child of base_link ("chassis_link") that becomes the
+# articulation root. a200's base_link has several direct children (top_chassis_link, inertial_link, the bumper
+# mounts, ...) with no single obvious "chassis", so the importer roots the articulation at base_link itself
+# instead. j100 *used to* pattern-match a300/r100 (one child, "chassis_link"), but scripts/flatten_urdf.py's
+# merge_visual_only_links() now folds its fenders (visual-only, no collision/inertial -- see that function for
+# why they needed folding in at all) directly into base_link to fix them visually detaching from the chassis
+# when driven; that alone was enough to make base_link "look like a body" to the importer too, moving the
+# articulation root there exactly like a200. Moral: re-check ArticulationRootAPI after *any* URDF-shape change,
+# not just when adding a new model -- targeting the wrong link fails at runtime ("Articulation controller
+# failed") with no error at import time, so nothing catches a wrong guess until the robot won't drive.
+# Ridgeback (r100) is Clearpath's holonomic mecanum platform; it also ships an omni_4wd.yaml for its native
+# strafing controller, but this sim drives it the same skid-steer way as the others, via its diff_4wd.yaml
+# numbers below -- it can turn and drive forward/back like the rest of the fleet, but not strafe sideways.
+MODEL_PARAMS = {
+    "a300": dict(chassis_link="chassis_link", wheel_radius=0.1625, wheel_separation=0.562, separation_multiplier=1.75, max_linear=2.0, max_angular=2.0),
+    "a200": dict(chassis_link="base_link", wheel_radius=0.1651, wheel_separation=0.555, separation_multiplier=1.875, max_linear=1.0, max_angular=1.0),
+    "j100": dict(chassis_link="base_link", wheel_radius=0.098, wheel_separation=0.37559, separation_multiplier=1.5, max_linear=2.0, max_angular=4.0),
+    "r100": dict(chassis_link="chassis_link", wheel_radius=0.0759, wheel_separation=0.551, separation_multiplier=1.0, max_linear=1.3, max_angular=4.0),
+}
 
 ROBOT_SPACING = 1.6  # m between robots along Y
 SPAWN_Z = 0.15  # base_link height: wheel bottoms end up ~1.4 cm above the ground, then it settles
@@ -115,35 +145,37 @@ IMPORT_SETTINGS = {
 }
 
 
-def import_urdf_if_needed():
+def import_urdf_if_needed(model):
     import json
 
-    st = os.stat(URDF_PATH)
+    assets = MODEL_ASSETS[model]
+    urdf_path, usd_dir, usd_path = assets["urdf"], assets["usd_dir"], assets["usd_path"]
+    st = os.stat(urdf_path)
     stamp = json.dumps({"settings": IMPORT_SETTINGS, "urdf": [st.st_mtime_ns, st.st_size]}, sort_keys=True)
-    stamp_path = f"{USD_DIR}/.import_stamp"
+    stamp_path = f"{usd_dir}/.import_stamp"
     try:
         cached = open(stamp_path).read()
     except OSError:
         cached = None
-    if os.path.exists(USD_PATH) and cached == stamp and not FORCE_REIMPORT:
-        log(f"using cached USD {USD_PATH}")
+    if os.path.exists(usd_path) and cached == stamp and not FORCE_REIMPORT:
+        log(f"using cached USD {usd_path}")
         return
-    log("converting A300 URDF -> USD (cached afterwards)")
+    log(f"converting {model} URDF -> USD (cached afterwards)")
     import shutil
 
-    shutil.rmtree(f"{USD_DIR}", ignore_errors=True)  # the importer would otherwise write to a300_1/, a300_2/, ...
-    os.makedirs(USD_DIR, exist_ok=True)
+    shutil.rmtree(usd_dir, ignore_errors=True)  # the importer would otherwise write to <model>_1/, <model>_2/, ...
+    os.makedirs(usd_dir, exist_ok=True)
     enable_extensions(["omni.scene.optimizer.core", "isaacsim.robot.schema", "isaacsim.asset.importer.urdf"])
     from isaacsim.asset.importer.urdf.impl import URDFImporter, URDFImporterConfig
 
     cfg = URDFImporterConfig()
-    cfg.urdf_path = URDF_PATH
-    cfg.usd_path = USD_DIR
+    cfg.urdf_path = urdf_path
+    cfg.usd_path = usd_dir
     for key, value in IMPORT_SETTINGS.items():
         setattr(cfg, key, value)
     out = URDFImporter(cfg).import_urdf()
-    if out != USD_PATH:
-        log(f"WARNING: importer wrote {out}, expected {USD_PATH}")
+    if out != usd_path:
+        log(f"WARNING: importer wrote {out}, expected {usd_path}")
     with open(stamp_path, "w") as f:
         f.write(stamp)
 
@@ -205,7 +237,7 @@ def build_world(stage):
 
     # Something for the cameras to look at: a coloured box in front of each robot, plus a wall and pillars.
     palette = [(0.9, 0.15, 0.15), (0.15, 0.75, 0.2), (0.2, 0.3, 0.95), (0.95, 0.8, 0.1), (0.8, 0.2, 0.8)]
-    n = len(NAMESPACES)
+    n = len(ROBOTS)
     for i in range(n):
         y = (i - (n - 1) / 2) * ROBOT_SPACING
         add_box(stage, f"/World/targets/box_{i}", (0.6, 0.6, 0.6), (3.0 + 0.7 * i, y, 0.3), palette[i % len(palette)])
@@ -220,10 +252,10 @@ def build_world(stage):
         add_lavender(stage, f"/World/lavender/plant_{i}", (x, lavender_y, 0.0), rot_z=i * 47.0)
 
 
-def spawn_robot(stage, ns, index, count):
+def spawn_robot(stage, ns, model, index, count):
     root = f"/World/{ns}"
     prim = stage.DefinePrim(root, "Xform")
-    prim.GetReferences().AddReference(USD_PATH)
+    prim.GetReferences().AddReference(MODEL_ASSETS[model]["usd_path"])
     y = (index - (count - 1) / 2) * ROBOT_SPACING
     UsdGeom.Xformable(prim).AddTranslateOp().Set(Gf.Vec3d(0.0, y, SPAWN_Z))
     return root
@@ -256,7 +288,7 @@ def add_camera(stage, robot_root):
     return cam_path
 
 
-def build_ros_graph(og, usdrt_sdf, chassis, ns, cam_path):
+def build_ros_graph(og, usdrt_sdf, chassis, ns, cam_path, params):
     keys = og.Controller.Keys
     front = ["front_left_wheel_joint", "front_right_wheel_joint"]
     rear = ["rear_left_wheel_joint", "rear_right_wheel_joint"]
@@ -281,10 +313,10 @@ def build_ros_graph(og, usdrt_sdf, chassis, ns, cam_path):
     values = [
         ("CmdVel.inputs:nodeNamespace", ns),
         ("CmdVel.inputs:topicName", "cmd_vel"),
-        ("Diff.inputs:wheelRadius", WHEEL_RADIUS),
-        ("Diff.inputs:wheelDistance", WHEEL_SEPARATION * SEPARATION_MULTIPLIER),
-        ("Diff.inputs:maxLinearSpeed", MAX_LINEAR),
-        ("Diff.inputs:maxAngularSpeed", MAX_ANGULAR),
+        ("Diff.inputs:wheelRadius", params["wheel_radius"]),
+        ("Diff.inputs:wheelDistance", params["wheel_separation"] * params["separation_multiplier"]),
+        ("Diff.inputs:maxLinearSpeed", params["max_linear"]),
+        ("Diff.inputs:maxAngularSpeed", params["max_angular"]),
         ("DriveFront.inputs:targetPrim", [usdrt_sdf.Path(chassis)]),
         ("DriveFront.inputs:jointNames", front),
         ("DriveRear.inputs:targetPrim", [usdrt_sdf.Path(chassis)]),
@@ -382,7 +414,7 @@ def aim_viewport():
     try:
         from omni.kit.viewport.utility.camera_state import ViewportCameraState
 
-        n = len(NAMESPACES)
+        n = len(ROBOTS)
         state = ViewportCameraState("/OmniverseKit_Persp")
         state.set_position_world(Gf.Vec3d(-5.0, -ROBOT_SPACING * n * 0.9, 3.2), True)
         state.set_target_world(Gf.Vec3d(3.0, 0.0, 0.3), True)
@@ -414,9 +446,9 @@ def set_viewport_resolution():
 async def debug_loop(og):
     """FLEET_DEBUG=1: log the command chain and chassis pose of the first robot every 2 s."""
     from pxr import UsdGeom as _G
-    ns = NAMESPACES[0]
+    ns, model = ROBOTS[0]
     stage = omni.usd.get_context().get_stage()
-    chassis = stage.GetPrimAtPath(find_prim(stage, f"/World/{ns}", "chassis_link"))
+    chassis = stage.GetPrimAtPath(find_prim(stage, f"/World/{ns}", MODEL_PARAMS[model]["chassis_link"]))
     app = omni.kit.app.get_app()
     from pxr import Usd as _U
     cache = _U.__dict__  # noqa: F841
@@ -457,7 +489,8 @@ async def main():
             await app.next_update_async()
         apply_kit_settings()
         enable_extensions(["isaacsim.ros2.bridge", "isaacsim.robot.wheeled_robots.nodes", "omni.graph.action", "omni.graph.nodes"])
-        import_urdf_if_needed()
+        for model in dict.fromkeys(model for _, model in ROBOTS):  # each distinct model once, first-seen order
+            import_urdf_if_needed(model)
 
         import omni.graph.core as og
         import usdrt.Sdf as usdrt_sdf
@@ -465,20 +498,21 @@ async def main():
         await omni.usd.get_context().new_stage_async()
         stage = omni.usd.get_context().get_stage()
         build_world(stage)
-        for i, ns in enumerate(NAMESPACES):
-            root = spawn_robot(stage, ns, i, len(NAMESPACES))
+        for i, (ns, model) in enumerate(ROBOTS):
+            root = spawn_robot(stage, ns, model, i, len(ROBOTS))
             cam_path = add_camera(stage, root)
 
-            log(f"spawned {ns} at {root}")
+            log(f"spawned {ns} ({model}) at {root}")
             for _ in range(3):
                 await app.next_update_async()
-            build_ros_graph(og, usdrt_sdf, find_prim(stage, root, "chassis_link"), ns, cam_path)
+            chassis = find_prim(stage, root, MODEL_PARAMS[model]["chassis_link"])
+            build_ros_graph(og, usdrt_sdf, chassis, ns, cam_path, MODEL_PARAMS[model])
         aim_viewport()
         set_viewport_resolution()
         for _ in range(10):
             await app.next_update_async()
         omni.timeline.get_timeline_interface().play()
-        log(f"simulation running with {len(NAMESPACES)} robots: {', '.join(NAMESPACES)}")
+        log(f"simulation running with {len(ROBOTS)} robots: {', '.join(ns for ns, _ in ROBOTS)}")
         if os.environ.get("FLEET_DEBUG") == "1":
             asyncio.ensure_future(debug_loop(og))
     except Exception:

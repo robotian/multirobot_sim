@@ -1,8 +1,9 @@
-# Isaac Sim 6.0 (WebRTC streaming) + one ROS 2 Jazzy container per Clearpath A300.
+# Isaac Sim 6.0 (WebRTC streaming) + one ROS 2 Jazzy container per Clearpath robot (A300, A200, Jackal/j100 or
+# Ridgeback/r100 -- see ROBOT_MODEL_<i> below).
 # Robots and sim talk over a private bridge network like robots on a LAN. The ROS 2 middleware is chosen in .env:
 #   FLEET_RMW=rmw_zenoh_cpp    (as on the real robots; every session connects to the zenoh-router service)
 #   FLEET_RMW=rmw_fastrtps_cpp (FastDDS over UDP only, docker/fastdds_udp.xml)
-name: a300-fleet
+name: clearpath-fleet
 
 x-rmw-env: &rmw-env
   RMW_IMPLEMENTATION: ${FLEET_RMW:-rmw_zenoh_cpp}   # not read from RMW_IMPLEMENTATION: a ROS-configured host shell would override .env
@@ -15,7 +16,7 @@ x-rmw-env: &rmw-env
   FASTRTPS_DEFAULT_PROFILES_FILE: /dds/fastdds_udp.xml
 
 x-robot: &robot
-  image: a300-robot:jazzy
+  image: clearpath-robot:jazzy
   build: ./robot
   networks: [ros]
   stdin_open: true
@@ -51,7 +52,7 @@ services:
 
   # rmw_zenoh_cpp router that all sessions (sim and robots) connect to. Idle when using FastDDS.
   zenoh-router:
-    image: a300-robot:jazzy
+    image: clearpath-robot:jazzy
     build: ./robot
     container_name: zenoh-router
     hostname: zenoh-router
@@ -86,6 +87,8 @@ services:
       ISAACSIM_HOST: ${ISAACSIM_HOST:-127.0.0.1}
       <<: *rmw-env
       NUM_ROBOTS: ${NUM_ROBOTS:-3}
+      # One entry per slot (see the robotN services below); the sim only uses the first NUM_ROBOTS of them.
+      ROBOT_MODELS: ${ROBOT_MODEL_0:-a300},${ROBOT_MODEL_1:-a300},${ROBOT_MODEL_2:-a300},${ROBOT_MODEL_3:-a300},${ROBOT_MODEL_4:-a300},${ROBOT_MODEL_5:-a300},${ROBOT_MODEL_6:-a300},${ROBOT_MODEL_7:-a300}
       CAMERA_WIDTH: ${CAMERA_WIDTH:-640}
       CAMERA_HEIGHT: ${CAMERA_HEIGHT:-360}
       CAMERA_FRAME_SKIP: ${CAMERA_FRAME_SKIP:-0}
@@ -116,104 +119,116 @@ services:
               count: all
               capabilities: [gpu]
 
-  # Robot i is started when the profile n<NUM_ROBOTS> is active (COMPOSE_PROFILES=n${NUM_ROBOTS} in .env), i.e. when
-  # NUM_ROBOTS > i. Supports up to 8 robots; to add more, copy a block and extend the profile lists.
+  # Slot i is started when the profile n<NUM_ROBOTS> is active (COMPOSE_PROFILES=n${NUM_ROBOTS} in .env), i.e.
+  # when NUM_ROBOTS > i. Supports up to 8 robots; to add more, copy a block (next index, next Foxglove port) and
+  # extend the profile lists. The service *keys* (robot0..robot7) are stable slot identities for `docker compose`
+  # itself; each slot's real, user-facing identity -- container name, hostname, ROS namespace -- is its assigned
+  # model (ROBOT_MODEL_<i> in .env, one of a300/a200/j100/r100, default a300) plus its fixed slot index, e.g.
+  # slot 1 running Jackal becomes container/hostname/namespace `j100_0001`, not `a300_0001`.
 
-  a300_0000:
+  robot0:
     <<: *robot
-    container_name: a300_0000
+    container_name: ${ROBOT_MODEL_0:-a300}_0000
     profiles: [n1, n2, n3, n4, n5, n6, n7, n8]
     ports:
       - "8765:8765/tcp"   # Foxglove bridge (ws://<host>:8765)
-    hostname: cpr-a300-0000
+    hostname: cpr-${ROBOT_MODEL_0:-a300}-0000
     environment:
       <<: *robot-env
-      ROBOT_NAMESPACE: a300_0000
-      ROS_NAMESPACE: a300_0000  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_MODEL: ${ROBOT_MODEL_0:-a300}
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_0:-a300}_0000
+      ROS_NAMESPACE: ${ROBOT_MODEL_0:-a300}_0000  # also set by the entrypoint; needed in `docker exec` shells
 
-  a300_0001:
+  robot1:
     <<: *robot
-    container_name: a300_0001
+    container_name: ${ROBOT_MODEL_1:-a300}_0001
     profiles: [n2, n3, n4, n5, n6, n7, n8]
     ports:
       - "8766:8765/tcp"   # Foxglove bridge (ws://<host>:8766)
-    hostname: cpr-a300-0001
+    hostname: cpr-${ROBOT_MODEL_1:-a300}-0001
     environment:
       <<: *robot-env
-      ROBOT_NAMESPACE: a300_0001
-      ROS_NAMESPACE: a300_0001  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_MODEL: ${ROBOT_MODEL_1:-a300}
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_1:-a300}_0001
+      ROS_NAMESPACE: ${ROBOT_MODEL_1:-a300}_0001  # also set by the entrypoint; needed in `docker exec` shells
 
-  a300_0002:
+  robot2:
     <<: *robot
-    container_name: a300_0002
+    container_name: ${ROBOT_MODEL_2:-a300}_0002
     profiles: [n3, n4, n5, n6, n7, n8]
     ports:
       - "8767:8765/tcp"   # Foxglove bridge (ws://<host>:8767)
-    hostname: cpr-a300-0002
+    hostname: cpr-${ROBOT_MODEL_2:-a300}-0002
     environment:
       <<: *robot-env
-      ROBOT_NAMESPACE: a300_0002
-      ROS_NAMESPACE: a300_0002  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_MODEL: ${ROBOT_MODEL_2:-a300}
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_2:-a300}_0002
+      ROS_NAMESPACE: ${ROBOT_MODEL_2:-a300}_0002  # also set by the entrypoint; needed in `docker exec` shells
 
-  a300_0003:
+  robot3:
     <<: *robot
-    container_name: a300_0003
+    container_name: ${ROBOT_MODEL_3:-a300}_0003
     profiles: [n4, n5, n6, n7, n8]
     ports:
       - "8768:8765/tcp"   # Foxglove bridge (ws://<host>:8768)
-    hostname: cpr-a300-0003
+    hostname: cpr-${ROBOT_MODEL_3:-a300}-0003
     environment:
       <<: *robot-env
-      ROBOT_NAMESPACE: a300_0003
-      ROS_NAMESPACE: a300_0003  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_MODEL: ${ROBOT_MODEL_3:-a300}
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_3:-a300}_0003
+      ROS_NAMESPACE: ${ROBOT_MODEL_3:-a300}_0003  # also set by the entrypoint; needed in `docker exec` shells
 
-  a300_0004:
+  robot4:
     <<: *robot
-    container_name: a300_0004
+    container_name: ${ROBOT_MODEL_4:-a300}_0004
     profiles: [n5, n6, n7, n8]
     ports:
       - "8769:8765/tcp"   # Foxglove bridge (ws://<host>:8769)
-    hostname: cpr-a300-0004
+    hostname: cpr-${ROBOT_MODEL_4:-a300}-0004
     environment:
       <<: *robot-env
-      ROBOT_NAMESPACE: a300_0004
-      ROS_NAMESPACE: a300_0004  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_MODEL: ${ROBOT_MODEL_4:-a300}
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_4:-a300}_0004
+      ROS_NAMESPACE: ${ROBOT_MODEL_4:-a300}_0004  # also set by the entrypoint; needed in `docker exec` shells
 
-  a300_0005:
+  robot5:
     <<: *robot
-    container_name: a300_0005
+    container_name: ${ROBOT_MODEL_5:-a300}_0005
     profiles: [n6, n7, n8]
     ports:
       - "8770:8765/tcp"   # Foxglove bridge (ws://<host>:8770)
-    hostname: cpr-a300-0005
+    hostname: cpr-${ROBOT_MODEL_5:-a300}-0005
     environment:
       <<: *robot-env
-      ROBOT_NAMESPACE: a300_0005
-      ROS_NAMESPACE: a300_0005  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_MODEL: ${ROBOT_MODEL_5:-a300}
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_5:-a300}_0005
+      ROS_NAMESPACE: ${ROBOT_MODEL_5:-a300}_0005  # also set by the entrypoint; needed in `docker exec` shells
 
-  a300_0006:
+  robot6:
     <<: *robot
-    container_name: a300_0006
+    container_name: ${ROBOT_MODEL_6:-a300}_0006
     profiles: [n7, n8]
     ports:
       - "8771:8765/tcp"   # Foxglove bridge (ws://<host>:8771)
-    hostname: cpr-a300-0006
+    hostname: cpr-${ROBOT_MODEL_6:-a300}-0006
     environment:
       <<: *robot-env
-      ROBOT_NAMESPACE: a300_0006
-      ROS_NAMESPACE: a300_0006  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_MODEL: ${ROBOT_MODEL_6:-a300}
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_6:-a300}_0006
+      ROS_NAMESPACE: ${ROBOT_MODEL_6:-a300}_0006  # also set by the entrypoint; needed in `docker exec` shells
 
-  a300_0007:
+  robot7:
     <<: *robot
-    container_name: a300_0007
+    container_name: ${ROBOT_MODEL_7:-a300}_0007
     profiles: [n8]
     ports:
       - "8772:8765/tcp"   # Foxglove bridge (ws://<host>:8772)
-    hostname: cpr-a300-0007
+    hostname: cpr-${ROBOT_MODEL_7:-a300}-0007
     environment:
       <<: *robot-env
-      ROBOT_NAMESPACE: a300_0007
-      ROS_NAMESPACE: a300_0007  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_MODEL: ${ROBOT_MODEL_7:-a300}
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_7:-a300}_0007
+      ROS_NAMESPACE: ${ROBOT_MODEL_7:-a300}_0007  # also set by the entrypoint; needed in `docker exec` shells
 
 networks:
   ros:

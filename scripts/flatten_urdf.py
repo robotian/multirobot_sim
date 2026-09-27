@@ -5,6 +5,7 @@ Copies every mesh referenced through package:// or file:// into <out>/meshes/<pk
 URDF to use relative paths, so the Isaac container does not need any ROS packages installed.
 Also drops <gazebo>/<ros2_control> blocks, which the importer does not use.
 """
+import math
 import os
 import re
 import shutil
@@ -101,16 +102,110 @@ def copy_mesh(src, dst):
     return dst
 
 
+def _origin_matrix(origin):
+    """A <origin xyz="x y z" rpy="r p y"/> element (or None) as a 4x4 row-major transform matrix, using
+    URDF's own convention: R = Rz(yaw) * Ry(pitch) * Rx(roll), translation applied after rotation."""
+    x, y, z = (float(v) for v in (origin.get("xyz", "0 0 0") if origin is not None else "0 0 0").split())
+    r, p, ya = (float(v) for v in (origin.get("rpy", "0 0 0") if origin is not None else "0 0 0").split())
+    cr, sr, cp, sp, cy, sy = math.cos(r), math.sin(r), math.cos(p), math.sin(p), math.cos(ya), math.sin(ya)
+    return [
+        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr, x],
+        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr, y],
+        [-sp, cp * sr, cp * cr, z],
+        [0, 0, 0, 1],
+    ]
+
+
+def _matmul(a, b):
+    return [[sum(a[i][k] * b[k][j] for k in range(4)) for j in range(4)] for i in range(4)]
+
+
+def _matrix_to_origin(m):
+    """Inverse of _origin_matrix: a 4x4 matrix back to an xyz/rpy string pair, for writing into the URDF."""
+    pitch = math.atan2(-m[2][0], math.hypot(m[0][0], m[1][0]))
+    if abs(math.cos(pitch)) > 1e-6:
+        yaw = math.atan2(m[1][0], m[0][0])
+        roll = math.atan2(m[2][1], m[2][2])
+    else:  # gimbal lock: roll and yaw trade off; pin yaw to 0
+        yaw = 0.0
+        roll = math.atan2(-m[1][2], m[1][1])
+    return f"{m[0][3]:.9g} {m[1][3]:.9g} {m[2][3]:.9g}", f"{roll:.9g} {pitch:.9g} {yaw:.9g}"
+
+
+def merge_visual_only_links(root):
+    """Fold any link that is *only* a <visual> (no <collision>, no <inertial> -- e.g. Jackal's fender links,
+    which come from clearpath_platform_description's fender.urdf.xacro exactly this way) into its parent link,
+    dropping the now-empty link and its connecting (always <fixed>, checked below) joint.
+
+    Isaac Sim's URDF importer still makes such a link a genuinely separate simulated body even with zero mass,
+    connected to its parent by a PhysX fixed-joint constraint. That constraint isn't perfectly rigid for a
+    body this light relative to the rest of the robot: it visibly drifts away from the parent once the robot
+    is driven or turned (confirmed live on Jackal's fenders -- static at spawn they looked attached, but
+    lagged behind and detached after driving). Giving the link a small synthetic mass/inertia instead (tried
+    first) didn't fix this -- the constraint is still there, just less obviously wrong. Merging the geometry
+    directly into the parent link's own <visual> list removes the joint entirely, so there is nothing left
+    to drift: the mesh is now literally part of the parent body.
+    """
+    joints = root.findall("joint")
+    changed = True
+    while changed:
+        changed = False
+        links_by_name = {link.get("name"): link for link in root.findall("link")}
+        for joint in list(joints):
+            child_name = joint.find("child").get("link")
+            child = links_by_name.get(child_name)
+            if child is None or joint.get("type") != "fixed":
+                continue
+            if child.find("collision") is not None or child.find("inertial") is not None:
+                continue
+            visuals = child.findall("visual")
+            if not visuals:
+                continue
+            parent_name = joint.find("parent").get("link")
+            parent = links_by_name.get(parent_name)
+            if parent is None:
+                continue
+            joint_m = _origin_matrix(joint.find("origin"))
+            for visual in visuals:
+                combined = _matmul(joint_m, _origin_matrix(visual.find("origin")))
+                old_origin = visual.find("origin")
+                if old_origin is not None:
+                    visual.remove(old_origin)
+                xyz, rpy = _matrix_to_origin(combined)
+                visual.insert(0, ET.Element("origin", {"xyz": xyz, "rpy": rpy}))
+                parent.append(visual)
+            # Any other joint that used this (now-removed) link as its own parent must be re-pointed at this
+            # link's parent instead, and its origin re-expressed in that link's frame (composed with joint_m) --
+            # otherwise it's left referencing a link name that no longer exists (a genuine URDF import error,
+            # not just a cosmetic one), or ends up in the wrong place if only the name were rewritten.
+            for other in joints:
+                if other is not joint and other.find("parent").get("link") == child_name:
+                    other.find("parent").set("link", parent_name)
+                    other_m = _matmul(joint_m, _origin_matrix(other.find("origin")))
+                    old = other.find("origin")
+                    if old is not None:
+                        other.remove(old)
+                    xyz, rpy = _matrix_to_origin(other_m)
+                    other.insert(0, ET.Element("origin", {"xyz": xyz, "rpy": rpy}))
+            root.remove(child)
+            joints.remove(joint)
+            root.remove(joint)
+            changed = True  # a link merged away might itself have been the parent of another such joint
+
+
 def main(urdf_in, out_dir, urdf_name):
     tree = ET.parse(urdf_in)
     root = tree.getroot()
 
-    # The generated name is the serial ("a300-0000"); USD would mangle it, so use a plain identifier.
-    root.set("name", "a300")
+    # The generated name is the serial (e.g. "a200-0000"); USD would mangle it, so use a plain identifier
+    # instead -- urdf_name is "<model>.urdf", so this also keeps each model's own name in its own USD.
+    root.set("name", urdf_name.removesuffix(".urdf"))
 
     for tag in ("gazebo", "ros2_control"):
         for el in list(root.findall(tag)):
             root.remove(el)
+
+    merge_visual_only_links(root)
 
     copied = {}
     for mesh in root.iter("mesh"):

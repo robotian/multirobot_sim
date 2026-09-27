@@ -1,0 +1,50 @@
+# Clearpath A300 configuration, shared by every robot assigned this model (ROBOT_MODEL=a300, see .env's
+# ROBOT_MODEL_<i>). Sibling files robot.a200/j100/r100.yaml.tmpl cover the other supported models.
+# The double-underscore placeholders (namespace, serial, domain, middleware) are filled in per robot by
+# robot/entrypoint.sh and scripts/gen_urdf.sh; the middleware is the one selected by FLEET_RMW in .env, the
+# domain by ROS_DOMAIN_ID. clearpath_generator_common's `generate_bash` turns this into /etc/clearpath/setup.bash
+# (see entrypoint.sh), exactly as it would on a real Clearpath robot.
+serial_number: __SERIAL__
+version: 0
+system:
+  hosts:
+    - hostname: cpr-__SERIAL__
+      ip: 192.168.131.1
+  ros2:
+    namespace: __NS__
+    domain_id: __DOMAIN__
+    middleware:
+      implementation: __RMW__
+    # The shared colcon workspace (see docker-compose.yml); generate_bash then sources it from setup.bash.
+    # Must be the *install* dir, not .../install/setup.bash or the workspace root: installed
+    # clearpath_generator_common 2.9.15 builds the path with `workspace.strip('setup.bash')`, which (being
+    # Python's character-set strip, not a substring removal) mangles most other spellings of this path.
+    workspaces:
+      - /home/robot/colcon_ws/install
+platform:
+  controller: ps4
+  battery:
+    model: S_24V20_U1
+    configuration: S1P2
+  attachments:
+    - name: front_bumper
+      type: a300.bumper
+      parent: front_bumper_mount
+    - name: rear_bumper
+      type: a300.bumper
+      parent: rear_bumper_mount
+    - name: top_plate
+      type: a300.top_plate
+sensors:
+  camera:
+    - model: intel_realsense
+      urdf_enabled: true
+      launch_enabled: false
+      parent: top_plate_link
+      xyz: [0.35, 0.0, 0.05]
+      rpy: [0.0, 0.0, 0.0]
+      ros_parameters:
+        intel_realsense:
+          camera_name: camera_0
+          device_type: d435i
+          serial_no: "0"

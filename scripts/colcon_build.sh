@@ -1,5 +1,5 @@
 #!/bin/bash
-# colcon build ~/colcon_ws in every running robot container, as the `robot` user.
+# colcon build ~/colcon_ws in every running robot container (a300_0000, j100_0001, ...), as the `robot` user.
 #
 #   scripts/colcon_build.sh                    # colcon build
 #   scripts/colcon_build.sh --symlink-install   # extra args are passed straight to colcon build
@@ -10,7 +10,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-mapfile -t robots < <(docker ps --format '{{.Names}}' | grep -E '^a300_[0-9]+$' | sort)
+mapfile -t robots < <(docker ps --format '{{.Names}}' | grep -E '^[a-z0-9]+_[0-9]{4}$' | sort)
 if [ ${#robots[@]} -eq 0 ]; then
     echo "no running robot containers (docker compose up -d first)" >&2
     exit 1

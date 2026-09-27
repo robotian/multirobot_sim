@@ -1,4 +1,6 @@
-# Robot-side container: stands in for the A300's onboard computer.
+# Robot-side container: stands in for a Clearpath robot's onboard computer. One image serves every supported
+# model (A300, A200, Jackal/j100, Ridgeback/r100, see ROBOT_MODEL in docker-compose.yml) -- they share the same
+# ROS packages, and only robot.yaml (rendered from the matching robot/config/robot.<model>.yaml.tmpl) differs.
 # ROS 2 Jazzy + Clearpath description stack + Foxglove bridge + GUI tools (rqt_image_view) + keyboard teleop (`camera_view`, `teleop` wrappers).
 FROM osrf/ros:jazzy-desktop-full
 
@@ -20,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gettext-base x11-apps \
     && rm -rf /var/lib/apt/lists/*
 
-COPY config/robot.yaml.tmpl config/a300.rviz.tmpl /opt/clearpath/
+COPY config/robot.a300.yaml.tmpl config/robot.a200.yaml.tmpl config/robot.j100.yaml.tmpl config/robot.r100.yaml.tmpl config/robot.rviz.tmpl /opt/clearpath/
 COPY entrypoint.sh /entrypoint.sh
 COPY bin/ /usr/local/bin/
 RUN chmod +x /entrypoint.sh /usr/local/bin/teleop /usr/local/bin/camera_view /usr/local/bin/robot_state /usr/local/bin/rviz /usr/local/bin/foxglove
@@ -35,8 +37,15 @@ RUN usermod -l robot -d /home/robot -m ubuntu && groupmod -n robot ubuntu \
 # run as root by default (entrypoint.sh needs it); use `docker exec -u robot -it <robot> bash` to build/edit as
 # the workspace owner.
 
-# `docker exec` shells bypass the entrypoint: source ROS for interactive (bashrc) and `bash -c` (BASH_ENV) shells.
-RUN echo 'source /opt/ros/jazzy/setup.bash' > /etc/ros_env.sh \
+# `docker exec` shells bypass the entrypoint: source ROS for interactive (bashrc) and `bash -c` (BASH_ENV)
+# shells. Prefer the real /etc/clearpath/setup.bash the entrypoint generates from robot.yaml (ROS + colcon_ws +
+# ROS_DOMAIN_ID/RMW_IMPLEMENTATION) once it exists; fall back to plain ROS for the brief window before it does.
+RUN printf '%s\n' \
+        'if [ -f /etc/clearpath/setup.bash ]; then' \
+        '    source /etc/clearpath/setup.bash' \
+        'else' \
+        '    source /opt/ros/jazzy/setup.bash' \
+        'fi' > /etc/ros_env.sh \
     && echo 'source /etc/ros_env.sh' >> /etc/bash.bashrc
 ENV RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
     QT_X11_NO_MITSHM=1 \
