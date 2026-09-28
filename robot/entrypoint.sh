@@ -39,10 +39,23 @@ else
     export ROBOT_SERIAL="${ROBOT_NAMESPACE//_/-}"
 fi
 mkdir -p /etc/clearpath
-sed -e "s/__NS__/${ROBOT_NAMESPACE}/g" -e "s/__SERIAL__/${ROBOT_SERIAL}/g" \
-    -e "s/__RMW__/${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}/g" \
-    -e "s/__DOMAIN__/${ROS_DOMAIN_ID:-0}/g" \
-    "/opt/clearpath/robot.${ROBOT_MODEL}.yaml.tmpl" > /etc/clearpath/robot.yaml
+# A real robot with its own robot_data/<id>/robot.yaml (bind-mounted read-only, see docker-compose.yml) is used
+# directly, unmodified -- no placeholder substitution needed at all, since its baked-in namespace/domain_id/
+# middleware/serial_number/workspaces already match this project's own conventions exactly (confirmed by
+# inspection: e.g. j100_0921's own robot.yaml already has namespace: j100_0921, domain_id: 0, middleware.
+# implementation: rmw_fastrtps_cpp, workspaces: [/home/robot/colcon_ws/install/setup.bash]). It doesn't set
+# system.localhost either, so clearpath_config's own default (this container's real OS hostname) is used --
+# that's ROBOT_HOSTNAME_<i> from docker-compose.yml, cpr-<model>-<serial>, which is valid *and* happens to equal
+# this robot's own system.hosts[0].hostname. A real robot id without its own robot_data folder (e.g. j100_0936,
+# whose folder isn't present) falls back to the existing stripped-down .tmpl path below, same as ever.
+if [[ "$ROBOT_MODEL" == *_* && -f "/robot_data/$ROBOT_MODEL/robot.yaml" ]]; then
+    cp "/robot_data/$ROBOT_MODEL/robot.yaml" /etc/clearpath/robot.yaml
+else
+    sed -e "s/__NS__/${ROBOT_NAMESPACE}/g" -e "s/__SERIAL__/${ROBOT_SERIAL}/g" \
+        -e "s/__RMW__/${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}/g" \
+        -e "s/__DOMAIN__/${ROS_DOMAIN_ID:-0}/g" \
+        "/opt/clearpath/robot.${ROBOT_MODEL}.yaml.tmpl" > /etc/clearpath/robot.yaml
+fi
 
 # robot.yaml's `workspaces` entry (see the template) needs its install dir to exist before anything can source
 # it; colcon_build.sh/colcon build normally provide a real one, but this covers a workspace nobody has built

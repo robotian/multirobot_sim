@@ -61,12 +61,33 @@ def dae_to_obj(text, dst):
                 if normals:
                     norms[k][axis] += normals[i * 3 + axis]
             remap.append(k)
-        for tri in mesh.iterfind("c:triangles", ns):
-            stride = 1 + max(int(i.get("offset")) for i in tri.iterfind("c:input", ns))
-            idx = [remap[int(v)] for v in tri.findtext("c:p", namespaces=ns).split()][::stride]
-            for a, b, c in zip(idx[0::3], idx[1::3], idx[2::3]):
-                if a != b and b != c and a != c:
-                    faces.add((a, b, c))  # keeps winding, drops exact duplicates
+        # <triangles> (uniform 3-vertex faces) and <polylist> (per-face vertex count in <vcount>, fan-
+        # triangulated here) are both handled the same way once split into per-face vertex-index groups --
+        # velodyne_description's own VLP16 meshes use <polylist> (confirmed: every <vcount> entry is 3, i.e.
+        # already all-triangle, but fan-triangulating is correct even if a future mesh has real n-gons).
+        for tag in ("c:triangles", "c:polylist"):
+            for prim in mesh.iterfind(tag, ns):
+                inputs = list(prim.iterfind("c:input", ns))
+                stride = 1 + max(int(i.get("offset")) for i in inputs)
+                vert_offset = next(int(i.get("offset")) for i in inputs if i.get("semantic") == "VERTEX")
+                # Slice out just the VERTEX-offset values *before* remapping: the interleaved <p> list also
+                # carries e.g. NORMAL indices, which can run over a larger range than the position/remap array
+                # (found on top_assy_rev1.dae -- d435.dae happened to index normals 1:1 with positions, masking
+                # this).
+                raw = [int(v) for v in prim.findtext("c:p", namespaces=ns).split()]
+                idx = [remap[v] for v in raw[vert_offset::stride]]
+                if tag == "c:triangles":
+                    polys = [idx[i:i + 3] for i in range(0, len(idx), 3)]
+                else:
+                    vcounts = [int(v) for v in prim.findtext("c:vcount", namespaces=ns).split()]
+                    polys, off = [], 0
+                    for n in vcounts:
+                        polys.append(idx[off:off + n])
+                        off += n
+                for poly in polys:
+                    for a, b, c in zip([poly[0]] * (len(poly) - 2), poly[1:-1], poly[2:]):  # fan triangulation
+                        if a != b and b != c and a != c:
+                            faces.add((a, b, c))  # keeps winding, drops exact duplicates
     lines = [f"mtllib {name}.mtl", "usemtl body"]
     lines += ["v %g %g %g" % tuple(c / n for c in v) for v, n in zip(verts, counts)]
     if has_normals:
@@ -92,6 +113,11 @@ def copy_mesh(src, dst):
         shutil.copy2(src, dst)
         return dst
     text = open(src, encoding="utf-8").read()
+    # velodyne_description's own shipped VLP16 meshes (base_1/base_2/scan) use the literal, unescaped string
+    # "<STL_BINARY>" as a node id/name -- invalid XML (a bare "<"/">" inside an attribute value), not this
+    # project's own asset. A real upstream authoring bug, confirmed identical across all three files; only this
+    # exact placeholder token is broken (checked directly, not assumed), so a narrow substitution is enough.
+    text = text.replace("<STL_BINARY>", "STL_BINARY")
     if "Blender" not in text[:2000]:
         dst = dst[:-4] + ".obj"
         dae_to_obj(text, dst)
@@ -130,6 +156,38 @@ def _matrix_to_origin(m):
         yaw = 0.0
         roll = math.atan2(-m[1][2], m[1][1])
     return f"{m[0][3]:.9g} {m[1][3]:.9g} {m[2][3]:.9g}", f"{roll:.9g} {pitch:.9g} {yaw:.9g}"
+
+
+def prune_dangling_joints(root):
+    """Drop any joint (and its whole child subtree) whose <parent> link was never actually defined.
+
+    Found on j100_0922: mtu32_description's own robot_description_j100.urdf.xacro unconditionally mounts a
+    second camera (camera_1, a RealSense D405) on arm_0_end_effector_link, assuming every Jackal running this
+    xacro has the Kinova arm -- but this real robot's own robot.yaml has its whole manipulators.arms section
+    commented out (no arm at all), so clearpath_config never defines that link anywhere. xacro is a pure
+    text/macro processor with no semantic validation, so a dangling <parent> reference like this reaches the
+    flattened URDF unnoticed -- Isaac's importer would choke on it (the same class of "joint references an
+    undefined link" bug this project has hit before with a stripped-template's top_mount_link, just from the
+    opposite direction: a missing *parent* here, a missing *child* there). Not specific to this one robot/link
+    -- a general defensive pass, in case a future real robot.yaml hits the same kind of upstream assumption
+    elsewhere.
+    """
+    changed = True
+    while changed:
+        changed = False
+        link_names = {link.get("name") for link in root.findall("link")}
+        for joint in root.findall("joint"):
+            parent_name = joint.find("parent").get("link")
+            if parent_name in link_names:
+                continue
+            child_name = joint.find("child").get("link")
+            child = next((link for link in root.findall("link") if link.get("name") == child_name), None)
+            print(f"dropping joint {joint.get('name')!r}: parent {parent_name!r} is never defined as a link")
+            root.remove(joint)
+            if child is not None:
+                root.remove(child)
+            changed = True  # removing this link may orphan another joint that used it as *its* parent
+            break
 
 
 def merge_visual_only_links(root):
@@ -205,6 +263,7 @@ def main(urdf_in, out_dir, urdf_name):
         for el in list(root.findall(tag)):
             root.remove(el)
 
+    prune_dangling_joints(root)
     merge_visual_only_links(root)
 
     copied = {}

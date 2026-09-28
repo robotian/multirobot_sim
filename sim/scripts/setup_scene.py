@@ -51,7 +51,7 @@ MODEL_ASSETS = {
         "usd_dir": f"/sim/generated/{m}",
         "usd_path": f"/sim/generated/{m}/{m}/{m}.usda",
     }
-    for m in ("a300", "a200", "j100", "r100", "j100_0921", "j100_0936")
+    for m in ("a300", "a200", "j100", "r100", "j100_0921", "j100_0936", "a200_0333", "a300_00036", "j100_0922")
 }
 
 # Decorative lavender plants (SM_Lavender_Nanite_01.usd, default prim /Root). The asset's own layer is
@@ -111,14 +111,9 @@ MODEL_PARAMS = {
         wheel_axis=[0.0, 1.0, 0.0], mecanum_angles=[-135.0, -45.0, -45.0, -135.0],
         max_linear=1.3, max_angular=4.0,
     ),
-    # Real MTU robots (robot.j100_0921/0936.yaml.tmpl, derived from robot_data/<serial>/robot.yaml -- see those
-    # templates' own header comments for what's kept/dropped from the real config). chassis_link="base_link"
-    # matches generic j100's precedent (fenders get merged into base_link by merge_visual_only_links, moving
-    # the articulation root there) -- re-verified directly via UsdPhysics.ArticulationRootAPI after import, not
-    # assumed, same as every other model here. wheel_radius/separation_multiplier/max_linear/max_angular are
-    # this specific robot's own real calibrated values (platform.extras.ros_parameters.platform_velocity_
-    # controller in the real robot.yaml, dropped from the generated config itself -- see the template -- but
-    # kept here): wheel_radius = generic j100's 0.098 * the real left/right_wheel_radius_multiplier (0.95, both
+    # Real MTU robots. wheel_radius/separation_multiplier/max_linear/max_angular are this specific robot's own
+    # real calibrated values (platform.extras.ros_parameters.platform_velocity_controller in the real
+    # robot.yaml): wheel_radius = generic j100's 0.098 * the real left/right_wheel_radius_multiplier (0.95, both
     # sides equal); wheel_separation is the same physical constant as generic j100 (a hardware geometry fact,
     # not something the real robot's software recalibrates); separation_multiplier 1.17 *replaces* generic
     # j100's 1.5 (the real robot.yaml's value is the actual calibrated one, not an additional factor on top);
@@ -131,32 +126,92 @@ MODEL_PARAMS = {
     # dual SwiftNav Duro GPS, and a Kinova Gen3 Lite arm + 2F Lite gripper; j100_0936 additionally has the real
     # SICK LMS1xx 2D lidar the real 0921 doesn't carry (lidar2d_link is None there) -- though add_lidar2d
     # currently does nothing with it regardless of model, since the only 2D-lidar pipeline this Isaac Sim
-    # version has (RTX Lidar) is broken in this specific install; see add_lidar2d's own docstring. imu_link is chassis_link,
-    # not the URDF's own imu_1_link (the real sensor's actual mount point) -- imu_1_link is visual-only (no
-    # collision/inertial), and so is every link on its way up to the chassis (imu_1_base_link, top_mount_link,
-    # default_mount), so merge_visual_only_links' cascading merge (see that function's own docstring) folds the
-    # whole chain, one level at a time, all the way into chassis_link -- confirmed live in the final flattened
-    # URDF, not assumed from the raw per-link check alone. Physically harmless (chassis_link ends up owning the
-    # correctly-recomposed combined origin), just a different mount *name* than the raw URDF suggested.
-    # gps_1/2_link both have real collision so they're untouched and keep their own names; top_shelf_link (no
-    # collision/inertial, but also no <visual> of its own to fold) survives too, just re-parented onto
-    # chassis_link once top_mount_link/default_mount above it were removed -- same re-pointing logic that
-    # already handles a merged link being *itself* some other joint's parent (see merge_visual_only_links).
-    # Also found and fixed at the same time (see the templates' own "top_mount" comment): the real robot.yaml's
-    # sensors.imu[0] and links.frame.top_shelf both reference parent: top_mount_link, but nothing in the *real*
-    # config ever defines it -- only the unavailable mtu32_description custom xacro did.
+    # version has (RTX Lidar) is broken in this specific install; see add_lidar2d's own docstring.
+    #
+    # j100_0921 now generates from its own real robot_data/j100_0921/robot.yaml directly (see robot/entrypoint.sh
+    # and scripts/gen_urdf.sh), with platform.extras (mtu32_description's own custom xacro) genuinely built and
+    # included -- no more stripped-template workaround, and no more fake top_mount->default_mount alias link
+    # (mtu32_description's xacro genuinely defines top_mount_link, real mesh + collision, parented on
+    # default_mount). That changes imu_link from the previous chassis_link: imu_1_link/imu_1_base_link (the
+    # sensor's own mount, still visual-only) now merge only as far up as the real top_mount_link (which has real
+    # collision so merge_visual_only_links stops there, unlike before when the whole chain up to chassis_link was
+    # visual-only and got merged away entirely) -- confirmed in the actual flattened URDF (grep for "imu_1": no
+    # remaining reference, i.e. fully merged; top_shelf_link's own joint parent is top_mount_link directly, not
+    # chassis_link), not assumed. chassis_link is still base_link (fenders are unchanged; re-confirmed live via a
+    # successful drive test with no "Articulation controller failed" error). camera_optical_link/gps_links/
+    # has_arm are unaffected -- they come from clearpath_sensors_description's own sensor macros, unrelated to
+    # mtu32_description.
     "j100_0921": dict(
         chassis_link="base_link", drive="diff", wheel_radius=0.098 * 0.95, wheel_separation=0.37559, separation_multiplier=1.17,
         max_linear=1.0, max_angular=1.0,
         camera_optical_link="camera_0_left_camera_frame_optical",
-        imu_link="chassis_link", gps_links=["gps_1_link", "gps_2_link"], has_arm=True,
+        imu_link="top_mount_link", gps_links=["gps_1_link", "gps_2_link"], has_arm=True,
     ),
+    # j100_0936 still uses the old stripped robot.j100_0936.yaml.tmpl (platform.extras dropped, fake
+    # top_mount->default_mount alias) -- its own robot_data folder isn't available to migrate it the same way
+    # j100_0921 was; out of scope until it reappears or this is asked for specifically. imu_link is chassis_link
+    # here for that reason (see the merge-chain explanation this comment used to carry for both robots): imu_1_
+    # link and every link up to the chassis (imu_1_base_link, the *fake* top_mount_link, default_mount) are all
+    # visual-only, so merge_visual_only_links folds the whole chain into chassis_link.
     "j100_0936": dict(
         chassis_link="base_link", drive="diff", wheel_radius=0.098 * 0.95, wheel_separation=0.37559, separation_multiplier=1.17,
         max_linear=1.0, max_angular=1.0,
         camera_optical_link="camera_0_left_camera_frame_optical",
         imu_link="chassis_link", gps_links=["gps_1_link", "gps_2_link"], has_arm=True,
         lidar2d_link="lidar2d_0_laser",
+    ),
+    # Two more real MTU robots, same "use the real robot_data/<serial>/robot.yaml directly" pipeline as
+    # j100_0921 -- unlike the Jackals, neither references any private package (a200_0333's platform.extras.urdf
+    # is an empty {}; a300_00036 has no extras key at all), so there was no missing-package workaround to retire
+    # and no fake link to alias; generate_description succeeded first try. Drivetrain (wheel_radius/separation/
+    # separation_multiplier/max_linear/max_angular) is identical to the generic a200/a300 entries above -- neither
+    # real robot.yaml has a platform_velocity_controller override the way the real Jackals do, so there's no
+    # recalibrated value to carry.
+    #
+    # a200_0333: camera is a plain "d435" (not "d435i" like every other model here) via sensors.camera + a
+    # mounts.fath_pivot adapter (a Clearpath mount type not seen elsewhere in this project) -- still produces the
+    # same camera_0_link name add_camera's default (hand-built optical frame) path already expects, confirmed in
+    # the flattened URDF, so no camera_optical_link override needed, same code path as the 4 generic models.
+    # lidar2d (hokuyo_ust) and lidar3d (velodyne VLP16, a new sensor category -- see add_lidar3d) are both
+    # present in the URDF but neither is simulated: both are RTX Lidar in this Isaac Sim version, and that whole
+    # extension is broken in this specific install (see add_lidar2d's own docstring) -- not specific to 2D lidar.
+    "a200_0333": dict(
+        chassis_link="base_link", drive="diff", wheel_radius=0.1651, wheel_separation=0.555, separation_multiplier=1.875,
+        max_linear=1.0, max_angular=1.0,
+        lidar2d_link="lidar2d_0_laser", lidar3d_link="lidar3d_0_laser",
+    ),
+    # a300_00036: only sensor is a phidgets_spatial IMU (parent: base_link in the real robot.yaml) -- no camera
+    # at all (has_camera=False guards add_camera/build_ros_graph's camera wiring, since find_prim would otherwise
+    # raise looking for a nonexistent camera_0_link). imu_link is base_link directly, not chassis_link: the
+    # sensor's own link (imu_0_link -- a300 has no separate "platform default" imu_0 the way j100 does, so the
+    # explicit sensor takes that slot) is visual-only with no separate mount chain above it, so
+    # merge_visual_only_links folds it straight into its own direct parent, base_link -- confirmed in the
+    # flattened URDF (no "imu" string survives; base_link's own <visual> is the merged sensor's box geometry).
+    # chassis_link="base_link", NOT generic a300's "chassis_link" -- caught live (not assumed), same class of bug
+    # as a200's inertial_link case and j100's fender-merge case: giving base_link real visual content it didn't
+    # have before (the merged IMU box) was enough to flip the importer's articulation root there too. First
+    # attempt at the generic a300 value hit "Articulation controller failed for prim '.../base_link/
+    # chassis_link'" with no import-time warning, exactly the documented failure signature for this class of bug.
+    "a300_00036": dict(
+        chassis_link="base_link", drive="diff", wheel_radius=0.1625, wheel_separation=0.562, separation_multiplier=1.75,
+        max_linear=2.0, max_angular=2.0,
+        has_camera=False, imu_link="base_link",
+    ),
+    # j100_0922: same real robot.yaml lineage as j100_0921 (identical camera/IMU/GPS/links sections, same
+    # platform_velocity_controller values) but with its entire manipulators.arms section commented out -- no
+    # arm/gripper at all, so has_arm is omitted (falsy) and configure_arm_drives is never called for it.
+    # chassis_link/imu_link are the same as j100_0921 for the same reasons (identical URDF structure otherwise,
+    # re-verified live via drive test since chassis_link has flipped on unrelated-looking changes before).
+    # Real upstream bug found generating this one, fixed in scripts/flatten_urdf.py (prune_dangling_joints, not
+    # specific to this robot): mtu32_description's own xacro unconditionally mounts a second camera (camera_1,
+    # a RealSense D405) on arm_0_end_effector_link, assuming every Jackal running it has the Kinova arm -- with
+    # no arm here, that link is never defined anywhere, leaving camera_1's mount joint (and its own child joint)
+    # dangling references that Isaac's importer would have choked on; both are now dropped during flattening.
+    "j100_0922": dict(
+        chassis_link="base_link", drive="diff", wheel_radius=0.098 * 0.95, wheel_separation=0.37559, separation_multiplier=1.17,
+        max_linear=1.0, max_angular=1.0,
+        camera_optical_link="camera_0_left_camera_frame_optical",
+        imu_link="top_mount_link", gps_links=["gps_1_link", "gps_2_link"],
     ),
 }
 
@@ -391,6 +446,18 @@ IMPORT_SETTINGS = {
     "joint_drive_type": "force",
     "override_joint_stiffness": 0.0,
     "override_joint_damping": 1000.0,
+    # All models creep forward very slowly at rest (Diff.outputs:velocityCommand genuinely [0, 0], confirmed live
+    # via FLEET_DEBUG=1) -- worse on j100_0921/j100_0936 (heavier, full arm + sensor loadout) than plain j100
+    # (~0.012m vs ~0.005m over 8s), but present even on the light, arm-less model, so it scales with mass/
+    # complexity rather than being specific to those two. Tried raising this damping (a force-drive, velocity-
+    # target, zero-stiffness joint's holding torque against a disturbance is damping * (targetVelocity -
+    # currentVelocity), which is also what should resist creep at targetVelocity=0) to 10x and 100x -- zero
+    # measurable effect at either, ruling out "insufficient holding torque" as the mechanism. Left at the
+    # original value; the creep looks like a small, universal contact/substep convergence characteristic of this
+    # sim rather than something this parameter controls -- not chased further without a next concrete lever to
+    # try (a PHYSICS_HZ/substep change, or PhysX solver iteration counts, are the more likely next places to
+    # look if this needs solving).
+
     # The URDF root (base_link) has no inertia, so the generated chassis joint would pin the chassis to the
     # world. Floating base = the robot is free to drive.
     "fix_base": False,
@@ -563,6 +630,19 @@ def add_lidar2d(stage, robot_root, ns, params):
     not a bug here. lidar2d_link is still read from MODEL_PARAMS (documents which real sensor this would be)
     but nothing is created; j100_0936 simply doesn't publish a 2D lidar scan for now. Revisit if a fixed/updated
     Isaac Sim build resolves the extension.
+    """
+    return
+
+
+def add_lidar3d(stage, robot_root, ns, params):
+    """a200_0333's real Velodyne VLP16 -- currently disabled, same reason as add_lidar2d.
+
+    3D lidar in this Isaac Sim version is also RTX Lidar (the same isaacsim.sensors.rtx/experimental.rtx
+    extension, just a different profile -- VLP16 is one of Isaac's own standard example profiles, unlike the
+    SICK LMS1xx which would have needed a custom-authored one). Since the extension itself fails to import
+    during Kit's own native startup regardless of profile, this is blocked the same way add_lidar2d is; see that
+    function's own docstring for the full explanation. lidar3d_link is still read from MODEL_PARAMS as
+    documentation of which real sensor this would be.
     """
     return
 
@@ -949,9 +1029,11 @@ async def main():
         build_world(stage)
         for i, (ns, model) in enumerate(ROBOTS):
             root = spawn_robot(stage, ns, model, i, len(ROBOTS))
-            optical_link = MODEL_PARAMS[model].get("camera_optical_link")
-            hfov = ZED_HFOV_DEG if optical_link else HFOV_DEG
-            cam_path = add_camera(stage, root, optical_link=optical_link, hfov_deg=hfov)
+            cam_path = None
+            if MODEL_PARAMS[model].get("has_camera", True):
+                optical_link = MODEL_PARAMS[model].get("camera_optical_link")
+                hfov = ZED_HFOV_DEG if optical_link else HFOV_DEG
+                cam_path = add_camera(stage, root, optical_link=optical_link, hfov_deg=hfov)
 
             log(f"spawned {ns} ({model}) at {root}")
             for _ in range(3):
@@ -959,6 +1041,7 @@ async def main():
             chassis = find_prim(stage, root, MODEL_PARAMS[model]["chassis_link"])
             build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, MODEL_PARAMS[model])
             add_lidar2d(stage, root, ns, MODEL_PARAMS[model])
+            add_lidar3d(stage, root, ns, MODEL_PARAMS[model])
             if MODEL_PARAMS[model].get("has_arm"):
                 configure_arm_drives(stage, root)
         aim_viewport()

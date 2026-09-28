@@ -235,3 +235,247 @@ User report: `docker exec -it j100_0921 rviz` opens the window and renders the r
 - **Fix**: added a `Tools:` section to `robot/config/robot.rviz.tmpl` (sibling to `Panels`/`Visualization Manager`, not nested under either) with `rviz_default_plugins/Interact` (the actual camera-control tool: left-drag orbit, shift+left-drag/middle-drag pan, scroll zoom) and `rviz_default_plugins/MoveCamera` (the classic dedicated camera-only tool, matching rviz2's own standard default toolbar rather than a cut-down one). No container restart needed — `robot/bin/rviz` regenerates `/tmp/robot.rviz` from the template fresh via `sed` on every invocation, so re-running `docker exec -it j100_0921 rviz` alone picked up the fix.
 - **User confirmed live, after also separately adding the MoveCamera tool**: "after i added 'move camera' tool. it works." Mouse-driven orbit/pan/zoom now functions through the `rviz` wrapper.
 - Files touched: `robot/config/robot.rviz.tmpl` (`Tools:` section added), `docker-compose.yml` (`/dev/dri` passthrough, kept as a real improvement though not the fix). GPU passthrough and xauth fixes are real, standing improvements even though the mouse-control bug itself was the RViz config's missing `Tools:` section.
+
+## Addendum: j100_0921 now uses its real robot.yaml directly, `mtu32_description` built and included
+
+User: "let's make big change. instead of using the config generation from robot.xxx.yaml.tmpl, use the real
+robot.yaml directly for the model generation and the robot container... start with a single robot, j100_0921."
+They had colcon-built `mtu32_husky` (a small repo with just `mtu32_description`+`mtu32_bringup`, MTU's private
+lab packages `platform.extras` needs) into the top-level `colcon_ws` already, and copied its source into a new
+`sim/colcon_ws/src/` for the host-side generation pipeline to build separately. Planned first (touches the
+generation pipeline in three places), then implemented and verified against the live stack.
+
+- **Inspected the real `robot_data/j100_0921/robot.yaml` before writing any code**: its baked-in
+  `namespace: j100_0921`/`domain_id: 0`/`middleware.implementation: rmw_fastrtps_cpp`/`workspaces:
+  [/home/robot/colcon_ws/install/setup.bash]` already match this project's own conventions exactly — meaning
+  **no placeholder substitution is needed at all** for this file, unlike every other model. It also doesn't set
+  `system.localhost`, so `clearpath_config`'s own default (this container's real OS hostname) applies — and
+  that's already `cpr-j100-0921` from the `ROBOT_HOSTNAME_<i>` fix two addenda ago, which is not only valid but
+  *exactly* this robot's own `system.hosts[0].hostname`. Zero extra hostname work needed for this change.
+- **`docker-compose.yml`**: added `./robot_data:/robot_data:ro` to the `x-robot` volumes anchor (the Dockerfile's
+  build context is `./robot`, which can't reach `robot_data/` at the repo root, so this has to be a runtime bind
+  mount, not a build-time `COPY`).
+- **`robot/entrypoint.sh`** and **`scripts/gen_urdf.sh`** each gained the identical branch: if a model id
+  contains `_` and `/robot_data/<id>/robot.yaml` exists, `cp` it straight to the destination (no `sed`);
+  otherwise the existing `.tmpl` path is unchanged (still covers `j100_0936`, whose own `robot_data` folder
+  isn't currently present, and the 4 generic models). `gen_urdf.sh` also colcon-builds `sim/colcon_ws` (its own
+  separate copy, not the runtime one) and sources its `install/setup.bash` before `generate_description` —
+  **first real bug hit**: `colcon build`'s own `build`/`install`/`log` dirs are relative to *cwd*, not
+  `--base-paths`, so the first attempt failed with `PermissionError` trying to create `log/...` in the
+  container's default working directory; fixed with `(cd /colcon_ws && colcon build)`.
+- **Deleted `robot/config/robot.j100_0921.yaml.tmpl`** (superseded) and dropped it from `robot/Dockerfile`'s
+  `COPY config/robot.*.yaml.tmpl` line. `robot.j100_0936.yaml.tmpl` untouched.
+- **Second real bug, found running `gen_urdf.sh` for the first time with `platform.extras` actually included**:
+  `scripts/flatten_urdf.py`'s `dae_to_obj` (the manual Collada merger for non-Blender-exported meshes, previously
+  only ever exercised by the D435i's `d435.dae`) crashed with `IndexError` converting `top_mount_link`'s real
+  mesh (`top_assy_rev1.dae`, mtu32_description's own asset, 535k triangles). Root cause, found by inspecting the
+  file's actual `<triangles>` structure rather than guessing: the code remapped *every* value in a `<triangles>`
+  element's interleaved `<p>` index list (which carries VERTEX *and* NORMAL indices together) through the
+  position-only `remap` table, then sliced out just the VERTEX-offset ones *afterward* — so any NORMAL index
+  numerically larger than the vertex count threw `IndexError`. `d435.dae` happened to index normals 1:1 with
+  positions (same count, same range), which is why this was never hit before. Fixed by slicing to the VERTEX
+  input's own declared `offset` *before* remapping, not after.
+- **Verified generate_description + xacro succeed** with `platform.extras` genuinely included (no more stripped
+  config) — confirmed the flattened URDF gained `top_mount_link` (real mesh + collision this time, parented on
+  `default_mount`, no longer needing the old fake `top_mount`→`default_mount` alias link) and `camera_1` (a
+  RealSense D405 the xacro adds unconditionally on `arm_0_end_effector_link` — inert geometry only, since
+  `sensors.camera`'s `intel_realsense` entry is still commented out in the real robot.yaml).
+- **Re-verified `MODEL_PARAMS["j100_0921"]` against the new URDF shape, not assumed** (this project's own
+  established practice, since a URDF shape change has silently flipped `chassis_link`/sensor mount points
+  before): `chassis_link="base_link"` unaffected — confirmed via a successful drive test with no "Articulation
+  controller failed" error (same live check as every other model, not `UsdPhysics.ArticulationRootAPI`
+  inspection this time, but equally decisive). `imu_link` **did** change: since `top_mount_link` now has real
+  collision, `merge_visual_only_links`' cascading merge for `imu_1_link`/`imu_1_base_link` (still visual-only)
+  now stops there instead of continuing all the way to `chassis_link` like before — confirmed in the flattened
+  URDF (no `imu_1` string survives anywhere; `top_shelf_link`'s own joint parent is `top_mount_link` directly)
+  and changed `imu_link` from `"chassis_link"` to `"top_mount_link"`. `camera_optical_link`/`gps_links`/`has_arm`
+  unaffected (come from `clearpath_sensors_description`'s own macros, unrelated to `mtu32_description`).
+- **Full functional re-verification on a clean spawn** (`FORCE_REIMPORT=1` for the first restart, since the USD
+  cache needed invalidating for the URDF shape change; a plain restart after the `imu_link` code fix, no
+  re-import needed since only Python changed): no FATAL, fresh "simulation running"; `docker exec j100_0921 diff
+  /robot_data/j100_0921/robot.yaml /etc/clearpath/robot.yaml` identical (confirms the real file really is used
+  unmodified, not a lightly-templated copy); slow single-direction `drive_test.py` (0.15 m/s, per two addenda
+  ago's lesson) gave correct non-zero displacement; IMU `linear_acceleration.z ≈ 9.8` (real gravity, not
+  zero/garbage) from the new `top_mount_link` mount point; both GPS units near the MTU origin (~47.1211); camera
+  publishing 640-wide frames; `platform/joint_states` shows all 4 wheel + 6 arm + 4 gripper joints.
+- **`.gitignore`**: added `sim/colcon_ws/build|install|log` (mirroring the existing `colcon_ws` pattern) and, for
+  visibility rather than a silent decision, `robot_data/` and `sim/colcon_ws/` in full — both hold large, private
+  lab material (`mtu32_husky` ~157MB, `robot_data` ~5.5GB) that had been manually excluded from commits rather
+  than actually gitignored until now.
+- **Deliberately out of scope, not touched**: `j100_0936` (its own `robot_data` folder isn't currently present)
+  stays on the old stripped-template path; `a200_0333`/`a300_00036` (two new real-robot `robot_data` folders the
+  user also dropped in) aren't wired into `MODEL_ASSETS`/`MODEL_PARAMS`/`gen_urdf.sh`'s `MODELS` list at all yet
+  — per the user's own explicit scope ("start with a single robot, j100_0921").
+- **Known follow-up, not chased in this pass**: `top_assy_rev1.obj`'s 535k triangles barely reduce under the
+  existing `DECIMATE_CELL` (0.001 m) — much heavier than anything else in this project's models (the D435i's own
+  tuned budget is 17k). Worth an fps check and possibly a coarser cell for this specific mesh if it turns out to
+  cost noticeably more.
+- `.env` was already at `NUM_ROBOTS=1`/`ROBOT_MODEL_0=j100_0921` (no `ROBOT_MODEL_1`) when this session started —
+  apparently the user's own doing, matching their "start with a single robot" scope exactly — left as-is, not
+  restored to the prior 2-robot fleet.
+- Files touched: `docker-compose.yml` (`robot_data` volume mount), `robot/entrypoint.sh` (direct-copy branch),
+  `scripts/gen_urdf.sh` (colcon build + direct-copy branch), `robot/Dockerfile` (dropped the retired template's
+  `COPY`), `scripts/flatten_urdf.py` (`dae_to_obj` VERTEX-offset fix), `sim/scripts/setup_scene.py`
+  (`MODEL_PARAMS["j100_0921"]["imu_link"]` + comment split from `j100_0936`'s), `.gitignore`, CLAUDE.md. Deleted
+  `robot/config/robot.j100_0921.yaml.tmpl`.
+
+## Addendum: slow forward creep at rest, investigated -- not caused by today's work, damping ruled out as the fix
+
+User: "the jackal is slowly moving forward without any cmd_vel input." Investigated live rather than guessing.
+
+- **Confirmed real, not a stray publisher**: `FLEET_DEBUG=1`'s own existing debug loop (already reads
+  `CmdVel.outputs:linearVelocity/angularVelocity`/`Diff.outputs:velocityCommand` live) showed all three
+  genuinely `[0, 0(, 0)]` while the robot was visibly creeping -- the drive graph really is commanding zero, so
+  this is a physics-level issue, not a leftover command.
+- **Confirmed not caused by this session's j100_0921 pipeline change**: `j100_0936` (untouched, still on the old
+  stripped-template path, no `top_mount_link`/`mtu32_description`) drifts at essentially the same rate
+  (~0.02m/6s) when spawned and left idle -- ruling out today's work as the cause before touching any code.
+- **Tried raising `IMPORT_SETTINGS["override_joint_damping"]`** (the force-drive/velocity-target/zero-stiffness
+  wheel joints' only real "holding torque" parameter: damping × (targetVelocity − currentVelocity), which at
+  targetVelocity=0 is also what should resist an external disturbance at rest) from 1000 → 10000 → 100000 (two
+  full re-imports, since this setting is part of the USD import stamp and triggers automatic re-conversion) --
+  **zero measurable effect at either step** (~0.011-0.012m/8s at all three values), decisively ruling out
+  "insufficient holding torque" as the mechanism, not just an unlucky choice of value. Reverted to the original
+  1000 (no evidence a higher value helps, and no reason to carry an untested 100x change with unknown side
+  effects elsewhere).
+- **Checked whether this is universal, not just these two heavier robots**: plain generic `j100` (no arm, much
+  lighter) also creeps at rest, just slower (~0.005m/8s vs ~0.011-0.012m/8s) -- present even on the lightest,
+  simplest model in this sim, scaling with mass/complexity rather than being specific to the real MTU robots'
+  arm/sensor loadout. Points at a small, universal contact/substep-convergence characteristic of this sim's
+  physics setup rather than anything in this project's own OmniGraph wheel-drive wiring.
+- **Left unsolved, documented as a known low-priority characteristic** (`IMPORT_SETTINGS`'s own comment in
+  `setup_scene.py` now records this investigation and its negative result) -- next concrete levers to try if
+  revisited: `PHYSICS_HZ`/substep count, or PhysX solver iteration counts, neither of which were touched this
+  session since damping was the more obviously-relevant parameter and testing it first was cheap and decisive.
+- **Process note, own mistake caught and fixed within this same investigation**: reverting `ROBOT_MODEL_0` back
+  to `j100_0921` in `.env` via a direct `docker compose up -d --force-recreate isaac-sim robot0` (not
+  `scripts/fleet.sh`) left the container named `j100_0921_0000` -- `ROBOT_SUFFIX_0`/`ROBOT_HOSTNAME_0` only get
+  resynced by `fleet.sh`'s own loop, exactly the failure mode its comments already warn about. Caught
+  immediately by checking `docker ps` rather than assuming, fixed by actually running `scripts/fleet.sh 1`.
+- Ended back at the user's exact prior state: `NUM_ROBOTS=1`, `ROBOT_MODEL_0=j100_0921`, container/hostname
+  correctly `j100_0921`/`cpr-j100-0921`, drive re-verified working.
+- Files touched: `sim/scripts/setup_scene.py` (`IMPORT_SETTINGS` comment only, value unchanged from before this
+  addendum).
+
+## Addendum: two more real MTU robots wired up (a200_0333, a300_00036)
+
+User: "make the other robots in the robot_data folder work" — `robot_data/` had gained two new folders
+(`a200_0333`, `a300_00036`; `j100_0936`'s own folder is still gone) alongside `j100_0921`. Since the generic
+"real `robot.yaml` used directly" pipeline built for `j100_0921` was already fully model-agnostic (branches on
+"does `/robot_data/<id>/robot.yaml` exist", no `j100_0921`-specific code), this was mostly wiring + verification,
+not new infrastructure — done one robot at a time, matching this project's established practice.
+
+- **Neither references a private package** (`a200_0333`'s `platform.extras.urdf` is an empty `{}`;
+  `a300_00036` has no `extras` key at all) — `generate_description` succeeded first try for both, no
+  missing-package workaround needed, unlike `j100_0921`'s `mtu32_description`.
+- **Two real bugs found and fixed in `scripts/gen_urdf.sh`'s output path, both upstream/generic, not
+  robot-specific**:
+  1. `scripts/flatten_urdf.py`'s `dae_to_obj`: `a200_0333`'s Velodyne VLP16 3D lidar meshes
+     (`velodyne_description`'s own shipped `.dae` files) failed to even XML-parse — `ET.fromstring` raised
+     `not well-formed (invalid token)`. Root cause, found by testing each referenced mesh individually rather
+     than guessing: the file uses the literal, unescaped string `<STL_BINARY>` as a Collada node id/name (a
+     genuine upstream authoring bug in the apt package, confirmed identical across all three VLP16 mesh files).
+     Fixed with a narrow text substitution (`<STL_BINARY>` → `STL_BINARY`) before XML parsing.
+  2. Once parseable, the same three meshes converted to **0 triangles** — `dae_to_obj` only ever handled
+     `<triangles>` elements, and these STL-derived meshes use `<polylist>` instead (confirmed: every `<vcount>`
+     entry is 3, i.e. already all-triangle, just encoded differently). Rewrote the face-extraction loop to
+     handle both `<triangles>` and `<polylist>` uniformly (fan-triangulating using `<vcount>`, correct even for
+     a real n-gon, not just this all-triangle case) — meshes now convert to real triangle counts (1009/616/104).
+- **`sim/scripts/setup_scene.py` changes**: `MODEL_ASSETS`/`MODEL_PARAMS` entries for both, reusing the generic
+  a200/a300 drivetrain constants unchanged (neither real robot.yaml has a `platform_velocity_controller`
+  override the way the real Jackals do). New pattern needed for the first time: **`a300_00036` has no camera at
+  all** (only an IMU) — `add_camera`/`build_ros_graph`'s camera wiring were previously called unconditionally
+  for every robot, which would have crashed (`find_prim` raising on a nonexistent `camera_0_link`); added a
+  `has_camera` `MODEL_PARAMS` flag (default `True`, so every existing model is unaffected) guarding the call in
+  `main()`, passing `cam_path=None` when absent (a path `build_ros_graph` already handled). Added a symmetric
+  `add_lidar3d` no-op (same broken `isaacsim.sensors.rtx` extension as the existing `add_lidar2d`, just a
+  different lidar profile — 3D lidar is the same RTX Lidar pipeline, not a separate one) for `a200_0333`'s
+  Velodyne, and wired its call site into `main()`'s spawn loop.
+- **`a200_0333`'s camera is a plain "d435" (not "d435i" like every other model in this project)**, mounted via
+  `sensors.camera` + a `mounts.fath_pivot` adapter — a Clearpath mount type not seen elsewhere here. Verified in
+  the flattened URDF that it still produces the same `camera_0_link` name `add_camera`'s existing default
+  (hand-built optical frame) path already expects, so no code change or `camera_optical_link` override was
+  needed — same code path as the 4 generic models, not the ZED2i's special-cased one.
+- **Real bug, found live, same class already documented twice in this project (a200's `inertial_link`, j100's
+  fender-merge)**: `a300_00036` first tried with generic a300's own `chassis_link="chassis_link"` — hit
+  `Articulation controller failed for prim '.../base_link/chassis_link'` at runtime, no import-time warning.
+  Root cause: the real robot.yaml's `phidgets_spatial` IMU (parent: `base_link`) is visual-only and merges
+  straight into `base_link` (confirmed in the flattened URDF: `base_link`'s own `<visual>` is the merged
+  sensor's box geometry) — giving `base_link` real visual content it didn't have in the generic model was
+  enough to flip the importer's articulation root there too, exactly the same mechanism as the two earlier
+  cases. Fixed by setting `chassis_link="base_link"`; re-verified via a clean drive test with no error.
+- **Verified live, both robots, one at a time** (`NUM_ROBOTS=1`, swapping `ROBOT_MODEL_0` between them): clean
+  boot, no FATAL; `docker exec <robot> diff /robot_data/<id>/robot.yaml /etc/clearpath/robot.yaml` identical for
+  both; `a200_0333`: drive test correct (0.58m/2s @ 0.3m/s), camera topic delivers a real non-blank 640×360
+  `rgb8` frame, no lidar topics (correctly inert); `a300_00036`: drive test correct (post chassis_link fix),
+  `domain_id`/`middleware` correctly defaulted to `0`/`rmw_fastrtps_cpp` (both omitted in its own real
+  robot.yaml) matching the rest of the fleet, IMU reads real gravity (`linear_acceleration.z = 9.81` exactly),
+  no camera topics (correctly absent, not crashed). Container hostnames `cpr-a200-0333`/`cpr-a300-00036` both
+  matched each robot's own `system.hosts[0].hostname`, same convenient convergence as `j100_0921`.
+- Ended back at the user's prior standing state (`NUM_ROBOTS=1`, `ROBOT_MODEL_0=j100_0921`) — this was
+  incremental verification, not a request to leave a different robot running; `a200_0333`/`a300_00036` are now
+  available the same way any other `ROBOT_MODEL_<i>` value is.
+- Files touched: `scripts/gen_urdf.sh` (`MODELS` list), `scripts/flatten_urdf.py` (`<STL_BINARY>` fix,
+  `<polylist>` support), `sim/scripts/setup_scene.py` (`MODEL_ASSETS`/`MODEL_PARAMS` entries, `has_camera` guard,
+  `add_lidar3d`), README.md.
+
+## Addendum: j100_0922 added by the user directly, one typo + one real dangling-joint bug + a real wheelie
+
+User added a fourth `robot_data` folder (`j100_0922`) and edited `scripts/gen_urdf.sh`'s `MODELS` list themselves
+(had the file open in the IDE), then hit two problems in sequence, each investigated and fixed properly.
+
+- **First**: `./gen_urdf.sh` failed with `ValueError: Serial number model entry j100_0922 must be one of [...]`.
+  Root cause: `robot_data/j100_0922/robot.yaml`'s own `serial_number:` field used an underscore
+  (`j100_0922`) instead of a hyphen (`j100-0922`) — a genuine typo in the robot's own data, not a sim-specific
+  issue (`clearpath_config`'s `SerialNumber.parse()` requires the hyphenated form; the real physical robot
+  would hit the same error booting with this file as-is). Every other real `robot.yaml` in `robot_data/`
+  already used the correct hyphenated form. Offered to fix it in the file directly; user chose to fix it
+  themselves rather than have their real robot data edited.
+- **Second**: after adding `ROBOT_MODEL_3=j100_0922` (a 4-robot fleet: `j100_0921`/`a300_00036`/`a200_0333`/
+  `j100_0922`), "the simulation does not start" — `docker logs a300-isaac-sim` showed a genuine `[fleet] FATAL
+  error`: `KeyError: 'j100_0922'` in `MODEL_ASSETS[model]`. Root cause: `j100_0922` had never been wired into
+  `sim/scripts/setup_scene.py` at all (URDF generation and the container's own `robot.yaml` pipeline are both
+  fully generic already, but the sim's own `MODEL_ASSETS`/`MODEL_PARAMS` are not) — an unhandled exception in
+  `main()` aborts the *entire* scene build, which is why all 4 robots failed to start, not just this one.
+- **Diffed `j100_0922`'s real robot.yaml against `j100_0921`'s before wiring anything**: identical in every
+  section except `manipulators:` — `j100_0922`'s is entirely commented out, i.e. this robot has no arm/gripper
+  at all, unlike `j100_0921`/`j100_0936`.
+- **Real upstream bug, found and fixed generically (not just for this one robot)**: with no arm, `xacro`+
+  `generate_description` still succeeded (xacro has no semantic validation), but the flattened URDF had a
+  genuinely broken reference — `camera_1_joint`'s `<parent>` is `arm_0_end_effector_link`, which
+  `mtu32_description`'s own `robot_description_j100.urdf.xacro` unconditionally assumes exists (it always
+  mounts a second RealSense D405 there) but which `clearpath_config` never defines when there's no arm
+  configured. Fixed with a new `scripts/flatten_urdf.py` pass, `prune_dangling_joints` (called before
+  `merge_visual_only_links`): drops any joint whose `<parent>` link was never actually defined anywhere,
+  cascading to catch a joint that only became dangling because *its own* parent was just removed (confirmed
+  live: it correctly dropped both `camera_1_joint` and, on the next pass, the now-orphaned
+  `camera_1_link_joint`). General/defensive, not `j100_0922`-specific, in case a future real robot.yaml hits
+  the same kind of upstream assumption elsewhere.
+- **Wired `MODEL_ASSETS`/`MODEL_PARAMS["j100_0922"]`**: `chassis_link`/`imu_link`/`camera_optical_link`/
+  `gps_links` identical to `j100_0921` (re-verified live via drive test + a clean `imu_0_link` inspection — this
+  robot still has the platform's own separate default IMU, unaffected by the arm's absence, distinct from the
+  explicit microstrain sensor that still merges into `top_mount_link` the same way), `has_arm` omitted.
+- **Real, reproducible physics finding, not a config bug — flagged to the user, not chased further without
+  their go-ahead**: `j100_0922` visibly wheelies under even a gentle drive command. Verified this is real, not
+  leftover test-session state (this project's own "check the mundane explanation first" habit): a completely
+  fresh, isolated single-robot spawn showed a perfectly level orientation quaternion (`w≈1`) before any command,
+  then a single gentle `drive_test.py 0.15 0 1.5` reproducibly pitched it to the *exact same* ~77° orientation
+  (`y≈0.622, w≈0.783` both times) — deterministic, not random settling noise. Likely explanation, not fully
+  confirmed: `j100_0922` is genuinely lighter than `j100_0921`/`j100_0936` (missing the Kinova arm's own real,
+  well-defined mass/inertia at the rear), so the same wheel-drive damping/torque that produces normal, gentle
+  acceleration on every other real robot in this project produces a much larger pitching moment on this
+  specific one. Not investigated further (would mean picking a lever — reducing wheel damping specifically for
+  this robot, rate-limiting/ramping commanded velocity, or accepting it as a known characteristic — without a
+  clear steer from the user first, matching how the earlier idle-creep investigation was also handed back
+  rather than continued speculatively).
+- Hit a container-name conflict restoring the intended 4-robot fleet afterward, worth remembering: a real
+  robot's container name doesn't depend on slot index (`ROBOT_HOSTNAME_<i>`/`ROBOT_SUFFIX_<i>` are keyed off
+  the *model*, not the slot), so moving `j100_0922` from an isolated test at slot 0 back to slot 3 hit `Error
+  response from daemon: Conflict. The container name "/j100_0922" is already in use` — compose can't recreate a
+  container under a name still held by a *different* service's (slot's) prior container. Fixed with a plain
+  `docker rm -f j100_0922` before re-running `scripts/fleet.sh`.
+- Ended with all 4 robots running (`j100_0921`, `a300_00036`, `a200_0333`, `j100_0922`), clean boot confirmed,
+  matching what the user was originally trying to run before the `KeyError` blocked it.
+- Files touched: `robot_data/j100_0922/robot.yaml` (fixed by the user themselves, not by me), `scripts/
+  flatten_urdf.py` (`prune_dangling_joints`), `sim/scripts/setup_scene.py` (`MODEL_ASSETS`/`MODEL_PARAMS`
+  entry for `j100_0922`).

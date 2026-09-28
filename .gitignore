@@ -6,3 +6,7 @@ __pycache__/
 colcon_ws/build/
 colcon_ws/install/
 colcon_ws/log/
+# Real robots' own actual robot.yaml files and lab-private colcon packages (mtu32_husky, ...): large, private,
+# not meant for this repo's GitHub remote.
+robot_data/
+sim/colcon_ws/

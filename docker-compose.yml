@@ -35,6 +35,10 @@ x-robot: &robot
     # Shared ROS workspace: the same host folder in every robot container, so a change made from inside one
     # robot's container (or on the host) shows up in all of them.
     - ./colcon_ws:/home/robot/colcon_ws
+    # Real robots' own actual robot.yaml files (see robot_data/<serial>/), read directly and unmodified by
+    # robot/entrypoint.sh for a model id it has one for, instead of rendering a stripped-down .tmpl -- read-only
+    # since nothing in a robot container should ever write back to this.
+    - ./robot_data:/robot_data:ro
   # /dev/dri: real GPU access for rviz2's OGRE-based 3D viewport (mouse orbit/pan/zoom on the robot model).
   # Without it (the original setup -- only the isaac-sim service had any GPU device config) RViz's window still
   # opens and renders over X11 forwarding, but its embedded render-window falls back to indirect GLX or Mesa's
