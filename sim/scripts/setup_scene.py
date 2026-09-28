@@ -3,9 +3,12 @@
 Runs inside the streaming Kit app (isaac-sim.streaming.sh --exec /sim/scripts/setup_scene.py).
 Configuration comes from environment variables (see docker-compose.yml):
   NUM_ROBOTS         how many robots to spawn
-  ROBOT_MODELS       comma-separated model per slot (a300/a200/j100/r100, one of MODEL_PARAMS below); only the
-                     first NUM_ROBOTS entries are used. Robot i is namespaced "<its model>_%04d" % i, e.g. a
-                     Jackal (j100) in slot 1 is j100_0001 -- matches docker-compose.yml's container naming.
+  ROBOT_MODELS       comma-separated model per slot (a300/a200/j100/r100/a real robot id like j100_0921, one of
+                     MODEL_PARAMS below); only the first NUM_ROBOTS entries are used. Robot i is namespaced
+                     "<its model>_%04d" % i, e.g. a Jackal (j100) in slot 1 is j100_0001 -- matches docker-
+                     compose.yml's container naming -- except a real robot id, used directly as its own
+                     namespace with no slot suffix (j100_0921, not j100_0921_0000): it's one specific physical
+                     robot, not a generic model needing a slot index to stay unique.
   CAMERA_WIDTH/HEIGHT, CAMERA_FRAME_SKIP, FORCE_REIMPORT
 """
 import asyncio
@@ -21,8 +24,12 @@ from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdPhysics, UsdShade
 
 _num_robots = int(os.environ.get("NUM_ROBOTS", "3"))
 _models = [m.strip() for m in os.environ.get("ROBOT_MODELS", "a300").split(",") if m.strip()][:_num_robots]
-# ROBOTS: one (namespace, model) pair per robot, in slot order -- must match docker-compose.yml's container naming.
-ROBOTS = [(f"{model}_{i:04d}", model) for i, model in enumerate(_models)]
+# ROBOTS: one (namespace, model) pair per robot, in slot order -- must match docker-compose.yml's container/
+# ROBOT_NAMESPACE naming (and its own real-robot special case, see robot/entrypoint.sh's own copy of this same
+# logic): a real robot's own id (contains "_", e.g. j100_0921) already *is* its correct namespace -- it's one
+# specific physical robot with one fixed real identity, not a generic model that needs a slot index to stay
+# unique -- so it's used directly; only generic catalog models (a300, ...) get the slot-indexed "<model>_%04d".
+ROBOTS = [(model if "_" in model else f"{model}_{i:04d}", model) for i, model in enumerate(_models)]
 CAM_W = int(os.environ.get("CAMERA_WIDTH", "640"))
 CAM_H = int(os.environ.get("CAMERA_HEIGHT", "360"))
 CAM_FRAME_SKIP = int(os.environ.get("CAMERA_FRAME_SKIP", "0"))  # 0 = publish every simulation frame
@@ -44,7 +51,7 @@ MODEL_ASSETS = {
         "usd_dir": f"/sim/generated/{m}",
         "usd_path": f"/sim/generated/{m}/{m}/{m}.usda",
     }
-    for m in ("a300", "a200", "j100", "r100")
+    for m in ("a300", "a200", "j100", "r100", "j100_0921", "j100_0936")
 }
 
 # Decorative lavender plants (SM_Lavender_Nanite_01.usd, default prim /Root). The asset's own layer is
@@ -103,6 +110,53 @@ MODEL_PARAMS = {
         wheel_positions=[(0.319, 0.2755, 0.05), (0.319, -0.2755, 0.05), (-0.319, 0.2755, 0.05), (-0.319, -0.2755, 0.05)],
         wheel_axis=[0.0, 1.0, 0.0], mecanum_angles=[-135.0, -45.0, -45.0, -135.0],
         max_linear=1.3, max_angular=4.0,
+    ),
+    # Real MTU robots (robot.j100_0921/0936.yaml.tmpl, derived from robot_data/<serial>/robot.yaml -- see those
+    # templates' own header comments for what's kept/dropped from the real config). chassis_link="base_link"
+    # matches generic j100's precedent (fenders get merged into base_link by merge_visual_only_links, moving
+    # the articulation root there) -- re-verified directly via UsdPhysics.ArticulationRootAPI after import, not
+    # assumed, same as every other model here. wheel_radius/separation_multiplier/max_linear/max_angular are
+    # this specific robot's own real calibrated values (platform.extras.ros_parameters.platform_velocity_
+    # controller in the real robot.yaml, dropped from the generated config itself -- see the template -- but
+    # kept here): wheel_radius = generic j100's 0.098 * the real left/right_wheel_radius_multiplier (0.95, both
+    # sides equal); wheel_separation is the same physical constant as generic j100 (a hardware geometry fact,
+    # not something the real robot's software recalibrates); separation_multiplier 1.17 *replaces* generic
+    # j100's 1.5 (the real robot.yaml's value is the actual calibrated one, not an additional factor on top);
+    # max_linear/max_angular 1.0/1.0 replace generic j100's 2.0/4.0 the same way. Both real robots have
+    # identical values here (confirmed: diffing the two real robot.yaml files shows no difference in this
+    # section). camera_optical_link/imu_link/gps_links/has_arm/lidar2d_link (used by build_ros_graph/add_camera,
+    # not by the 4 Clearpath-catalog models above) describe this robot's real, richer sensor/arm loadout: a
+    # Stereolabs ZED2i (already gives a correctly-oriented ROS optical frame from its own xacro, unlike the
+    # D435i models above which build one by hand in add_camera -- see camera_optical_link), a Microstrain IMU,
+    # dual SwiftNav Duro GPS, and a Kinova Gen3 Lite arm + 2F Lite gripper; j100_0936 additionally has the real
+    # SICK LMS1xx 2D lidar the real 0921 doesn't carry (lidar2d_link is None there) -- though add_lidar2d
+    # currently does nothing with it regardless of model, since the only 2D-lidar pipeline this Isaac Sim
+    # version has (RTX Lidar) is broken in this specific install; see add_lidar2d's own docstring. imu_link is chassis_link,
+    # not the URDF's own imu_1_link (the real sensor's actual mount point) -- imu_1_link is visual-only (no
+    # collision/inertial), and so is every link on its way up to the chassis (imu_1_base_link, top_mount_link,
+    # default_mount), so merge_visual_only_links' cascading merge (see that function's own docstring) folds the
+    # whole chain, one level at a time, all the way into chassis_link -- confirmed live in the final flattened
+    # URDF, not assumed from the raw per-link check alone. Physically harmless (chassis_link ends up owning the
+    # correctly-recomposed combined origin), just a different mount *name* than the raw URDF suggested.
+    # gps_1/2_link both have real collision so they're untouched and keep their own names; top_shelf_link (no
+    # collision/inertial, but also no <visual> of its own to fold) survives too, just re-parented onto
+    # chassis_link once top_mount_link/default_mount above it were removed -- same re-pointing logic that
+    # already handles a merged link being *itself* some other joint's parent (see merge_visual_only_links).
+    # Also found and fixed at the same time (see the templates' own "top_mount" comment): the real robot.yaml's
+    # sensors.imu[0] and links.frame.top_shelf both reference parent: top_mount_link, but nothing in the *real*
+    # config ever defines it -- only the unavailable mtu32_description custom xacro did.
+    "j100_0921": dict(
+        chassis_link="base_link", drive="diff", wheel_radius=0.098 * 0.95, wheel_separation=0.37559, separation_multiplier=1.17,
+        max_linear=1.0, max_angular=1.0,
+        camera_optical_link="camera_0_left_camera_frame_optical",
+        imu_link="chassis_link", gps_links=["gps_1_link", "gps_2_link"], has_arm=True,
+    ),
+    "j100_0936": dict(
+        chassis_link="base_link", drive="diff", wheel_radius=0.098 * 0.95, wheel_separation=0.37559, separation_multiplier=1.17,
+        max_linear=1.0, max_angular=1.0,
+        camera_optical_link="camera_0_left_camera_frame_optical",
+        imu_link="chassis_link", gps_links=["gps_1_link", "gps_2_link"], has_arm=True,
+        lidar2d_link="lidar2d_0_laser",
     ),
 }
 
@@ -169,12 +223,120 @@ def compute(db):
     state.articulation.set_velocities(linear_velocities=[[vx_w, vy_w, cur_vz_w]])
 """
 
+# Real MTU robots' Microstrain IMU (see MODEL_PARAMS' imu_link comment for why it's physically attached to
+# chassis_link, not the real imu_1_link name). isaacsim.sensors.experimental.physics has no OGN "read" node, so
+# this authors the actual IsaacImuSensor prim on first tick (lazily, same reasoning as BodyDrive's Articulation:
+# needs the physics tensor view, which only exists once playing) and reads it every tick after.
+# IMUSensor.get_data()'s orientation is [w, x, y, z]; ROS2PublishImu's quatd[4] input wants IJKR (x, y, z, w).
+IMU_READ_SCRIPT = """
+def setup(db):
+    db.per_instance_state.sensor = None
+
+
+def compute(db):
+    state = db.per_instance_state
+    if state.sensor is None:
+        from isaacsim.sensors.experimental.physics import IMU, IMUSensor
+        path = str(db.inputs.imuPath)
+        try:
+            IMU.create(path)
+            state.sensor = IMUSensor(path)
+        except Exception as e:
+            db.log_warning(f"ImuRead: sensor not ready yet ({e}), retrying next tick")
+            return
+
+    frame = state.sensor.get_data()
+    o = frame["orientation"]
+    db.outputs.orientation = [float(o[1]), float(o[2]), float(o[3]), float(o[0])]
+    db.outputs.linearAcceleration = [float(v) for v in frame["linear_acceleration"]]
+    db.outputs.angularVelocity = [float(v) for v in frame["angular_velocity"]]
+"""
+
+# Real MTU robots' dual SwiftNav Duro GPS: no real satellite geometry (this is a simulation, not an RF model --
+# same simplification Gazebo's own GPS plugins make), just a flat-earth/equirectangular projection of the
+# chassis' actual simulated world XY around a fixed reference origin, computed fresh every tick from each GPS
+# antenna's own real link position (not just the chassis) so the two antennas' real ~0.56m separation still
+# shows up as a small, physically meaningful difference between the two NavSatFix readings -- SwiftNav Duro
+# pairs are commonly used for exactly that, deriving heading from dual-antenna GPS. Origin: Michigan Tech's
+# Houghton, MI campus (~47.1211, -88.5455, ~326m elevation) -- ties the fake origin to the real institution
+# these robots belong to (mtu32_description, *.sabu.mtu.edu hostnames in the real robot.yaml) rather than an
+# arbitrary placeholder. Sim world X/Y map to East/North (ENU), matching the real robot.yaml's own
+# microstrain_imu use_enu_frame: true.
+#
+# Publishes sensor_msgs/NavSatFix via a plain rclpy publisher created directly in this script, not via
+# isaacsim.ros2.bridge.ROS2Publisher (the generic any-message OGN node, tried first). That node's own literal
+# SET_VALUES on its dynamically-created attributes work fine (confirmed live: a literal test altitude came
+# through correctly), but a *connection* from another node's dynamically-created output into one of its
+# dynamically-created inputs silently never propagates (confirmed live: latitude/longitude stayed exactly 0.0,
+# not merely wrong -- ruling out a units/sign bug -- while status/covariance, set as literals, worked) -- since
+# GPS position is inherently a per-tick computed value, not a literal, a real connection is unavoidable here,
+# so this bypasses that node entirely. Isaac Sim's ROS2 bridge already loads an internal rclpy into this same
+# process (confirmed live in the sim's own boot log) and every container in this fleet shares one
+# RMW_IMPLEMENTATION/ROS_DOMAIN_ID, so a plain rclpy.init()/Node() here joins the same ROS graph the OmniGraph
+# ROS2 bridge nodes do, no special context wiring needed. As a bonus this also gives a real, populated
+# header.frame_id/stamp, which the generic publisher route left empty/zero with no way found to set them.
+GPS_READ_SCRIPT = """
+import math
+
+import omni.usd
+import rclpy
+from pxr import UsdGeom
+from rclpy.node import Node
+from sensor_msgs.msg import NavSatFix
+
+_ORIGIN_LAT = 47.1211
+_ORIGIN_LON = -88.5455
+_ORIGIN_ALT = 326.0
+_M_PER_DEG_LAT = 111320.0
+
+
+def setup(db):
+    db.per_instance_state.node = None
+    db.per_instance_state.pub = None
+
+
+def compute(db):
+    state = db.per_instance_state
+    if state.node is None:
+        if not rclpy.ok():
+            rclpy.init()
+        safe_name = str(db.inputs.topicName).strip("/").replace("/", "_")
+        state.node = Node(f"gps_read_{safe_name}", namespace=str(db.inputs.namespace))
+        state.pub = state.node.create_publisher(NavSatFix, str(db.inputs.topicName), 10)
+
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(str(db.inputs.gpsPath))
+    pos = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0).ExtractTranslation()
+    m_per_deg_lon = _M_PER_DEG_LAT * math.cos(math.radians(_ORIGIN_LAT))
+
+    msg = NavSatFix()
+    msg.header.stamp = state.node.get_clock().now().to_msg()
+    msg.header.frame_id = str(db.inputs.frameId)
+    msg.status.status = 0  # STATUS_FIX
+    msg.status.service = 1  # SERVICE_GPS
+    msg.latitude = _ORIGIN_LAT + pos[1] / _M_PER_DEG_LAT
+    msg.longitude = _ORIGIN_LON + pos[0] / m_per_deg_lon
+    msg.altitude = _ORIGIN_ALT + pos[2]
+    msg.position_covariance_type = 0  # COVARIANCE_TYPE_UNKNOWN
+    state.pub.publish(msg)
+
+
+def cleanup(db):
+    state = db.per_instance_state
+    if state.node is not None:
+        state.node.destroy_node()
+        state.node = None
+        state.pub = None
+"""
+
 ROBOT_SPACING = 1.6  # m between robots along Y
 SPAWN_Z = 0.15  # base_link height: wheel bottoms end up ~1.4 cm above the ground, then it settles
 
 
 # D435i RGB sensor: 69.4 deg horizontal FOV
 HFOV_DEG = 69.4
+# ZED2i (real MTU robots, HD720 general.grab_resolution): Stereolabs' published horizontal FOV at 16:9.
+ZED_HFOV_DEG = 87.0
 
 
 def find_prim(stage, root, name):
@@ -351,18 +513,28 @@ def spawn_robot(stage, ns, model, index, count):
     return root
 
 
-def add_camera(stage, robot_root):
-    """RealSense D435i colour camera. Frame chain: camera_0_link -> optical frame (z fwd, y down) -> USD camera."""
-    link = find_prim(stage, robot_root, "camera_0_link")
-    optical = f"{link}/camera_0_color_optical_frame"
-    xf = UsdGeom.Xform.Define(stage, optical)
-    # rows = optical x/y/z axes expressed in the ROS link frame (x fwd, y left, z up)
-    m = Gf.Matrix4d(1.0)
-    m.SetRow3(0, Gf.Vec3d(0, -1, 0))
-    m.SetRow3(1, Gf.Vec3d(0, 0, -1))
-    m.SetRow3(2, Gf.Vec3d(1, 0, 0))
-    m.SetTranslateOnly(Gf.Vec3d(*[float(v) for v in os.environ.get("CAMERA_OFFSET", "0.0,0.0,0.0").split(",")]))
-    xf.AddTransformOp().Set(m)
+def add_camera(stage, robot_root, optical_link=None, hfov_deg=HFOV_DEG):
+    """Colour camera. Frame chain: camera_0_link -> optical frame (z fwd, y down) -> USD camera.
+
+    optical_link (MODEL_PARAMS' camera_optical_link): most models' D435i xacro doesn't produce a ROS-optical-
+    convention frame on its own, so the default path builds one by hand under camera_0_link. The real MTU
+    robots' ZED2i xacro already emits one (verified: its joint rpy is exactly the standard link->optical
+    rotation), so for them this is instead the existing link name to mount the camera under directly, with no
+    extra rotation needed beyond the USD-camera/ROS-optical "flip" every model needs.
+    """
+    if optical_link:
+        optical = find_prim(stage, robot_root, optical_link)
+    else:
+        link = find_prim(stage, robot_root, "camera_0_link")
+        optical = f"{link}/camera_0_color_optical_frame"
+        xf = UsdGeom.Xform.Define(stage, optical)
+        # rows = optical x/y/z axes expressed in the ROS link frame (x fwd, y left, z up)
+        m = Gf.Matrix4d(1.0)
+        m.SetRow3(0, Gf.Vec3d(0, -1, 0))
+        m.SetRow3(1, Gf.Vec3d(0, 0, -1))
+        m.SetRow3(2, Gf.Vec3d(1, 0, 0))
+        m.SetTranslateOnly(Gf.Vec3d(*[float(v) for v in os.environ.get("CAMERA_OFFSET", "0.0,0.0,0.0").split(",")]))
+        xf.AddTransformOp().Set(m)
 
     cam_path = f"{optical}/camera"
     cam = UsdGeom.Camera.Define(stage, cam_path)
@@ -373,12 +545,64 @@ def add_camera(stage, robot_root):
     h_aperture = 20.955
     cam.CreateHorizontalApertureAttr(h_aperture)
     cam.CreateVerticalApertureAttr(h_aperture * CAM_H / CAM_W)
-    cam.CreateFocalLengthAttr(h_aperture / 2 / math.tan(math.radians(HFOV_DEG) / 2))
+    cam.CreateFocalLengthAttr(h_aperture / 2 / math.tan(math.radians(hfov_deg) / 2))
     cam.CreateClippingRangeAttr(Gf.Vec2f(0.05, 30.0))
     return cam_path
 
 
-def build_ros_graph(og, usdrt_sdf, chassis, ns, cam_path, params):
+def add_lidar2d(stage, robot_root, ns, params):
+    """j100_0936's real SICK LMS1xx -- currently disabled, see below.
+
+    The only 2D-lidar-capable pipeline in this Isaac Sim version is RTX Lidar (isaacsim.sensors.experimental.rtx
+    .Lidar/LidarSensor, render-product-based; no plain "range sensor" 2D lidar exists here). That whole
+    extension is broken in this specific Isaac Sim 6.0 install: `isaacsim.sensors.rtx.nodes` (which provides
+    the RTX sensor OGN nodes, including the ROS2 lidar publishers) fails to import during Kit's own native
+    startup -- `ImportError: cannot import name 'register_writer_spec' from 'isaacsim.sensors.experimental.rtx'
+    (unknown location)` -- confirmed live in the sim's own boot log, well before any of this project's own code
+    runs, so it isn't something this script's import order/timing can work around; it's an environment defect,
+    not a bug here. lidar2d_link is still read from MODEL_PARAMS (documents which real sensor this would be)
+    but nothing is created; j100_0936 simply doesn't publish a 2D lidar scan for now. Revisit if a fixed/updated
+    Isaac Sim build resolves the extension.
+    """
+    return
+
+
+# Real position-servo gains for the real MTU robots' Kinova arm+gripper joints, overriding IMPORT_SETTINGS'
+# global stiffness=0/damping=1000 there (see configure_arm_drives). Round, conventional Isaac Sim
+# position-control values (in the same ballpark commonly used for imported robot-arm URDFs, e.g. Franka Panda
+# samples), not the Kinova's own real servo gains -- this is a simulation of the joints' *response*, not a
+# torque-accurate model, and disclosed as such; adjust if the arm moves too slowly/oscillates in practice.
+ARM_DRIVE_STIFFNESS = 1.0e5
+ARM_DRIVE_DAMPING = 1.0e4
+
+
+def configure_arm_drives(stage, root):
+    """Real MTU robots' Kinova arm+gripper: give every arm_0_*/gripper joint a real position-servo drive.
+
+    IMPORT_SETTINGS' global override_joint_stiffness=0.0 is correct for the wheels (a pure velocity drive with
+    no position-holding spring, so they can spin continuously) but leaves EVERY joint, arm included, unable to
+    hold a commanded position at all -- confirmed live: a JointState position command barely moved the arm
+    (a few hundredths of a radian over 2s, not the ~0.5 rad commanded). USD's DriveAPI needs nonzero stiffness
+    to act as a position servo at all (with stiffness=0 it's pure velocity damping, so a targetPosition write
+    has no effect regardless of what IsaacArticulationController sends) -- this reconfigures just the arm/
+    gripper joints' DriveAPI directly on the imported USD, leaving every other joint (wheels, rockers, ...)
+    on the global velocity-drive settings untouched. Matched by "arm_0" appearing anywhere in the joint prim's
+    own name, covering both arm_0_joint_N and arm_0_gripper_*_joint uniformly without hardcoding either list.
+    No-op for every model without an arm (nothing named "arm_0" exists in their USD).
+    """
+    from pxr import Usd, UsdPhysics
+
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root)):
+        if "arm_0" not in prim.GetName():
+            continue
+        for dof in ("angular", "linear"):
+            drive = UsdPhysics.DriveAPI.Get(prim, dof)
+            if drive:
+                drive.GetStiffnessAttr().Set(ARM_DRIVE_STIFFNESS)
+                drive.GetDampingAttr().Set(ARM_DRIVE_DAMPING)
+
+
+def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params):
     keys = og.Controller.Keys
     articulation_controller = "isaacsim.core.nodes.IsaacArticulationController"
 
@@ -485,26 +709,34 @@ def build_ros_graph(og, usdrt_sdf, chassis, ns, cam_path, params):
 
     # --- camera: one render product feeds every enabled stream
     if cam_path and CAM_STREAMS:
-        optical = "camera_0_color_optical_frame"
-        nodes += [
-            ("RenderProduct", "isaacsim.core.nodes.IsaacCreateRenderProduct"),
-            ("PubTfCamera", "isaacsim.ros2.bridge.ROS2PublishRawTransformTree"),
-        ]
+        optical_link = params.get("camera_optical_link")
+        nodes += [("RenderProduct", "isaacsim.core.nodes.IsaacCreateRenderProduct")]
         values += [
             ("RenderProduct.inputs:cameraPrim", [usdrt_sdf.Path(cam_path)]),
             ("RenderProduct.inputs:width", CAM_W),
             ("RenderProduct.inputs:height", CAM_H),
-            # camera_0_link -> optical frame (fixed): quaternion (x, y, z, w)
-            ("PubTfCamera.inputs:nodeNamespace", ns),
-            ("PubTfCamera.inputs:parentFrameId", "camera_0_link"),
-            ("PubTfCamera.inputs:childFrameId", optical),
-            ("PubTfCamera.inputs:rotation", [-0.5, 0.5, -0.5, 0.5]),
         ]
-        connections += [
-            ("Tick.outputs:tick", "RenderProduct.inputs:execIn"),
-            ("Odom.outputs:execOut", "PubTfCamera.inputs:execIn"),
-            ("SysTime.outputs:systemTime", "PubTfCamera.inputs:timeStamp"),
-        ]
+        connections += [("Tick.outputs:tick", "RenderProduct.inputs:execIn")]
+        if optical_link:
+            # A real URDF link (the ZED2i's own xacro already emits a correctly-oriented optical frame, see
+            # add_camera/MODEL_PARAMS) -- its fixed joint to its parent is part of the real URDF, so the
+            # robot's own robot_state_publisher (robot/bin/robot_state, running in that robot's container)
+            # already publishes this TF relationship. No manual PubTfCamera needed, unlike the D435i case below.
+            optical = optical_link
+        else:
+            optical = "camera_0_color_optical_frame"
+            nodes += [("PubTfCamera", "isaacsim.ros2.bridge.ROS2PublishRawTransformTree")]
+            values += [
+                # camera_0_link -> optical frame (fixed): quaternion (x, y, z, w)
+                ("PubTfCamera.inputs:nodeNamespace", ns),
+                ("PubTfCamera.inputs:parentFrameId", "camera_0_link"),
+                ("PubTfCamera.inputs:childFrameId", optical),
+                ("PubTfCamera.inputs:rotation", [-0.5, 0.5, -0.5, 0.5]),
+            ]
+            connections += [
+                ("Odom.outputs:execOut", "PubTfCamera.inputs:execIn"),
+                ("SysTime.outputs:systemTime", "PubTfCamera.inputs:timeStamp"),
+            ]
         for stream, kind in (("color", "rgb"), ("depth", "depth")):
             if stream not in CAM_STREAMS:
                 continue
@@ -525,6 +757,96 @@ def build_ros_graph(og, usdrt_sdf, chassis, ns, cam_path, params):
                     ("RenderProduct.outputs:execOut", f"{name}.inputs:execIn"),
                     ("RenderProduct.outputs:renderProductPath", f"{name}.inputs:renderProductPath"),
                 ]
+
+    # --- IMU (real MTU robots only): a ScriptNode reads isaacsim.sensors.experimental.physics' IMU/IMUSensor
+    # (no ready-made OGN node exists to read an IMU, only isaacsim.ros2.bridge.ROS2PublishImu to publish one
+    # already-read) and feeds it into ROS2PublishImu. frameId is the real robot's own imu_1_link name (what
+    # that robot's robot_state_publisher, running from its own un-flattened URDF regeneration in robot_state,
+    # actually publishes in its TF tree), not params["imu_link"] -- that field names where the sensor is
+    # physically attached in *this sim's* flattened/merged USD (see MODEL_PARAMS' comment on why those differ
+    # for these two robots), which has no bearing on the real TF frame name ROS clients expect.
+    if params.get("imu_link"):
+        imu_body = find_prim(stage, root, params["imu_link"])
+        imu_sensor_path = f"{imu_body}/imu_1_sensor"
+        nodes += [("ImuRead", "omni.graph.scriptnode.ScriptNode"), ("PubImu", "isaacsim.ros2.bridge.ROS2PublishImu")]
+        create_attributes += [
+            ("ImuRead.inputs:imuPath", "token"),
+            ("ImuRead.outputs:orientation", "quatd[4]"),
+            ("ImuRead.outputs:linearAcceleration", "vectord[3]"),
+            ("ImuRead.outputs:angularVelocity", "vectord[3]"),
+        ]
+        values += [
+            ("ImuRead.inputs:imuPath", imu_sensor_path),
+            ("ImuRead.inputs:script", IMU_READ_SCRIPT),
+            ("PubImu.inputs:nodeNamespace", ns),
+            ("PubImu.inputs:topicName", "sensors/imu_1/data"),  # matches the real robot's own topic (seen commented in its robot.yaml)
+            ("PubImu.inputs:frameId", "imu_1_link"),
+        ]
+        connections += [
+            ("Tick.outputs:tick", "ImuRead.inputs:execIn"),
+            ("ImuRead.outputs:execOut", "PubImu.inputs:execIn"),
+            ("ImuRead.outputs:orientation", "PubImu.inputs:orientation"),
+            ("ImuRead.outputs:linearAcceleration", "PubImu.inputs:linearAcceleration"),
+            ("ImuRead.outputs:angularVelocity", "PubImu.inputs:angularVelocity"),
+            ("SysTime.outputs:systemTime", "PubImu.inputs:timeStamp"),
+        ]
+
+    # --- GPS x2 (real MTU robots only): see GPS_READ_SCRIPT's own comment for why this publishes directly via
+    # a plain rclpy publisher inside the script, not isaacsim.ros2.bridge.ROS2Publisher (the generic any-
+    # message OGN node, tried first -- its literal SET_VALUES work but a connection into one of its
+    # dynamically-created inputs silently never propagates a value, confirmed live).
+    for i, gps_link in enumerate(params.get("gps_links", []), start=1):
+        node = f"Gps{i}"
+        gps_path = find_prim(stage, root, gps_link)
+        nodes += [(node, "omni.graph.scriptnode.ScriptNode")]
+        create_attributes += [
+            (f"{node}.inputs:gpsPath", "token"),
+            (f"{node}.inputs:topicName", "token"),
+            (f"{node}.inputs:frameId", "token"),
+            (f"{node}.inputs:namespace", "token"),
+        ]
+        values += [
+            (f"{node}.inputs:gpsPath", gps_path),
+            (f"{node}.inputs:topicName", f"/{ns}/sensors/gps_{i}/fix"),
+            (f"{node}.inputs:frameId", gps_link),
+            # topicName above is already an absolute path, so the rclpy Node's own namespace doesn't affect
+            # which topic it publishes to -- this is purely so the *node itself* (ros2 node list) shows up
+            # under the robot's namespace instead of at the top level (confirmed live: without this, GPS nodes
+            # appeared as bare /gps_read_j100_0921_sensors_gps_1_fix instead of /j100_0921/gps_read_...).
+            (f"{node}.inputs:namespace", ns),
+            (f"{node}.inputs:script", GPS_READ_SCRIPT),
+        ]
+        connections += [("Tick.outputs:tick", f"{node}.inputs:execIn")]
+
+    # --- Arm + gripper (real MTU robots only): a second IsaacArticulationController, position-mode, targeting
+    # the same chassis articulation root as the wheel drive above. jointNames/positionCommand are wired
+    # straight through from ROS2SubscribeJointState's own outputs rather than a hardcoded joint list, so
+    # whatever names/order a published JointState message actually uses is exactly what gets commanded --
+    # hardcoding a fixed jointNames list here and trusting positionCommand's array to line up with it
+    # positionally (this project's existing DriveFront/DriveRear pattern) would silently command the wrong
+    # joints if a client ever published a different subset/order than guessed. Every joint IMPORT_SETTINGS
+    # configured for velocity-mode (this whole project's global import setting) still accepts a positionCommand
+    # write here -- IsaacArticulationController takes position *or* velocity *or* effort per call regardless of
+    # the prim's own configured drive type -- so no special per-joint drive reconfiguration was needed.
+    if params.get("has_arm"):
+        nodes += [
+            ("ArmCmd", "isaacsim.ros2.bridge.ROS2SubscribeJointState"),
+            ("DriveArm", articulation_controller),
+        ]
+        values += [
+            ("ArmCmd.inputs:nodeNamespace", ns),
+            ("ArmCmd.inputs:topicName", "arm_0/joint_command"),
+            ("DriveArm.inputs:targetPrim", [usdrt_sdf.Path(chassis)]),
+        ]
+        connections += [
+            # ArmCmd's outputs hold their last-received message's values between messages (same as CmdVel's
+            # linearVelocity/angularVelocity do for the wheel drive above), so DriveArm re-applies them every
+            # tick rather than only on ArmCmd's own execOut -- matches DriveFront/DriveRear/Drive's pattern.
+            ("Tick.outputs:tick", "ArmCmd.inputs:execIn"),
+            ("Tick.outputs:tick", "DriveArm.inputs:execIn"),
+            ("ArmCmd.outputs:jointNames", "DriveArm.inputs:jointNames"),
+            ("ArmCmd.outputs:positionCommand", "DriveArm.inputs:positionCommand"),
+        ]
 
     og.Controller.edit(
         {"graph_path": f"/Graphs/{ns}", "evaluator_name": "execution"},
@@ -610,7 +932,12 @@ async def main():
         for _ in range(5):
             await app.next_update_async()
         apply_kit_settings()
-        enable_extensions(["isaacsim.ros2.bridge", "isaacsim.robot.wheeled_robots.nodes", "omni.graph.action", "omni.graph.nodes", "omni.graph.scriptnode"])
+        enable_extensions([
+            "isaacsim.ros2.bridge", "isaacsim.robot.wheeled_robots.nodes", "omni.graph.action", "omni.graph.nodes", "omni.graph.scriptnode",
+            "isaacsim.sensors.experimental.physics",  # real MTU robots' IMU (ImuRead script)
+            # isaacsim.sensors.experimental.rtx (j100_0936's 2D lidar) deliberately NOT enabled -- broken in
+            # this Isaac Sim 6.0 install, see add_lidar2d's docstring.
+        ])
         for model in dict.fromkeys(model for _, model in ROBOTS):  # each distinct model once, first-seen order
             import_urdf_if_needed(model)
 
@@ -622,13 +949,18 @@ async def main():
         build_world(stage)
         for i, (ns, model) in enumerate(ROBOTS):
             root = spawn_robot(stage, ns, model, i, len(ROBOTS))
-            cam_path = add_camera(stage, root)
+            optical_link = MODEL_PARAMS[model].get("camera_optical_link")
+            hfov = ZED_HFOV_DEG if optical_link else HFOV_DEG
+            cam_path = add_camera(stage, root, optical_link=optical_link, hfov_deg=hfov)
 
             log(f"spawned {ns} ({model}) at {root}")
             for _ in range(3):
                 await app.next_update_async()
             chassis = find_prim(stage, root, MODEL_PARAMS[model]["chassis_link"])
-            build_ros_graph(og, usdrt_sdf, chassis, ns, cam_path, MODEL_PARAMS[model])
+            build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, MODEL_PARAMS[model])
+            add_lidar2d(stage, root, ns, MODEL_PARAMS[model])
+            if MODEL_PARAMS[model].get("has_arm"):
+                configure_arm_drives(stage, root)
         aim_viewport()
         set_viewport_resolution()
         for _ in range(10):

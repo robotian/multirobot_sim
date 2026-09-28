@@ -35,6 +35,16 @@ x-robot: &robot
     # Shared ROS workspace: the same host folder in every robot container, so a change made from inside one
     # robot's container (or on the host) shows up in all of them.
     - ./colcon_ws:/home/robot/colcon_ws
+  # /dev/dri: real GPU access for rviz2's OGRE-based 3D viewport (mouse orbit/pan/zoom on the robot model).
+  # Without it (the original setup -- only the isaac-sim service had any GPU device config) RViz's window still
+  # opens and renders over X11 forwarding, but its embedded render-window falls back to indirect GLX or Mesa's
+  # llvmpipe software rasterizer, and mouse-driven camera control on that embedded window is a known-flaky path
+  # under both -- confirmed live: the window worked, the model displayed, but orbit/pan/zoom didn't respond at
+  # all. This is a plain device passthrough (not the NVIDIA container-toolkit GPU reservation isaac-sim uses),
+  # giving Mesa real DRI3/GLX direct rendering; containers run as root here so no extra host group membership
+  # is needed for the card1 (video-group)/renderD128 (render-group) device nodes' permissions.
+  devices:
+    - /dev/dri:/dev/dri
 
 services:
   # One-shot: named volumes are created root-owned, Isaac Sim runs as uid 1234.
@@ -122,17 +132,41 @@ services:
   # Slot i is started when the profile n<NUM_ROBOTS> is active (COMPOSE_PROFILES=n${NUM_ROBOTS} in .env), i.e.
   # when NUM_ROBOTS > i. Supports up to 8 robots; to add more, copy a block (next index, next Foxglove port) and
   # extend the profile lists. The service *keys* (robot0..robot7) are stable slot identities for `docker compose`
-  # itself; each slot's real, user-facing identity -- container name, hostname, ROS namespace -- is its assigned
-  # model (ROBOT_MODEL_<i> in .env, one of a300/a200/j100/r100, default a300) plus its fixed slot index, e.g.
-  # slot 1 running Jackal becomes container/hostname/namespace `j100_0001`, not `a300_0001`.
+  # itself; each slot's real, user-facing identity -- container name, ROS namespace -- is its assigned model
+  # (ROBOT_MODEL_<i> in .env, one of a300/a200/j100/r100/a real robot id like j100_0921, default a300) plus its
+  # fixed slot index (ROBOT_SUFFIX_<i>, default `_%04d`, e.g. slot 1 running Jackal becomes container name
+  # `j100_0001`, not `a300_0001`) -- except for a real robot id, whose own id is already its full, correct,
+  # globally-unique identity with no slot concept, so `scripts/fleet.sh` (bash, unlike this file, can inspect
+  # ROBOT_MODEL_<i>'s content) writes ROBOT_SUFFIX_<i>= (empty, not unset -- `${VAR-default}` without a colon
+  # treats those differently, confirmed by testing directly) into .env whenever ROBOT_MODEL_<i> contains "_",
+  # giving e.g. `j100_0921` instead of `j100_0921_0000`, and removes it again if that slot's model later changes
+  # back to a generic one. Do not hand-edit ROBOT_SUFFIX_<i> in .env; run `scripts/fleet.sh` to keep it in sync
+  # with ROBOT_MODEL_<i> instead. ROS namespace (robot/entrypoint.sh's ROBOT_NAMESPACE, sim/scripts/
+  # setup_scene.py's ROBOTS) is computed the same way but independently at runtime (this file can't reuse one
+  # computed value across container_name *and* environment: block entries -- both already special-case a real
+  # robot id on their own).
+  # hostname: this is the container's real OS hostname (`hostname` inside the container, socket.gethostname()),
+  # which clearpath_config validates *unconditionally* as its own "system.localhost" default before it even
+  # reads our robot.yaml -- confirmed live: a hostname containing an underscore (e.g. cpr-j100_0921-0000) fails
+  # that validation ("cannot contain characters other than [A-Z][a-z][0-9] and -"), and compose interpolation
+  # has no find/replace to turn underscores into hyphens the way robot/entrypoint.sh's SERIAL computation does
+  # -- so it can't be computed here as e.g. `cpr-${ROBOT_MODEL_i}-...` directly for a real robot id (which
+  # contains its own underscore, e.g. j100_0921). Instead it's `${ROBOT_HOSTNAME_<i>:-cpr-slot-<i>}`:
+  # `scripts/fleet.sh` (bash, unlike this file, can inspect ROBOT_MODEL_<i>'s content) computes and writes
+  # ROBOT_HOSTNAME_<i>=cpr-<model-with-underscores-as-hyphens> into .env for every slot on each run -- e.g.
+  # `cpr-a300-0000` for a generic model (matching container_name's own slot-suffix convention), `cpr-j100-0921`
+  # for a real robot id (its own hyphenated serial, no slot suffix, matching what its template's own
+  # system.localhost is set to -- see robot.j100_0921/0936.yaml.tmpl). Do not hand-edit ROBOT_HOSTNAME_<i>; run
+  # `scripts/fleet.sh` to keep it in sync with ROBOT_MODEL_<i>. The `cpr-slot-<i>` fallback only matters if
+  # `docker compose up` is run directly before `scripts/fleet.sh` has ever populated .env.
 
   robot0:
     <<: *robot
-    container_name: ${ROBOT_MODEL_0:-a300}_0000
+    container_name: ${ROBOT_MODEL_0:-a300}${ROBOT_SUFFIX_0-_0000}
     profiles: [n1, n2, n3, n4, n5, n6, n7, n8]
     ports:
       - "8765:8765/tcp"   # Foxglove bridge (ws://<host>:8765)
-    hostname: cpr-${ROBOT_MODEL_0:-a300}-0000
+    hostname: ${ROBOT_HOSTNAME_0:-cpr-slot-0000}
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_0:-a300}
@@ -141,11 +175,11 @@ services:
 
   robot1:
     <<: *robot
-    container_name: ${ROBOT_MODEL_1:-a300}_0001
+    container_name: ${ROBOT_MODEL_1:-a300}${ROBOT_SUFFIX_1-_0001}
     profiles: [n2, n3, n4, n5, n6, n7, n8]
     ports:
       - "8766:8765/tcp"   # Foxglove bridge (ws://<host>:8766)
-    hostname: cpr-${ROBOT_MODEL_1:-a300}-0001
+    hostname: ${ROBOT_HOSTNAME_1:-cpr-slot-0001}
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_1:-a300}
@@ -154,11 +188,11 @@ services:
 
   robot2:
     <<: *robot
-    container_name: ${ROBOT_MODEL_2:-a300}_0002
+    container_name: ${ROBOT_MODEL_2:-a300}${ROBOT_SUFFIX_2-_0002}
     profiles: [n3, n4, n5, n6, n7, n8]
     ports:
       - "8767:8765/tcp"   # Foxglove bridge (ws://<host>:8767)
-    hostname: cpr-${ROBOT_MODEL_2:-a300}-0002
+    hostname: ${ROBOT_HOSTNAME_2:-cpr-slot-0002}
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_2:-a300}
@@ -167,11 +201,11 @@ services:
 
   robot3:
     <<: *robot
-    container_name: ${ROBOT_MODEL_3:-a300}_0003
+    container_name: ${ROBOT_MODEL_3:-a300}${ROBOT_SUFFIX_3-_0003}
     profiles: [n4, n5, n6, n7, n8]
     ports:
       - "8768:8765/tcp"   # Foxglove bridge (ws://<host>:8768)
-    hostname: cpr-${ROBOT_MODEL_3:-a300}-0003
+    hostname: ${ROBOT_HOSTNAME_3:-cpr-slot-0003}
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_3:-a300}
@@ -180,11 +214,11 @@ services:
 
   robot4:
     <<: *robot
-    container_name: ${ROBOT_MODEL_4:-a300}_0004
+    container_name: ${ROBOT_MODEL_4:-a300}${ROBOT_SUFFIX_4-_0004}
     profiles: [n5, n6, n7, n8]
     ports:
       - "8769:8765/tcp"   # Foxglove bridge (ws://<host>:8769)
-    hostname: cpr-${ROBOT_MODEL_4:-a300}-0004
+    hostname: ${ROBOT_HOSTNAME_4:-cpr-slot-0004}
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_4:-a300}
@@ -193,11 +227,11 @@ services:
 
   robot5:
     <<: *robot
-    container_name: ${ROBOT_MODEL_5:-a300}_0005
+    container_name: ${ROBOT_MODEL_5:-a300}${ROBOT_SUFFIX_5-_0005}
     profiles: [n6, n7, n8]
     ports:
       - "8770:8765/tcp"   # Foxglove bridge (ws://<host>:8770)
-    hostname: cpr-${ROBOT_MODEL_5:-a300}-0005
+    hostname: ${ROBOT_HOSTNAME_5:-cpr-slot-0005}
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_5:-a300}
@@ -206,11 +240,11 @@ services:
 
   robot6:
     <<: *robot
-    container_name: ${ROBOT_MODEL_6:-a300}_0006
+    container_name: ${ROBOT_MODEL_6:-a300}${ROBOT_SUFFIX_6-_0006}
     profiles: [n7, n8]
     ports:
       - "8771:8765/tcp"   # Foxglove bridge (ws://<host>:8771)
-    hostname: cpr-${ROBOT_MODEL_6:-a300}-0006
+    hostname: ${ROBOT_HOSTNAME_6:-cpr-slot-0006}
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_6:-a300}
@@ -219,11 +253,11 @@ services:
 
   robot7:
     <<: *robot
-    container_name: ${ROBOT_MODEL_7:-a300}_0007
+    container_name: ${ROBOT_MODEL_7:-a300}${ROBOT_SUFFIX_7-_0007}
     profiles: [n8]
     ports:
       - "8772:8765/tcp"   # Foxglove bridge (ws://<host>:8772)
-    hostname: cpr-${ROBOT_MODEL_7:-a300}-0007
+    hostname: ${ROBOT_HOSTNAME_7:-cpr-slot-0007}
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_7:-a300}

@@ -71,6 +71,7 @@ Each slot's model comes from `ROBOT_MODEL_<i>` in `.env` (`i` = 0–7, matching 
 | `a200` | Clearpath A200 | skid-steer, native |
 | `j100` | Clearpath Jackal | skid-steer, native |
 | `r100` | Clearpath Ridgeback | omnidirectional — see below |
+| `j100_0921` / `j100_0936` | MTU's own real Jackals, from their actual `robot_data/<serial>/robot.yaml` | skid-steer, native |
 
 Leaving `ROBOT_MODEL_<i>` unset defaults that slot to `a300` (matches every earlier version of this project). To mix models:
 
@@ -91,6 +92,7 @@ Two things worth knowing:
 - Robots also keep a fixed spacing regardless of model size (fine for A300/A200/Jackal; Ridgeback is larger and might feel tight next to another robot).
 - **A `ROBOT_MODEL_<i>` for a slot `NUM_ROBOTS` doesn't reach is silently ignored** — that slot just never starts, so e.g. `NUM_ROBOTS=2` with `ROBOT_MODEL_2` set gives you slots 0/1 (defaulting to a300 if unset) and no slot 2 at all, not the model you configured. `scripts/fleet.sh` now warns about this (`ROBOT_MODEL_<i> ... is not running`) instead of leaving it to be found by getting the wrong robot.
 - **Jackal's fenders looked attached at spawn but drifted away once it drove or turned.** They're purely decorative (no collision, no mass) in Clearpath's own mesh, and Isaac's importer still makes them a separate physics body with a fixed-joint constraint to the chassis — one too light relative to the rest of the robot to stay perfectly rigid under motion. Fixed by folding them directly into the chassis at URDF-generation time (`merge_visual_only_links` in `scripts/flatten_urdf.py`) instead of relying on that constraint; see *Changing the robots* if you add a model with similar decorative parts.
+- **`j100_0921`/`j100_0936` are MTU's own physical robots**, spawned from their real `robot_data/<serial>/robot.yaml` files, not a generic Clearpath sample, and — unlike every other model, which is `<model>_%04d` per slot — both their ROS namespace *and* their docker container name are their own id directly (`j100_0921`, not `j100_0921_0000`): they're one specific real robot each, not a generic model needing a slot index to stay unique. Run `scripts/fleet.sh`, not `docker compose up -d` directly, after changing a slot's model for this to take effect (it keeps `ROBOT_SUFFIX_<i>` in `.env` in sync with `ROBOT_MODEL_<i>`, working around `docker-compose.yml`'s own inability to compute this conditionally). See CLAUDE.md's *Real robots* section for exactly what's kept/dropped/fixed versus the real config. Their full real sensor/arm loadout is simulated: a Stereolabs ZED2i camera, a Microstrain IMU, dual SwiftNav Duro GPS (a flat-earth projection around Michigan Tech's Houghton campus — not real satellite geometry), and a Kinova Gen3 Lite arm + 2F Lite gripper (drive a pose with `ros2 topic pub .../arm_0/joint_command sensor_msgs/msg/JointState "{name: [...], position: [...]}"`). `j100_0936` additionally carries a real SICK LMS1xx 2D lidar, but it isn't simulated here — the only 2D-lidar pipeline this Isaac Sim version has (RTX Lidar) fails to import during Kit's own native startup in this specific install, an environment defect unrelated to this project's own code.
 
 ## Using the robots
 
@@ -255,8 +257,10 @@ Besides the robots, the sim spawns some static scene dressing in `build_world()`
 - **One router:** all zenoh sessions share a single `zenoh-router`. A real fleet would have a router per robot; that topology is not simulated.
 - **Raw images:** colour and depth are published uncompressed (about 30 MB/s per robot at 20 Hz), which is fine on the local machine but heavy for Wi-Fi Foxglove clients.
 - **Not tested against real robots:** interoperability with the real robots' zenoh router (`ZENOH_ROUTER`) has not been tried.
-- **Ridgeback's in-place rotation is weak from a standstill** for small commands (static friction absorbs most of it; a larger command or one combined with translation works fine) — see *Robot models*. Running all four distinct models at once can also crash the sim — see *Robot models*.
+- **Ridgeback's and the real MTU robots' in-place rotation is weak from a standstill** for small commands (static friction absorbs most of it; a larger command or one combined with translation works fine) — see *Robot models*. Running all four distinct catalog models at once can also crash the sim — see *Robot models*.
 - **Robot spacing** is a fixed constant regardless of model size — see *Robot models*.
+- **`j100_0936`'s 2D lidar isn't simulated** — an Isaac Sim 6.0 extension defect, not something this project's code can work around; see *Robot models*.
+- **GPS on the real MTU robots is a flat-earth projection, not real satellite geometry** — same simplification Gazebo's own GPS plugins make; see *Robot models*.
 
 ## Changing the robots
 
@@ -269,7 +273,8 @@ Besides the robots, the sim spawns some static scene dressing in `build_world()`
 | Path | Purpose |
 |---|---|
 | `docker-compose.yml`, `.env` | the whole stack |
-| `robot/` | robot container image: `Dockerfile`, `entrypoint.sh`, helper commands in `bin/` (`teleop`, `camera_view`, `rviz`, `robot_state`, `foxglove`), per-model config templates `robot.a300/a200/j100/r100.yaml.tmpl` and the generic `robot.rviz.tmpl` |
+| `robot/` | robot container image: `Dockerfile`, `entrypoint.sh`, helper commands in `bin/` (`teleop`, `camera_view`, `rviz`, `robot_state`, `foxglove`), per-model config templates `robot.a300/a200/j100/r100/j100_0921/j100_0936.yaml.tmpl` and the generic `robot.rviz.tmpl` |
+| `robot_data/<serial>/robot.yaml` | the real MTU robots' own actual Clearpath configs (source for the two templates above) |
 | `sim/scripts/setup_scene.py` | builds the Isaac Sim scene and ROS 2 graphs |
 | `sim/assets/<model>/`, `sim/generated/<model>/` | generated URDF and meshes, cached USD, one set per model |
 | `scripts/` | `fleet.sh` (choose the number of robots), `stop_sim.sh`, `colcon_build.sh`, URDF generation, X11 setup and the drive test |
@@ -285,6 +290,7 @@ See `CLAUDE.md` for more detail on how the pieces fit together.
 - **RViz / camera window doesn't open:** run `scripts/x11_auth.sh` and check `DISPLAY`.
 - **`executable file not found` from `docker exec`:** the command needs the ROS environment; see *Using the robots*.
 - **RobotModel is empty in RViz:** Description Topic must be `/<robot>/robot_description` with Durability *Transient Local*. `docker exec -it <robot> rviz` sets this up.
+- **RViz window opens and renders but the 3D view doesn't respond to the mouse (no orbit/pan/zoom):** the RViz config needs a `Tools:` section listing `rviz_default_plugins/Interact`/`MoveCamera` — without one, RViz loads no interaction tools at all (not "use the defaults"), unlike a bare `rviz2` session with no `-d` config file. Already fixed in `robot/config/robot.rviz.tmpl`; if this recurs after editing that template, check `Tools:` is still present.
 - **Camera is invisible in the sim:** the importer drops hand-exported Collada meshes, so `scripts/flatten_urdf.py` converts them to OBJ. Re-run `scripts/gen_urdf.sh` and restart the sim.
 - **A robot container is still running after lowering `NUM_ROBOTS`:** use `scripts/fleet.sh <N>` (or `docker compose rm -sf robotN`).
 - **`PhysX Internal CUDA error` and the sim container dies:** seen when running 4 distinct models at once (see *Robot models*); try fewer distinct models running simultaneously.

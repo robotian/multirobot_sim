@@ -1,6 +1,17 @@
 Panels:
   - Class: rviz_common/Displays
     Name: Displays
+# RViz2's default startup (no -d config file) auto-loads its usual toolbar (Interact, MoveCamera, ...); a config
+# file that doesn't list a Tools section explicitly loads *no* tools at all, not "use the defaults" -- confirmed
+# live: this config's window opened and rendered the robot model correctly, but the 3D view's mouse orbit/pan/
+# zoom didn't respond, while the exact same rviz2 binary with no config file at all (no -d flag) worked fine.
+# Interact provides the actual camera control (left-drag orbit, shift+left-drag/middle-drag pan, scroll zoom);
+# MoveCamera is the classic dedicated camera-only tool, added alongside it to match rviz2's own standard default
+# toolbar rather than a cut-down one.
+Tools:
+  - Class: rviz_default_plugins/Interact
+    Hide Inactive Objects: true
+  - Class: rviz_default_plugins/MoveCamera
 Visualization Manager:
   Class: ""
   Displays:

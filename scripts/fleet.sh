@@ -1,11 +1,15 @@
 #!/bin/bash
-# Start the stack with N robots (0-8), or stop it. Each slot's model (a300/a200/j100/r100) comes from
-# ROBOT_MODEL_<i> in .env, default a300; see docker-compose.yml.
+# Start the stack with N robots (0-8), or stop it. Each slot's model (a300/a200/j100/r100, or a real robot id
+# like j100_0921) comes from ROBOT_MODEL_<i> in .env, default a300; see docker-compose.yml.
 #   scripts/fleet.sh 5      set NUM_ROBOTS=5 in .env and (re)start the sim and 5 robots
 #   scripts/fleet.sh        (re)start with the NUM_ROBOTS from .env
 #   scripts/fleet.sh down   stop and remove everything
 # `docker compose up` alone does not stop robots that are no longer wanted after lowering NUM_ROBOTS, and the
-# sim has to restart to spawn a different number of robots; this script takes care of both.
+# sim has to restart to spawn a different number of robots; this script takes care of both. It also keeps
+# ROBOT_SUFFIX_<i>/ROBOT_HOSTNAME_<i> in .env in sync with ROBOT_MODEL_<i>, so a real robot's container name is
+# its own id with no slot suffix (j100_0921, not j100_0921_0000) and every container's OS hostname is
+# cpr-<model>-<serial> (e.g. cpr-a300-0000, cpr-j100-0921) -- run this (not `docker compose up -d` directly)
+# after changing a slot's model for that to take effect.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 MAX=8
@@ -32,6 +36,34 @@ done < <(grep -oE '^ROBOT_MODEL_[0-9]+' .env | sed 's/ROBOT_MODEL_//')
 # slot's container name depends on its assigned model, which may have changed since it was last brought up.
 for ((i = N; i < MAX; i++)); do
     docker compose rm -sf "robot$i" >/dev/null 2>&1 || true
+done
+# ROBOT_SUFFIX_<i> gives a real robot id (ROBOT_MODEL_<i> containing "_", e.g. j100_0921) its own id as the
+# container name/ROS namespace with no slot suffix, and ROBOT_HOSTNAME_<i> gives every slot's container its real
+# OS hostname as cpr-<model>-<serial>, underscores turned to hyphens (e.g. cpr-a300-0000, cpr-j100-0921) --
+# docker-compose.yml can't compute either itself (its interpolation can't inspect ROBOT_MODEL_<i>'s content or
+# do find/replace, see its own comments) -- kept in sync with ROBOT_MODEL_<i> here instead of requiring the user
+# to also hand-manage these directly; ROBOT_SUFFIX_<i> is removed again if that slot's model later changes back
+# to a generic one, so a stale empty override never lingers.
+for ((i = 0; i < MAX; i++)); do
+    model=$(sed -n "s/^ROBOT_MODEL_$i=//p" .env | tail -1)
+    model="${model:-a300}"
+    if [[ "$model" == *_* ]]; then
+        if grep -q "^ROBOT_SUFFIX_$i=" .env; then
+            sed -i "s/^ROBOT_SUFFIX_$i=.*/ROBOT_SUFFIX_$i=/" .env
+        else
+            echo "ROBOT_SUFFIX_$i=" >> .env
+        fi
+        ns="$model"
+    else
+        sed -i "/^ROBOT_SUFFIX_$i=/d" .env
+        ns=$(printf '%s_%04d' "$model" "$i")
+    fi
+    hostname="cpr-${ns//_/-}"
+    if grep -q "^ROBOT_HOSTNAME_$i=" .env; then
+        sed -i "s/^ROBOT_HOSTNAME_$i=.*/ROBOT_HOSTNAME_$i=$hostname/" .env
+    else
+        echo "ROBOT_HOSTNAME_$i=$hostname" >> .env
+    fi
 done
 docker compose up -d
 # `docker compose ps` with several service names sorts its output alphabetically, not by argument/slot order, so
