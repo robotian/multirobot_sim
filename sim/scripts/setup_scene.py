@@ -14,6 +14,7 @@ Configuration comes from environment variables (see docker-compose.yml):
 import asyncio
 import math
 import os
+import re
 import traceback
 
 import carb
@@ -145,7 +146,7 @@ MODEL_PARAMS = {
         chassis_link="base_link", drive="diff", wheel_radius=0.098 * 0.95, wheel_separation=0.37559, separation_multiplier=1.17,
         max_linear=1.0, max_angular=1.0,
         camera_optical_link="camera_0_left_camera_frame_optical",
-        imu_link="top_mount_link", gps_links=["gps_1_link", "gps_2_link"], has_arm=True,
+        imu_link="top_mount_link", imu_index=1, gps_links=["gps_1_link", "gps_2_link"], has_arm=True,
     ),
     # j100_0936 still uses the old stripped robot.j100_0936.yaml.tmpl (platform.extras dropped, fake
     # top_mount->default_mount alias) -- its own robot_data folder isn't available to migrate it the same way
@@ -157,7 +158,7 @@ MODEL_PARAMS = {
         chassis_link="base_link", drive="diff", wheel_radius=0.098 * 0.95, wheel_separation=0.37559, separation_multiplier=1.17,
         max_linear=1.0, max_angular=1.0,
         camera_optical_link="camera_0_left_camera_frame_optical",
-        imu_link="chassis_link", gps_links=["gps_1_link", "gps_2_link"], has_arm=True,
+        imu_link="chassis_link", imu_index=1, gps_links=["gps_1_link", "gps_2_link"], has_arm=True,
         lidar2d_link="lidar2d_0_laser",
     ),
     # Two more real MTU robots, same "use the real robot_data/<serial>/robot.yaml directly" pipeline as
@@ -195,7 +196,7 @@ MODEL_PARAMS = {
     "a300_00036": dict(
         chassis_link="base_link", drive="diff", wheel_radius=0.1625, wheel_separation=0.562, separation_multiplier=1.75,
         max_linear=2.0, max_angular=2.0,
-        has_camera=False, imu_link="base_link",
+        has_camera=False, imu_link="base_link", imu_index=0,
     ),
     # j100_0922: same real robot.yaml lineage as j100_0921 (identical camera/IMU/GPS/links sections, same
     # platform_velocity_controller values) but with its entire manipulators.arms section commented out -- no
@@ -211,7 +212,7 @@ MODEL_PARAMS = {
         chassis_link="base_link", drive="diff", wheel_radius=0.098 * 0.95, wheel_separation=0.37559, separation_multiplier=1.17,
         max_linear=1.0, max_angular=1.0,
         camera_optical_link="camera_0_left_camera_frame_optical",
-        imu_link="top_mount_link", gps_links=["gps_1_link", "gps_2_link"],
+        imu_link="top_mount_link", imu_index=1, gps_links=["gps_1_link", "gps_2_link"],
     ),
 }
 
@@ -373,6 +374,245 @@ def compute(db):
     msg.longitude = _ORIGIN_LON + pos[0] / m_per_deg_lon
     msg.altitude = _ORIGIN_ALT + pos[2]
     msg.position_covariance_type = 0  # COVARIANCE_TYPE_UNKNOWN
+    state.pub.publish(msg)
+
+
+def cleanup(db):
+    state = db.per_instance_state
+    if state.node is not None:
+        state.node.destroy_node()
+        state.node = None
+        state.pub = None
+"""
+
+# Real MTU robots' 2D lidar (a200_0333's Hokuyo UST, j100_0936's SICK LMS1xx): both declare (or, for the SICK,
+# really have -- clearpath_config's own lms1xx schema just doesn't expose it as a robot.yaml field the way
+# urg_node's does) the same ~270deg FOV -- hokuyo's is the real robot.yaml's own urg_node.angle_min/max
+# (-2.356/2.356 rad); SICK's isn't in its robot.yaml at all, so this uses the same value, matching the real
+# LMS1xx hardware's own published FOV. NUM_RAYS/RANGE_* are approximate (0.5deg resolution, not either sensor's
+# exact real spec) -- shared module-level constants rather than a MODEL_PARAMS field per robot, since both real
+# robots that need this happen to agree; revisit if a future robot's 2D lidar genuinely differs.
+LIDAR2D_ANGLE_MIN = -2.356
+LIDAR2D_ANGLE_MAX = 2.356
+LIDAR2D_NUM_RAYS = 541  # ~0.5deg resolution over the 270deg FOV
+LIDAR2D_RANGE_MIN = 0.1
+LIDAR2D_RANGE_MAX = 10.0
+
+# isaacsim.sensors.experimental.physics.Raycast/RaycastSensor: a real per-physics-step PhysX raycast sensor
+# (its own C++ IRaycastSensor interface, acquired the same way IMU_READ_SCRIPT's IMU/IMUSensor is) -- entirely
+# separate from isaacsim.sensors.rtx, the broken extension add_lidar2d's own docstring (see its history) had
+# concluded blocked 2D lidar outright. Confirmed via this install's own benchmark_physx_lidar.py standalone
+# example and the extension's test suite, not assumed: ray_origins/ray_directions are per-ray vectors in the
+# sensor prim's own local frame (so nesting the sensor as a plain child of the real lidar link, no extra
+# translation/orientation, makes it inherit that link's own mount pose automatically, same as add_camera's
+# child-Xform pattern).
+#
+# Real bug found live in this "experimental"-namespace API, worked around here: get_data()['depths'] does NOT
+# report a genuine per-ray distance -- tested a 3-ray sensor (down/forward/up) and depths came back [0.1, 0.1,
+# 0.1] (exactly min_range) for all three regardless of what each ray actually hit, while get_data()
+# ['hit_positions'] for the SAME reading was correct per-ray (down: [0,0,-0.1], a real 0.1m hit; forward:
+# [3.77,0,0], a real ~3.77m hit on scene geometry; up: [0,0,0], genuinely no hit) -- confirmed depths is broken
+# specifically, not the sensor itself, since hit_positions independently gives the right per-ray answer.
+# Workaround: compute each ray's range as the Euclidean norm of its own hit_positions entry instead of trusting
+# depths at all. output_frame="SENSOR" (Raycast's own default) keeps hit_positions in the sensor's own local
+# frame, same frame ray_origins/ray_directions are already in, so this norm is directly the range in metres --
+# no extra transform needed. A hit_positions entry of exactly [0,0,0] means no hit (confirmed: the "up" ray
+# above, a genuine miss, reported exactly that), remapped to +Inf per REP-117 ("no return") rather than 0.0.
+# Publishes via a plain rclpy publisher, same reasoning as GPS_READ_SCRIPT: this is a per-tick computed reading,
+# not a literal, and no RTX-specific OGN LaserScan publisher node applies to non-RTX raycast data anyway.
+LIDAR2D_READ_SCRIPT = """
+import math
+
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import LaserScan
+
+
+def setup(db):
+    db.per_instance_state.sensor = None
+    db.per_instance_state.node = None
+    db.per_instance_state.pub = None
+
+
+def compute(db):
+    state = db.per_instance_state
+    angle_min = float(db.inputs.angleMin)
+    angle_max = float(db.inputs.angleMax)
+    num_rays = int(db.inputs.numRays)
+    range_min = float(db.inputs.rangeMin)
+    range_max = float(db.inputs.rangeMax)
+
+    if state.sensor is None:
+        from isaacsim.sensors.experimental.physics import Raycast, RaycastSensor
+        path = str(db.inputs.sensorPath)
+        angles = [angle_min + (angle_max - angle_min) * i / max(num_rays - 1, 1) for i in range(num_rays)]
+        ray_dirs = [[math.cos(a), math.sin(a), 0.0] for a in angles]
+        ray_origins = [[0.0, 0.0, 0.0] for _ in angles]
+        try:
+            Raycast.create(path, ray_origins=ray_origins, ray_directions=ray_dirs,
+                            min_range=range_min, max_range=range_max)
+            state.sensor = RaycastSensor(path)
+        except Exception as e:
+            db.log_warning(f"Lidar2dRead: sensor not ready yet ({e}), retrying next tick")
+            return
+
+    if state.node is None:
+        if not rclpy.ok():
+            rclpy.init()
+        safe_name = str(db.inputs.topicName).strip("/").replace("/", "_")
+        state.node = Node(f"lidar2d_read_{safe_name}", namespace=str(db.inputs.namespace))
+        state.pub = state.node.create_publisher(LaserScan, str(db.inputs.topicName), 10)
+
+    frame = state.sensor.get_data()
+    hits = frame["hit_positions"]
+    if len(hits) == 0:
+        return
+
+    n = len(hits)
+    ranges = []
+    for x, y, z in hits:
+        d = math.sqrt(float(x) * float(x) + float(y) * float(y) + float(z) * float(z))
+        ranges.append(float("inf") if d < 1e-6 else d)
+
+    msg = LaserScan()
+    msg.header.stamp = state.node.get_clock().now().to_msg()
+    msg.header.frame_id = str(db.inputs.frameId)
+    msg.angle_min = angle_min
+    msg.angle_max = angle_max
+    msg.angle_increment = (angle_max - angle_min) / max(n - 1, 1)
+    msg.range_min = range_min
+    msg.range_max = range_max
+    msg.ranges = ranges
+    state.pub.publish(msg)
+
+
+def cleanup(db):
+    state = db.per_instance_state
+    if state.node is not None:
+        state.node.destroy_node()
+        state.node = None
+        state.pub = None
+"""
+
+# a200_0333's real Velodyne VLP16: 16 channels over a real ±15deg vertical FOV (VLP16's actual, evenly-2deg-
+# spaced channel angles -- real hardware fires them in an interleaved, non-sequential order for timing reasons,
+# irrelevant here since this is a per-tick snapshot, not a simulated scan sweep), full 360deg horizontal.
+# H_COUNT (1deg horizontal resolution, 5760 rays total, matching VLP16's real ~10Hz/0.2deg ballpark closely
+# enough) genuinely crashed the whole sim (segfault, container exit 139) on the very first attempt -- root
+# cause turned out to be unrelated to ray count at all (see the instance-proxy explanation on the
+# Lidar3dRead wiring in build_ros_graph): once that real bug was fixed, 5760 rays was retested and is safe,
+# confirmed live (no crash, real point data, fps cost measured below) -- ray count itself was never the
+# problem, so this is the real target value, not a cautious reduction.
+# RANGE_MIN/MAX are real-hardware-representative (VLP16's real minimum is close to this; its real 100m max is
+# cut down to something sane for this scene's own scale). Z_OFFSET nudges every ray's own origin up by 4cm in
+# the sensor's local frame before casting -- found live that the flattened URDF's own lidar3d_0_link collision
+# (a cylinder representing the VLP16's base housing) has its top surface only ~3.4cm above lidar3d_0_laser's
+# own frame origin, so an unmoved horizontal ray would immediately self-intersect that housing; this offset
+# clears it (re-verified live: horizontal rays now correctly reach real scene geometry, not an immediate ~5cm
+# self-hit). Measured cost (FLEET_DEBUG=1, 4-robot fleet, only a200_0333 has this sensor): render_fps 12.1 -> 10.4
+# (2D lidar alone -> +3D lidar at full resolution), a real but modest ~14% additional cost on top of the
+# already camera-rendering-bound baseline.
+LIDAR3D_V_ANGLE_MIN = -0.2618  # -15deg
+LIDAR3D_V_ANGLE_MAX = 0.2618  # +15deg
+LIDAR3D_V_COUNT = 16
+LIDAR3D_H_COUNT = 360  # 1deg horizontal resolution, 5760 rays total -- see comment above
+LIDAR3D_RANGE_MIN = 0.4
+LIDAR3D_RANGE_MAX = 30.0
+LIDAR3D_Z_OFFSET = 0.04
+
+# Same isaacsim.sensors.experimental.physics.Raycast/RaycastSensor mechanism as LIDAR2D_READ_SCRIPT, including
+# its own workaround for the same real depths-field bug (see that script's own comment for the full
+# explanation and how it was isolated) -- range/position both come from hit_positions, never from depths.
+# Publishes sensor_msgs/PointCloud2 (unorganized: height=1, width=point count) instead of LaserScan, since this
+# is a 3D point set, not a single-plane range array; misses (hit_positions exactly [0,0,0], confirmed live to be
+# this API's own "no hit" sentinel) are dropped from the cloud entirely rather than encoded as a sentinel point,
+# matching how a real point cloud publisher only emits actual returns. output_frame="SENSOR" (Raycast's own
+# default) reports each ray's hit as ray_origins[i] + depth*ray_directions[i] in the sensor prim's own frame, so
+# a per-ray ray_origins offset (Z_OFFSET) is already baked into hit_positions with no extra math needed when
+# packing points -- re-verify this live rather than assuming, same as everywhere else in this project.
+LIDAR3D_READ_SCRIPT = """
+import math
+import struct
+
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import PointCloud2, PointField
+
+
+def setup(db):
+    db.per_instance_state.sensor = None
+    db.per_instance_state.node = None
+    db.per_instance_state.pub = None
+
+
+def compute(db):
+    state = db.per_instance_state
+    v_min = float(db.inputs.vAngleMin)
+    v_max = float(db.inputs.vAngleMax)
+    v_count = int(db.inputs.vCount)
+    h_count = int(db.inputs.hCount)
+    range_min = float(db.inputs.rangeMin)
+    range_max = float(db.inputs.rangeMax)
+    z_offset = float(db.inputs.zOffset)
+
+    if state.sensor is None:
+        from isaacsim.sensors.experimental.physics import Raycast, RaycastSensor
+        path = str(db.inputs.sensorPath)
+        local_pos = [float(v) for v in db.inputs.localPos]
+        local_quat = [float(v) for v in db.inputs.localQuat]
+        ray_dirs = []
+        for vi in range(v_count):
+            v_angle = v_min + (v_max - v_min) * vi / max(v_count - 1, 1)
+            cv, sv = math.cos(v_angle), math.sin(v_angle)
+            for hi in range(h_count):
+                h_angle = 2.0 * math.pi * hi / h_count
+                ray_dirs.append([cv * math.cos(h_angle), cv * math.sin(h_angle), sv])
+        ray_origins = [[0.0, 0.0, z_offset] for _ in ray_dirs]
+        try:
+            Raycast.create(path, translations=[local_pos], orientations=[local_quat],
+                            ray_origins=ray_origins, ray_directions=ray_dirs,
+                            min_range=range_min, max_range=range_max)
+            state.sensor = RaycastSensor(path)
+        except Exception as e:
+            db.log_warning(f"Lidar3dRead: sensor not ready yet ({e}), retrying next tick")
+            return
+
+    if state.node is None:
+        if not rclpy.ok():
+            rclpy.init()
+        safe_name = str(db.inputs.topicName).strip("/").replace("/", "_")
+        state.node = Node(f"lidar3d_read_{safe_name}", namespace=str(db.inputs.namespace))
+        state.pub = state.node.create_publisher(PointCloud2, str(db.inputs.topicName), 10)
+
+    frame = state.sensor.get_data()
+    hits = frame["hit_positions"]
+    if len(hits) == 0:
+        return
+
+    buf = bytearray()
+    n = 0
+    for x, y, z in hits:
+        x, y, z = float(x), float(y), float(z)
+        if x == 0.0 and y == 0.0 and z == 0.0:
+            continue
+        buf += struct.pack("<fff", x, y, z)
+        n += 1
+
+    msg = PointCloud2()
+    msg.header.stamp = state.node.get_clock().now().to_msg()
+    msg.header.frame_id = str(db.inputs.frameId)
+    msg.height = 1
+    msg.width = n
+    msg.fields = [
+        PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+        PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+        PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+    ]
+    msg.is_bigendian = False
+    msg.point_step = 12
+    msg.row_step = 12 * n
+    msg.data = bytes(buf)
+    msg.is_dense = True
     state.pub.publish(msg)
 
 
@@ -617,36 +857,6 @@ def add_camera(stage, robot_root, optical_link=None, hfov_deg=HFOV_DEG):
     return cam_path
 
 
-def add_lidar2d(stage, robot_root, ns, params):
-    """j100_0936's real SICK LMS1xx -- currently disabled, see below.
-
-    The only 2D-lidar-capable pipeline in this Isaac Sim version is RTX Lidar (isaacsim.sensors.experimental.rtx
-    .Lidar/LidarSensor, render-product-based; no plain "range sensor" 2D lidar exists here). That whole
-    extension is broken in this specific Isaac Sim 6.0 install: `isaacsim.sensors.rtx.nodes` (which provides
-    the RTX sensor OGN nodes, including the ROS2 lidar publishers) fails to import during Kit's own native
-    startup -- `ImportError: cannot import name 'register_writer_spec' from 'isaacsim.sensors.experimental.rtx'
-    (unknown location)` -- confirmed live in the sim's own boot log, well before any of this project's own code
-    runs, so it isn't something this script's import order/timing can work around; it's an environment defect,
-    not a bug here. lidar2d_link is still read from MODEL_PARAMS (documents which real sensor this would be)
-    but nothing is created; j100_0936 simply doesn't publish a 2D lidar scan for now. Revisit if a fixed/updated
-    Isaac Sim build resolves the extension.
-    """
-    return
-
-
-def add_lidar3d(stage, robot_root, ns, params):
-    """a200_0333's real Velodyne VLP16 -- currently disabled, same reason as add_lidar2d.
-
-    3D lidar in this Isaac Sim version is also RTX Lidar (the same isaacsim.sensors.rtx/experimental.rtx
-    extension, just a different profile -- VLP16 is one of Isaac's own standard example profiles, unlike the
-    SICK LMS1xx which would have needed a custom-authored one). Since the extension itself fails to import
-    during Kit's own native startup regardless of profile, this is blocked the same way add_lidar2d is; see that
-    function's own docstring for the full explanation. lidar3d_link is still read from MODEL_PARAMS as
-    documentation of which real sensor this would be.
-    """
-    return
-
-
 # Real position-servo gains for the real MTU robots' Kinova arm+gripper joints, overriding IMPORT_SETTINGS'
 # global stiffness=0/damping=1000 there (see configure_arm_drives). Round, conventional Isaac Sim
 # position-control values (in the same ballpark commonly used for imported robot-arm URDFs, e.g. Franka Panda
@@ -840,14 +1050,21 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params):
 
     # --- IMU (real MTU robots only): a ScriptNode reads isaacsim.sensors.experimental.physics' IMU/IMUSensor
     # (no ready-made OGN node exists to read an IMU, only isaacsim.ros2.bridge.ROS2PublishImu to publish one
-    # already-read) and feeds it into ROS2PublishImu. frameId is the real robot's own imu_1_link name (what
-    # that robot's robot_state_publisher, running from its own un-flattened URDF regeneration in robot_state,
-    # actually publishes in its TF tree), not params["imu_link"] -- that field names where the sensor is
-    # physically attached in *this sim's* flattened/merged USD (see MODEL_PARAMS' comment on why those differ
-    # for these two robots), which has no bearing on the real TF frame name ROS clients expect.
+    # already-read) and feeds it into ROS2PublishImu. frameId/topicName use imu_index (Clearpath's own real
+    # per-robot numbering, confirmed from each robot's raw, un-flattened generate_description+xacro output, not
+    # guessed): Jackal (j100) always has a separate platform-default IMU occupying slot 0, so the explicit
+    # sensor these robots configure is imu_1; A300 has no such default, so its own explicit sensor is imu_0 --
+    # publishing it as "imu_1" (this code's old hardcoded literal) would be wrong for a300_00036 specifically.
+    # frameId is the real robot's own imu_<n>_link name (what that robot's robot_state_publisher, running from
+    # its own un-flattened URDF regeneration in robot_state, actually publishes in its TF tree), not
+    # params["imu_link"] -- that field names where the sensor is physically attached in *this sim's* flattened/
+    # merged USD (see MODEL_PARAMS' comment on why those differ), which has no bearing on the real TF frame name
+    # ROS clients expect.
     if params.get("imu_link"):
+        imu_idx = params.get("imu_index", 0)
+        imu_frame = f"imu_{imu_idx}_link"
         imu_body = find_prim(stage, root, params["imu_link"])
-        imu_sensor_path = f"{imu_body}/imu_1_sensor"
+        imu_sensor_path = f"{imu_body}/{imu_frame}_sensor"
         nodes += [("ImuRead", "omni.graph.scriptnode.ScriptNode"), ("PubImu", "isaacsim.ros2.bridge.ROS2PublishImu")]
         create_attributes += [
             ("ImuRead.inputs:imuPath", "token"),
@@ -859,8 +1076,8 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params):
             ("ImuRead.inputs:imuPath", imu_sensor_path),
             ("ImuRead.inputs:script", IMU_READ_SCRIPT),
             ("PubImu.inputs:nodeNamespace", ns),
-            ("PubImu.inputs:topicName", "sensors/imu_1/data"),  # matches the real robot's own topic (seen commented in its robot.yaml)
-            ("PubImu.inputs:frameId", "imu_1_link"),
+            ("PubImu.inputs:topicName", f"sensors/imu_{imu_idx}/data"),
+            ("PubImu.inputs:frameId", imu_frame),
         ]
         connections += [
             ("Tick.outputs:tick", "ImuRead.inputs:execIn"),
@@ -871,11 +1088,110 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params):
             ("SysTime.outputs:systemTime", "PubImu.inputs:timeStamp"),
         ]
 
+    # --- 2D lidar (real robots with lidar2d_link only): see LIDAR2D_READ_SCRIPT's own comment for the sensor
+    # API and why this publishes directly via rclpy. lidar2d_link (e.g. "lidar2d_0_laser") survives flattening
+    # as its own real link (unlike imu_link, it's never merged away -- confirmed in the flattened URDF), so it
+    # doubles correctly as both the mount-search name and the real TF frame name, no divergence to handle.
+    if params.get("lidar2d_link"):
+        lidar_link = params["lidar2d_link"]
+        lidar_body = find_prim(stage, root, lidar_link)
+        lidar_sensor_path = f"{lidar_body}/{lidar_link}_raycast"
+        # "lidar2d_0" from the link's own "lidar2d_0_laser" name -- Clearpath's own sensor-index convention,
+        # same reasoning as GPS's gps_<n> derivation.
+        lidar_topic_stem = "_".join(lidar_link.split("_")[:2])
+        nodes += [("Lidar2dRead", "omni.graph.scriptnode.ScriptNode")]
+        create_attributes += [
+            ("Lidar2dRead.inputs:sensorPath", "token"),
+            ("Lidar2dRead.inputs:topicName", "token"),
+            ("Lidar2dRead.inputs:frameId", "token"),
+            ("Lidar2dRead.inputs:namespace", "token"),
+            ("Lidar2dRead.inputs:angleMin", "double"),
+            ("Lidar2dRead.inputs:angleMax", "double"),
+            ("Lidar2dRead.inputs:numRays", "int"),
+            ("Lidar2dRead.inputs:rangeMin", "double"),
+            ("Lidar2dRead.inputs:rangeMax", "double"),
+        ]
+        values += [
+            ("Lidar2dRead.inputs:sensorPath", lidar_sensor_path),
+            ("Lidar2dRead.inputs:topicName", f"/{ns}/sensors/{lidar_topic_stem}/scan"),
+            ("Lidar2dRead.inputs:frameId", lidar_link),
+            ("Lidar2dRead.inputs:namespace", ns),
+            ("Lidar2dRead.inputs:angleMin", LIDAR2D_ANGLE_MIN),
+            ("Lidar2dRead.inputs:angleMax", LIDAR2D_ANGLE_MAX),
+            ("Lidar2dRead.inputs:numRays", LIDAR2D_NUM_RAYS),
+            ("Lidar2dRead.inputs:rangeMin", LIDAR2D_RANGE_MIN),
+            ("Lidar2dRead.inputs:rangeMax", LIDAR2D_RANGE_MAX),
+            ("Lidar2dRead.inputs:script", LIDAR2D_READ_SCRIPT),
+        ]
+        connections += [("Tick.outputs:tick", "Lidar2dRead.inputs:execIn")]
+
+    # --- 3D lidar (real robots with lidar3d_link only): see LIDAR3D_READ_SCRIPT's own comment for the sensor
+    # API, its shared depths-field workaround with 2D lidar, and the Z_OFFSET self-collision fix. lidar3d_link
+    # (e.g. "lidar3d_0_laser") survives flattening as its own real link, same as lidar2d_link, so its real TF
+    # frame name is just that string directly -- BUT unlike lidar2d_link, it can't be used as the raycast
+    # sensor's own *parent* prim: a200_0333's sensor_arch subtree (lidar3d_0_laser's own ancestor chain) is
+    # USD-instanceable, and authoring a new child prim under an instance proxy is rejected outright ("authoring
+    # to an instance proxy is not allowed", confirmed live -- the sensor silently never got created, retrying
+    # every tick). Worked around by parenting the raycast sensor under `chassis` instead (never instanced --
+    # it's the articulation root every drive/odometry node already targets) and computing lidar3d_link's real
+    # pose *relative to chassis* once here (both are static, real rigid links -- this offset never changes at
+    # runtime regardless of where the robot drives), passed to Raycast.create() as an explicit local
+    # translation/orientation instead of relying on parent-child nesting for the pose.
+    if params.get("lidar3d_link"):
+        lidar3d_link = params["lidar3d_link"]
+        laser_prim = stage.GetPrimAtPath(find_prim(stage, root, lidar3d_link))
+        chassis_prim = stage.GetPrimAtPath(chassis)
+        laser_world = UsdGeom.Xformable(laser_prim).ComputeLocalToWorldTransform(0)
+        chassis_world = UsdGeom.Xformable(chassis_prim).ComputeLocalToWorldTransform(0)
+        rel = laser_world * chassis_world.GetInverse()
+        rel_t = rel.ExtractTranslation()
+        rel_q = rel.ExtractRotationQuat()
+        rel_im = rel_q.GetImaginary()
+        lidar3d_sensor_path = f"{chassis}/{lidar3d_link}_raycast"
+        lidar3d_topic_stem = "_".join(lidar3d_link.split("_")[:2])
+        nodes += [("Lidar3dRead", "omni.graph.scriptnode.ScriptNode")]
+        create_attributes += [
+            ("Lidar3dRead.inputs:sensorPath", "token"),
+            ("Lidar3dRead.inputs:topicName", "token"),
+            ("Lidar3dRead.inputs:frameId", "token"),
+            ("Lidar3dRead.inputs:namespace", "token"),
+            ("Lidar3dRead.inputs:localPos", "double[3]"),
+            ("Lidar3dRead.inputs:localQuat", "double[4]"),
+            ("Lidar3dRead.inputs:vAngleMin", "double"),
+            ("Lidar3dRead.inputs:vAngleMax", "double"),
+            ("Lidar3dRead.inputs:vCount", "int"),
+            ("Lidar3dRead.inputs:hCount", "int"),
+            ("Lidar3dRead.inputs:rangeMin", "double"),
+            ("Lidar3dRead.inputs:rangeMax", "double"),
+            ("Lidar3dRead.inputs:zOffset", "double"),
+        ]
+        values += [
+            ("Lidar3dRead.inputs:sensorPath", lidar3d_sensor_path),
+            ("Lidar3dRead.inputs:topicName", f"/{ns}/sensors/{lidar3d_topic_stem}/points"),
+            ("Lidar3dRead.inputs:frameId", lidar3d_link),
+            ("Lidar3dRead.inputs:namespace", ns),
+            ("Lidar3dRead.inputs:localPos", [rel_t[0], rel_t[1], rel_t[2]]),
+            ("Lidar3dRead.inputs:localQuat", [rel_q.GetReal(), rel_im[0], rel_im[1], rel_im[2]]),
+            ("Lidar3dRead.inputs:vAngleMin", LIDAR3D_V_ANGLE_MIN),
+            ("Lidar3dRead.inputs:vAngleMax", LIDAR3D_V_ANGLE_MAX),
+            ("Lidar3dRead.inputs:vCount", LIDAR3D_V_COUNT),
+            ("Lidar3dRead.inputs:hCount", LIDAR3D_H_COUNT),
+            ("Lidar3dRead.inputs:rangeMin", LIDAR3D_RANGE_MIN),
+            ("Lidar3dRead.inputs:rangeMax", LIDAR3D_RANGE_MAX),
+            ("Lidar3dRead.inputs:zOffset", LIDAR3D_Z_OFFSET),
+            ("Lidar3dRead.inputs:script", LIDAR3D_READ_SCRIPT),
+        ]
+        connections += [("Tick.outputs:tick", "Lidar3dRead.inputs:execIn")]
+
     # --- GPS x2 (real MTU robots only): see GPS_READ_SCRIPT's own comment for why this publishes directly via
     # a plain rclpy publisher inside the script, not isaacsim.ros2.bridge.ROS2Publisher (the generic any-
     # message OGN node, tried first -- its literal SET_VALUES work but a connection into one of its
     # dynamically-created inputs silently never propagates a value, confirmed live).
-    for i, gps_link in enumerate(params.get("gps_links", []), start=1):
+    for gps_link in params.get("gps_links", []):
+        # Index from the link's own name (Clearpath's real numbering, e.g. gps_1_link/gps_2_link), not list
+        # position -- currently the same thing since gps_links is always listed in that order, but deriving it
+        # from the actual name is what's actually correct and doesn't depend on staying that way.
+        i = int(re.search(r"gps_(\d+)_link", gps_link).group(1))
         node = f"Gps{i}"
         gps_path = find_prim(stage, root, gps_link)
         nodes += [(node, "omni.graph.scriptnode.ScriptNode")]
@@ -1040,8 +1356,6 @@ async def main():
                 await app.next_update_async()
             chassis = find_prim(stage, root, MODEL_PARAMS[model]["chassis_link"])
             build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, MODEL_PARAMS[model])
-            add_lidar2d(stage, root, ns, MODEL_PARAMS[model])
-            add_lidar3d(stage, root, ns, MODEL_PARAMS[model])
             if MODEL_PARAMS[model].get("has_arm"):
                 configure_arm_drives(stage, root)
         aim_viewport()

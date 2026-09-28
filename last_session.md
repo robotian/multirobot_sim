@@ -479,3 +479,146 @@ User added a fourth `robot_data` folder (`j100_0922`) and edited `scripts/gen_ur
 - Files touched: `robot_data/j100_0922/robot.yaml` (fixed by the user themselves, not by me), `scripts/
   flatten_urdf.py` (`prune_dangling_joints`), `sim/scripts/setup_scene.py` (`MODEL_ASSETS`/`MODEL_PARAMS`
   entry for `j100_0922`).
+
+## Addendum: sensor topic naming audit — a real IMU index bug found and fixed, lidar gap re-confirmed structural
+
+User: "each robot has different sensors. but not all of them are publishing. publish the sensor data and the
+topic names should following Clearpath's naming convention. sensors/camera_0, sensors/camera_1, ... etc."
+Audited live (`ros2 topic list` across all 4 running real robots) against each one's own real `robot.yaml`
+sensor list before changing anything, rather than assuming.
+
+- **Real bug found: `a300_00036`'s IMU published as `sensors/imu_1/data`, but its correct Clearpath index is
+  `imu_0`.** `build_ros_graph`'s IMU wiring hardcoded the literal `"1"` everywhere (topic name, TF `frameId`,
+  even the sensor prim path suffix) — a leftover from when only the two Jackals had a simulated IMU, both of
+  which really do belong on `imu_1` (Jackal's platform always has a separate built-in default IMU occupying
+  slot 0, pushing the explicit configured sensor to slot 1). A300 has no such platform default, so its own
+  explicit sensor genuinely *is* slot 0. Verified this directly, not from memory: ran `generate_description`+
+  `xacro` on each real robot's raw (pre-flatten, pre-merge) `robot.yaml` and grepped for `imu_<N>_link` --
+  `a300_00036` → only `imu_0_link`; `j100_0921`/`j100_0922` → both `imu_0_link` (default) and `imu_1_link`
+  (explicit sensor). (First attempt at this check gave a misleading "j100_0921 also only has imu_0" result --
+  the throwaway container hadn't sourced `sim/colcon_ws`'s `mtu32_description`, so `generate_description` for
+  Jackal silently failed and the check was actually re-reading a300's own leftover output from the previous
+  loop iteration, since nothing cleared `/tmp/setup` between iterations. Fixed the diagnostic itself
+  (`set -e`, source the workspace, `rm -rf /tmp/setup` per iteration) before trusting its result.)
+- **Fix**: added `imu_index` to `MODEL_PARAMS` (`1` for the three Jackals, `0` for `a300_00036`), and
+  `build_ros_graph`'s IMU section now builds `sensors/imu_{imu_index}/data`, `imu_{imu_index}_link` and the
+  sensor prim path from that instead of the old hardcoded `"1"`. Verified live: `a300_00036` now publishes
+  `sensors/imu_0/data` with real data (`linear_acceleration.z ≈ 9.81`); the three Jackals unaffected, still
+  `sensors/imu_1/data`.
+- **GPS's own index derivation was reusing list position (`enumerate(gps_links, start=1)`), not the link name
+  itself** — currently always correct in practice (every real robot's `gps_links` happens to already be listed
+  in `gps_1_link, gps_2_link` order), but fragile in the same way the IMU code just turned out to be broken.
+  Made it parse the real index straight out of the link name (`re.search(r"gps_(\d+)_link", gps_link)`)
+  instead, so it can't silently drift from the real numbering the way IMU's hardcoded literal did. Re-verified
+  live afterward: GPS still publishes correctly (`sensors/gps_1/fix`, real latitude near the MTU origin).
+- **Camera indexing (`sensors/camera_0`) was already correct** — every real robot in this fleet has at most one
+  simulated camera, always at index 0, no platform-default camera competing the way IMU's does; nothing to fix.
+- **Lidar (SICK on `j100_0936`, Hokuyo UST + Velodyne VLP16 on `a200_0333`) still isn't published** — re-
+  confirmed this is a genuine environment limit, not something newly broken or previously under-investigated:
+  checked the running `a300-isaac-sim` container's own extension cache directly for any non-RTX lidar
+  extension (an older `range_sensor`-style API) that might exist in this specific Isaac Sim 6.0 install and
+  hadn't been tried — found only `omni.sensors.nv.lidar` (the low-level RTX plugin itself), no alternative.
+  The actual blocker remains what was already documented: `isaacsim.sensors.rtx.nodes` (the Python/ROS2 bridge
+  side of RTX Lidar, the only lidar pipeline this install has at all) fails to import during Kit's own native
+  startup, confirmed in the sim's boot log well before this project's own code runs. Nothing in this session's
+  scope could change that; flagged clearly to the user rather than left silent.
+- Files touched: `sim/scripts/setup_scene.py` (`imu_index` in `MODEL_PARAMS`, IMU wiring in `build_ros_graph`,
+  GPS index derivation, `import re`).
+
+## Addendum: 2D lidar unblocked — a working, RTX-independent sensor the earlier investigation had missed
+
+User: "it seems like 'isaacsim.sensors.experimental.physics.RaycastSensor' is replacing old lidar sensor
+library. did you check this?" -- a direct, correct challenge to the earlier "2D/3D lidar is blocked, no
+alternative pipeline exists in this install" conclusion. It hadn't been checked: the earlier investigation only
+looked for extension-level lidar *packages* (extscache directory names), not classes living inside an
+already-enabled, already-proven-working extension (`isaacsim.sensors.experimental.physics`, the same module
+`IMU`/`IMUSensor` already use successfully). Investigated properly this time, and it was a real miss worth
+correcting.
+
+- **Confirmed `Raycast`/`RaycastSensor` are real, independent of the broken RTX pipeline**: read the extension's
+  own source (`raycast.py`, `raycast_sensor.py`, `extension.py`) -- it acquires its own `IRaycastSensor`
+  Carbonite interface via a separate native binding (`_physics_sensors.acquire_raycast_sensor_interface()`),
+  nothing to do with `isaacsim.sensors.rtx`. Found and read this install's own `benchmark_physx_lidar.py`
+  standalone example and the extension's own test suite (`test_raycast_sensor.py`) to confirm exact usage
+  semantics (ray_origins/ray_directions are local-frame per-ray vectors; a prim nested as a plain child of the
+  real mount link inherits its pose automatically, same pattern `add_camera` already uses) before writing any
+  code, not guessing from the API surface alone.
+- **Real, confirmed bug found in this "experimental"-namespace API itself, not this project's code**: initial
+  implementation (mirroring `IMU_READ_SCRIPT`'s proven lazy-creation pattern, reading `get_data()['depths']`)
+  produced a scan where every single ray -- regardless of direction, including ones pointed at open air -- came
+  back reporting exactly `min_range`, or in some test configurations exactly `max_range`, but never anything in
+  between and never varying per-ray. Root-caused through a sequence of isolating tests (single down-ray alone;
+  a 3-ray down/forward/up probe; moving the "interesting" ray to different array indices) rather than guessing:
+  a 3-ray test (down/forward/up) showed `depths=[0.1, 0.1, 0.1]` for all three, but the *same reading's*
+  `hit_positions` were `[[0,0,-0.1], [3.77,0,0], [0,0,0]]` -- correctly different per ray (a real 0.1m hit
+  straight down, a real ~3.77m hit forward on scene geometry, a genuine no-hit straight up). This proves
+  `depths` itself is broken in this build (always echoing something like `min_range` rather than a genuine
+  per-ray distance) while `hit_positions` is computed correctly.
+- **Fix**: `LIDAR2D_READ_SCRIPT` now computes each ray's range as the Euclidean norm of its own
+  `hit_positions` entry (`output_frame="SENSOR"`, the default, keeps this in the same local frame
+  `ray_origins`/`ray_directions` already use, so the norm is directly the range in metres, no extra transform
+  needed) instead of trusting `depths` at all. A `hit_positions` entry of exactly `[0,0,0]` means no hit
+  (confirmed live: the "up" probe ray, a genuine miss, reported exactly that), remapped to `+Inf` per REP-117
+  rather than `0.0`.
+- **Verified live on `a200_0333`'s real Hokuyo UST** (541-ray fan, -135°..+135°, 0.1-10m range, matching the
+  real robot.yaml's own declared FOV): the full scan now shows genuine, varied finite ranges (209/541 rays hit
+  something, 1.36m-9.99m), matching the scene's own known geometry (its target box at ~3.2-3.3m, the far wall
+  approaching ~9.99m near the range limit) -- not a uniform placeholder value. No FATAL, no articulation errors,
+  the other 3 robots (no lidar2d_link) unaffected, all still drive correctly. `FLEET_DEBUG=1` showed
+  `rtf=0.55, render_fps=12.1` with the full 4-robot fleet including this lidar active -- not isolated from
+  camera rendering's own already-documented dominant cost, so not a clean read on the lidar's own marginal fps
+  price specifically; worth a dedicated measurement if performance becomes a concern.
+- **Not yet done, natural next steps, not attempted this session**: wiring this same (now proven) mechanism into
+  `j100_0936` once its own `robot_data` folder is available (its SICK LMS1xx would use the exact same
+  `LIDAR2D_READ_SCRIPT`/`lidar2d_link` machinery already built for `a200_0333`'s Hokuyo, just a different
+  `lidar2d_link` name to wire into `MODEL_PARAMS`); 3D lidar (`a200_0333`'s Velodyne VLP16, `add_lidar3d` still
+  a documented no-op) -- likely fixable the same way (same `RaycastSensor` API, same `hit_positions`-based
+  workaround should apply), but a much bigger jump in ray count (thousands vs. hundreds) and a different message
+  type (`sensor_msgs/PointCloud2`, not `LaserScan`), so treated as separately-sized work, not started here.
+- Files touched: `sim/scripts/setup_scene.py` (`LIDAR2D_READ_SCRIPT` rewritten to use `hit_positions` instead of
+  the broken `depths`, `LIDAR2D_*` constants, `Lidar2dRead` wiring in `build_ros_graph`, removed the old
+  documented-no-op `add_lidar2d` function and its call site).
+
+## Addendum: 3D lidar (Velodyne VLP16) — a real crash, root-caused and fixed, not a ray-count problem
+
+User: "fix the VLP16 too" — extending the just-proven `RaycastSensor` mechanism from 2D lidar to `a200_0333`'s
+real Velodyne. Reused the same `hit_positions`-based range computation (already proven correct; the `depths`
+field bug applies here too) and the same lazy-creation ScriptNode pattern, publishing `sensor_msgs/PointCloud2`
+instead of `LaserScan` (16 channels x 360 horizontal steps = 5760 rays, real VLP16 ±15° vertical FOV).
+
+- **The very first attempt segfaulted the entire `a300-isaac-sim` container** (`docker ps -a` showed `Exited
+  (139)`, `docker logs` showed a genuine `Segmentation fault (core dumped)` with a crash-reporter minidump) —
+  a serious regression, not a benign error. Immediately disabled the new code (`if params.get("lidar3d_link")
+  and False:`) and restarted to confirm the rest of the 4-robot fleet still came up cleanly before doing
+  anything else, per this project's own practice of restoring a known-good baseline before investigating
+  further.
+- **Root-caused rather than assumed to be a ray-count problem**: the actual log line just before the crash
+  (only visible on a closer read, not the first thing grepped for) was `Error in ... UsdStage::
+  _ValidateEditPrimAtPath ... 'Cannot create prim at path .../lidar3d_0_laser/lidar3d_0_laser_raycast;
+  authoring to an instance proxy is not allowed.'` — `a200_0333`'s `sensor_arch` mount subtree (the VLP16's
+  own real ancestor chain) is USD-instanceable, unlike `lidar2d_0_laser`'s bracket mount, which is why 2D lidar
+  never hit this. The retry-on-exception pattern (proven safe for IMU/2D lidar, where "not ready yet" is a
+  genuinely transient condition) kept re-attempting the *same, permanently-failing* authoring call every single
+  tick against an unrecoverable error — almost certainly what actually crashed the process, not the 5760-ray
+  count itself. Confirmed this directly rather than just theorizing: once the instance-proxy issue was fixed
+  (below), the exact same 5760-ray configuration was retested and is completely safe — ruling out ray count as
+  a contributing factor at all, not just "a smaller count happens to work."
+- **Fix**: the raycast sensor prim is no longer parented directly under the real `lidar3d_link` (the instanced
+  one); it's parented under `chassis` instead (the articulation root -- never instanced, already the reference
+  frame every drive/odometry node in this project targets). `build_ros_graph` computes `lidar3d_link`'s real
+  pose *relative to chassis* once, live, via `UsdGeom.Xformable(...).ComputeLocalToWorldTransform()` on both
+  prims (both are static, real rigid links, so this relative offset never changes as the robot drives) and
+  passes it to `Raycast.create()` as explicit `translations`/`orientations`, instead of relying on parent-child
+  nesting to place the sensor the way 2D lidar (and the IMU/camera before it) could.
+- **Verified live, incrementally, after the fix** (all with the real 4-robot fleet running, watching for both
+  crashes and correct data at each step, not just jumping straight back to 5760): 576 -> 1152 -> 3200 -> 4800 ->
+  5760 rays, each one a clean boot with no FATAL and genuine point data. At 576 rays: real varied (x,y,z)
+  values decoded from the raw `PointCloud2` buffer, tracing an actual ground-hit ring pattern from the lowest
+  (-15°) channel — correct 3D lidar geometry, not degenerate output. At the full 5760: ~3000/5760 rays hit
+  something (a realistic ratio, given open sky/long empty directions), all 4 robots still drive correctly, no
+  articulation or authoring errors. `FLEET_DEBUG=1`: `render_fps` 12.1 -> 10.4 (2D lidar alone -> +3D lidar at
+  full resolution) -- a real but modest ~14% additional cost on top of the scene's already camera-bound
+  baseline, not measured in isolation from that dominant cost.
+- Files touched: `sim/scripts/setup_scene.py` (`LIDAR3D_*` constants, `LIDAR3D_READ_SCRIPT`, `Lidar3dRead`
+  wiring in `build_ros_graph` including the chassis-relative-offset computation, removed the old
+  documented-no-op `add_lidar3d` function and its call site).
