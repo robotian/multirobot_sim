@@ -1,0 +1,10 @@
+# Request
+bool start_cutting
+---
+# Result
+bool success
+string message
+---
+# Feedback
+string current_state
+float32 distance_to_target

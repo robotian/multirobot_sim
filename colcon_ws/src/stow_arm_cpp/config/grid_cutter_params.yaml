@@ -1,0 +1,57 @@
+/**/grid_cutter_action_server:
+  ros__parameters:
+    pruner_action: /j100_0921/pruner_action_server
+    moveit_planning_time: 15
+    moveit_vel_scale: 1.0
+    moveit_acc_scale: 0.8
+    # --- Cutting Zone Boundaries (in meters) ---
+    zone_x_min: 0.20
+    zone_x_max: 0.38  # max reach 0.4 m
+    zone_y_min: 0.1
+    zone_y_max: 0.35
+    zone_z_height: 0.05
+    safe_z_height: 0.15
+
+    # --- Reachable circle at zone_z_height with grasp_orientation (shown in RViz, ns "reach_circle") ---
+    # Patches outside the circle are removed from the grid.
+    limit_to_reach_circle: true
+    reach_max_radius: 1.0      # search limit (m)
+    reach_radial_step: 0.01    # coarse radial step before bisection (m)
+    reach_ik_timeout: 0.05     # IK timeout per sample (s)
+    reach_angle_samples: 19    # directions sampled across the cutting zone
+    reach_margin: 0.0          # shrink the circle by this much (m)
+
+    # --- cutting performance param (in meters) ---
+    pushing_dist: 0.03
+    approach_offset: 0.15
+
+    # --- IK seed for Cartesian moves (arm_0_joint_1 .. arm_0_joint_6, rad) ---
+    # move_to_cartesian_pose picks the IK solution nearest this configuration. [] = use current state.
+    preferred_joint_positions: [-0.491424061204615, -1.7174645975088305, 1.3383140815397754,
+                                -0.5025198555703216, -1.5730738621591325, -1.4791010273023781]
+
+    # --- Tool Dimensions (in meters) ---
+    cutter_length: 0.06  # actually this is the width
+    cutter_width: 0.06
+
+    # --- Servo Controller Parameters ---
+    servo_kp: 2.3           # Proportional gain for twist velocity calculations
+    servo_max_vel: 0.15     # Maximum linear velocity cap (m/s)
+    pose_tolerance: 0.005   # Target position arrival tolerance (meters)
+
+    joint_limit_margin: 0.21
+    servo_joint_margin: 0.2
+
+
+    collision_objects: ["ground_plane", "safety_cylinder"]
+    ground_plane:
+      type: "box"
+      dimensions: [0.6, 0.6, 0.05]                # [length_x, width_y, height_z]
+      pose: [0.3, 0.0, -0.3, 0.0, 0.0, 0.0, 1.0] # [x, y, z, qx, qy, qz, qw]
+      frame_id: "arm_0_base_link"
+
+    safety_cylinder:
+      type: "cylinder"
+      dimensions: [0.4, 0.05]                    # [height, radius]
+      pose: [0.4, 0.2, 0.2, 0.0, 0.0, 0.0, 1.0]   # [x, y, z, qx, qy, qz, qw]
+      frame_id: "base_link"

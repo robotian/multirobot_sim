@@ -1,0 +1,28 @@
+[submodule "colcon_ws/src/apriltag_ros"]
+	path = colcon_ws/src/apriltag_ros
+	url = https://github.com/christianrauch/apriltag_ros.git
+	branch = master
+[submodule "colcon_ws/src/clearpath_desktop"]
+	path = colcon_ws/src/clearpath_desktop
+	url = https://github.com/clearpathrobotics/clearpath_desktop.git
+	branch = jazzy
+[submodule "colcon_ws/src/depthimage_to_laserscan"]
+	path = colcon_ws/src/depthimage_to_laserscan
+	url = https://github.com/robotian/depthimage_to_laserscan.git
+	branch = ros2
+[submodule "colcon_ws/src/docking_utils"]
+	path = colcon_ws/src/docking_utils
+	url = https://github.com/robotian/docking_utils.git
+	branch = main
+[submodule "colcon_ws/src/laser_filters"]
+	path = colcon_ws/src/laser_filters
+	url = https://github.com/ros-perception/laser_filters.git
+	branch = ros2
+[submodule "colcon_ws/src/mocap_fake_localizer"]
+	path = colcon_ws/src/mocap_fake_localizer
+	url = https://github.com/robotian/mocap_fake_localizer.git
+	branch = sim
+[submodule "colcon_ws/src/mtu32_husky"]
+	path = colcon_ws/src/mtu32_husky
+	url = https://github.com/robotian/mtu32_husky.git
+	branch = sim

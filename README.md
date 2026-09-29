@@ -27,6 +27,9 @@ A configurable number (0–8, three if `.env` doesn't say otherwise) of Clearpat
 ## Quick start
 
 ```bash
+# 0. Clone with the ROS packages in colcon_ws/src (several are git submodules)
+git clone --recurse-submodules https://github.com/robotian/multirobot_sim.git   # existing clone: git submodule update --init
+
 # 1. Build the images (robot + Isaac Sim with ROS 2 Jazzy) and generate the robot description (URDF + meshes)
 docker compose build
 scripts/gen_urdf.sh

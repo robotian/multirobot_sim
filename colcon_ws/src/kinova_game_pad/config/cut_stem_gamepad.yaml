@@ -1,0 +1,8 @@
+/**/cut_stem_gamepad_node:
+  ros__parameters:
+    joy_topic: joy_teleop/joy
+    action_name: cut_stem
+    # PS4 x-pad button mapping: X=0, O=1, L1=4
+    start_button: 0     # 'X' (Cross): send goal
+    cancel_button: 1    # 'O' (Circle): cancel goal
+    enable_button: 4    # L1 (deadman/enable button)
