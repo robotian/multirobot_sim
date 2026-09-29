@@ -74,11 +74,18 @@ source /opt/clearpath_robot_ws/install/setup.bash  # overlay: clearpath_generato
 # clearpath_platform_description/clearpath_manipulators/clearpath_sensors) can be run against them later if
 # wanted -- see robot/bin/generate_params and CLAUDE.md for what this can/can't produce.
 generate_params
+# One-shot: writes /etc/clearpath/robot.srdf (MoveIt semantic description) for real MoveIt launch files
+# (mtu32_bringup's moveit.launch.py, etc.) to load -- see robot/bin/generate_srdf for why this isn't just the
+# stock generate_semantic_description console_script.
+generate_srdf
 # ROS_NAMESPACE is only honoured by launch files; `ros2 run` tools need `--ros-args -r __ns:=` (see bin/teleop).
 # (already written to /etc/robot_ns_env.sh above, for docker exec shells; this exports it for this process too.)
 export ROS_NAMESPACE="${ROBOT_NAMESPACE}"
 # Background service, like the robot's own systemd unit; restarted if it dies.
 (while true; do robot_state || true; sleep 2; done) > /tmp/robot_state.log 2>&1 &
 (while true; do foxglove || true; sleep 2; done) > /tmp/foxglove.log 2>&1 &
+# Fake serial hardware for pruner_action_server (see robot/bin/pruner_stub) -- harmless on models that never
+# launch it; restarted like the others so /dev/ttyOpenCR survives across a stub crash.
+(while true; do pruner_stub || true; sleep 2; done) > /tmp/pruner_stub.log 2>&1 &
 
 exec "$@"

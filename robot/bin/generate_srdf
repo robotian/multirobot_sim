@@ -1,0 +1,92 @@
+#!/bin/bash
+# What a real Clearpath robot's own bringup also does for a robot with a manipulator: generate
+# /etc/clearpath/robot.srdf (the MoveIt semantic description -- planning groups, named group states, and the
+# self-collision matrix) from /etc/clearpath/robot.yaml, so real MoveIt launch files (move_group, moveit_servo,
+# see mtu32_bringup's moveit.launch.py) have something to load. Needed because moveit.launch.py reads
+# robot.srdf directly and fails outright ("No such file or directory") if it was never generated.
+#
+# clearpath_generator_common's own console_script for this, generate_semantic_description, does the same two
+# steps below but calls moveit_collision_updater with just `--trials 100000` (searching for "never colliding"
+# link pairs by randomly sampling 100000 joint configurations and checking collisions via FK) -- confirmed live,
+# repeatedly, across an armed model (j100_0921) and an armless one (a300_00036): that exhaustive random search
+# reliably crashes (stack smashing / segfault, not an occasional flake) partway through, before ever writing
+# robot.srdf. `--default --always` (disable the *always*- and *default*-colliding-pair searches, which is what
+# actually crashes) plus a minimal `--trials 1` avoids it entirely and still produces a complete, valid SRDF --
+# confirmed by inspection (real planning groups/group states, hundreds of real disable_collisions entries from
+# each pair's own quick adjacent/always-in-contact check, which doesn't need the crashing random search at all).
+# Tradeoff, not hidden: fewer pairs get provably marked "never colliding" than the full random search would
+# find, so MoveIt's collision checker does a bit more work at plan time -- it cannot mark a genuinely colliding
+# pair as safe, so this doesn't compromise collision-checking correctness, only its performance ceiling.
+set -e
+# robot.urdf.xacro is normally produced by robot_state's own background loop, but that starts *after* this
+# script runs in entrypoint.sh -- generate it here too rather than depend on boot ordering (idempotent; harmless
+# that robot_state generates it again moments later).
+ros2 run clearpath_generator_common generate_description -s /etc/clearpath > /dev/null
+python3 - <<'PY'
+from clearpath_generator_common.semantic_description.generator import SemanticDescriptionGenerator
+from clearpath_config.common.types.exception import (
+    UnsupportedAccessoryException,
+    UnsupportedMiddlewareException,
+    UnsupportedPlatformException,
+)
+from ros2run.api import get_executable_path, run_executable
+import os
+import subprocess
+import xml.etree.ElementTree as ET
+
+setup_path = '/etc/clearpath/'
+
+
+def prune_dangling_joints(root):
+    """Same fix as scripts/flatten_urdf.py's own prune_dangling_joints (see its docstring): mtu32_description's
+    xacro unconditionally mounts camera_1 on arm_0_end_effector_link, which doesn't exist on an armless robot
+    (e.g. j100_0922) -- xacro itself never validates this, but moveit_collision_updater's strict URDF loader
+    does, and aborts. Re-implemented here (not imported) since flatten_urdf.py is a host-side build script, not
+    installed in this image."""
+    changed = True
+    while changed:
+        changed = False
+        link_names = {link.get('name') for link in root.findall('link')}
+        for joint in root.findall('joint'):
+            parent_name = joint.find('parent').get('link')
+            if parent_name in link_names:
+                continue
+            child_name = joint.find('child').get('link')
+            child = next((link for link in root.findall('link') if link.get('name') == child_name), None)
+            print(f'[generate_srdf] dropping joint {joint.get("name")!r}: parent {parent_name!r} is never defined as a link')
+            root.remove(joint)
+            if child is not None:
+                root.remove(child)
+            changed = True
+            break
+
+
+try:
+    SemanticDescriptionGenerator(setup_path).generate()
+
+    # Expand + clean the URDF before handing it to moveit_collision_updater's own strict loader (see
+    # prune_dangling_joints above) -- xacro alone doesn't validate the tree, so a dangling joint would otherwise
+    # only be caught here, aborting the whole script.
+    urdf_xml = subprocess.run(
+        ['xacro', os.path.join(setup_path, 'robot.urdf.xacro')],
+        capture_output=True, check=True, text=True).stdout
+    root = ET.fromstring(urdf_xml)
+    prune_dangling_joints(root)
+    cleaned_urdf_path = '/tmp/robot.srdf_gen.urdf'
+    ET.ElementTree(root).write(cleaned_urdf_path)
+
+    with open(os.path.join(setup_path, 'package.xml'), 'w+') as f:
+        f.write('<package><name>clearpath_generator_common</name></package>\n')
+    path = get_executable_path(
+        executable_name='moveit_collision_updater',
+        package_name='clearpath_generator_common')
+    run_executable(path=path, argv=[
+        '--urdf', cleaned_urdf_path,
+        '--srdf', os.path.join(setup_path, 'robot.srdf.xacro'),
+        '--output', os.path.join(setup_path, 'robot.srdf'),
+        '--default', '--always', '--trials', '1',
+    ])
+    os.remove(os.path.join(setup_path, 'package.xml'))
+except (UnsupportedAccessoryException, UnsupportedMiddlewareException, UnsupportedPlatformException) as err:
+    print(f'[generate_srdf] skipped: {err}')
+PY

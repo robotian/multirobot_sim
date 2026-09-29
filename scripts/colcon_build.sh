@@ -19,7 +19,7 @@ fi
 status=0
 for r in "${robots[@]}"; do
     echo "== $r =="
-    if ! docker exec -u robot "$r" bash -c 'cd ~/colcon_ws && colcon build "$@"' bash "$@"; then
+    if ! docker exec -u robot "$r" bash -c 'cd ~/colcon_ws && colcon build "$@" && source install/setup.bash' bash "$@"; then
         echo "$r: colcon build failed" >&2
         status=1
     fi

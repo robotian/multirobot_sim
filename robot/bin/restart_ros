@@ -1,0 +1,34 @@
+#!/bin/bash
+# Kill every ROS 2 node/process running in this container and let entrypoint.sh's own self-healing background
+# services come back on their own -- a fast, in-place "ROS graph reset" for iterative testing, without the
+# ~20s+ cost of a full `docker restart` (robot.yaml/setup.bash/robot.srdf regeneration, colcon_ws re-sourcing,
+# ...) and without touching any colcon_ws build state.
+#
+# entrypoint.sh starts robot_state/foxglove/pruner_stub each inside its own `while true; do X || true; sleep 2;
+# done` loop -- killing just the current worker process (matched below) is enough; the still-running loop
+# detects the exit and respawns a fresh one within ~2s, so this script never needs to relaunch those three
+# itself. Everything else currently running (a manually `ros2 launch`'d/`ros2 run`'d stack -- e.g.
+# mtu32_bringup's sim_robot_upstart.launch.py and everything it spawned: move_group, servo_node,
+# grid_cutter_action_server, ...) has no such mechanism and is simply left stopped: this script has no way to
+# know which launch file or arguments you'd want reissued, so it reports what it stopped instead of guessing.
+set -u
+
+echo "Stopping ROS nodes..."
+pkill -9 -f 'ros2 (run|launch)|/opt/ros/[^ ]*/lib/|colcon_ws/install/[^ ]*/lib/|/usr/local/bin/pruner_stub' 2>/dev/null
+sleep 5  # margin for the self-healing loops' own restart (2s sleep) plus robot_state's own re-generate_description/xacro pass
+
+echo
+echo "Self-healing services (entrypoint.sh restarts these automatically):"
+for pair in "robot_state_publisher:/tmp/robot_state.log" "foxglove_bridge:/tmp/foxglove.log" "pruner_stub:/tmp/pruner_stub.log"; do
+    name="${pair%%:*}"
+    log="${pair#*:}"
+    if pgrep -f "$name" > /dev/null; then
+        echo "  $name: back up"
+    else
+        echo "  $name: NOT back up yet -- check $log"
+    fi
+done
+
+echo
+echo "Anything else that was running (manually launched, e.g. via 'ros2 launch') is now stopped, not"
+echo "relaunched -- rerun it yourself if you still need it."

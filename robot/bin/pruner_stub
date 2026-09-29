@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Fake OpenCR/Arduino firmware for pruner_action_server's own serial link (see colcon_ws/src/
+pruner_action_server/pruner_action_server/pruner_server.py) -- this sim has no real pruner hardware, and
+pruner_server otherwise fails outright ("could not open port /dev/ttyOpenCR: No such file or directory").
+
+Creates a real PTY and symlinks /dev/ttyOpenCR to its slave side. pyserial's own Serial() call (exactly what
+pruner_server does) opens a PTY slave exactly like a real tty device -- no special-casing needed on the
+pruner_server side at all, and no new system package (socat et al.) needed either, since Python's own `pty`
+module can do this directly.
+
+Implements just enough of pruner_server's own read loop to make a goal succeed: it writes "<target_integer>\n",
+then reads lines until it sees "STATUS:DONE"/"STATUS:FAIL" or times out (30s default). This stub reads whatever
+integer command arrives, waits CYCLE_TIME_S to simulate a real pruning cycle (also emitting a couple of
+progress lines a real firmware might send, harmlessly ignored by pruner_server's own loop since it only
+matches the two STATUS: lines exactly), then writes back "STATUS:DONE\n". Deliberately always succeeds --
+never emits STATUS:FAIL, since this sim has no failure mode of its own to report.
+"""
+import os
+import time
+
+DEVICE_PATH = "/dev/ttyOpenCR"
+CYCLE_TIME_S = 2.0
+
+
+def main():
+    master_fd, slave_fd = os.openpty()
+    slave_path = os.ttyname(slave_fd)
+
+    if os.path.islink(DEVICE_PATH) or os.path.exists(DEVICE_PATH):
+        os.remove(DEVICE_PATH)
+    os.symlink(slave_path, DEVICE_PATH)
+    print(f"[pruner_stub] {DEVICE_PATH} -> {slave_path}", flush=True)
+
+    buf = b""
+    while True:
+        chunk = os.read(master_fd, 256)
+        if not chunk:
+            continue
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            line = line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            print(f"[pruner_stub] received command: {line!r}, simulating a {CYCLE_TIME_S}s pruning cycle",
+                  flush=True)
+            time.sleep(CYCLE_TIME_S)
+            os.write(master_fd, b"STATUS:DONE\n")
+            print("[pruner_stub] wrote STATUS:DONE", flush=True)
+
+
+if __name__ == "__main__":
+    main()

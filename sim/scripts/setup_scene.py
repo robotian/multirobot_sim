@@ -810,6 +810,21 @@ def build_world(stage):
     for i, x in enumerate([4.0, 6.5, 9.0]):
         add_lavender(stage, f"/World/lavender/plant_{i}", (x, lavender_y, 0.0), rot_z=i * 47.0)
 
+    # Local fill light over the lavender row only. The global dome(350)/sun(1500) above are tuned for the rest
+    # of the scene -- a flat global bump big enough to light the lavender properly (dome=1500/sun=4000, tried
+    # once) blew out the walls/boxes/ground everywhere else (see last_session.md), so instead of raising those,
+    # add a RectLight positioned just above the row. A rect/disk/sphere light's default (unrotated) orientation
+    # already faces -Z ("down", same convention the sun light above relies on before its own tilt), so no
+    # rotate op is needed to aim it at the plants below. Its intensity falls off with distance, and the row
+    # sits offset in Y from the robots/boxes/wall, so it brightens the lavender without measurably touching the
+    # rest of the scene's exposure.
+    lavender_light = UsdLux.RectLight.Define(stage, "/World/Lights/lavender_fill")
+    lavender_light.CreateWidthAttr(6.0)
+    lavender_light.CreateHeightAttr(2.0)
+    lavender_light.CreateIntensityAttr(6000)
+    lavender_light.CreateColorAttr(Gf.Vec3f(1.0, 0.96, 0.88))  # slightly warm, like sunlight
+    UsdGeom.Xformable(lavender_light).AddTranslateOp().Set(Gf.Vec3d(6.5, lavender_y, 2.8))
+
 
 def spawn_robot(stage, ns, model, index, count):
     root = f"/World/{ns}"
@@ -864,6 +879,31 @@ def add_camera(stage, robot_root, optical_link=None, hfov_deg=HFOV_DEG):
 # torque-accurate model, and disclosed as such; adjust if the arm moves too slowly/oscillates in practice.
 ARM_DRIVE_STIFFNESS = 1.0e5
 ARM_DRIVE_DAMPING = 1.0e4
+# arm_0_joint_2 (the "shoulder" joint -- carries by far the most gravitational load/inertia of the 6, matching
+# its own URDF effort limit of 14 N*m vs 7-10 for the others) is a real outlier under the uniform gains above:
+# confirmed live, comparing commanded vs. observed joint_states during an actual zero->cut_init trajectory
+# (control_msgs/FollowJointTrajectory, not a raw instantaneous step) -- joints 1/3 show smooth, bounded
+# following error throughout, but joint_2 swings *through* zero error and overshoots by over 0.6 rad before
+# slowly settling, a genuine underdamped oscillation, not simple lag. Tried uniformly scaling stiffness+damping
+# together (preserves the same relative damping ratio, so joint_2 stayed just as underdamped, only smaller in
+# absolute terms) and damping alone (didn't fix joint_2's overshoot and added much worse lag to joints 1/3,
+# which were fine before) -- neither worked, because one uniform gain pair can't properly serve joints with
+# this different a load. Only arm_0_joint_2 gets its own much stronger, non-uniform gain; every other arm/
+# gripper joint keeps the values above.
+ARM_JOINT_2_STIFFNESS = 1.0e7
+ARM_JOINT_2_DAMPING = 1.0e6
+# The actual root cause of joint_2 "falling" (the gain above only helped with overshoot): the importer copies the
+# URDF effort limit (14 N*m) into the drive's maxForce, and in this sim joint_2 needs more than that -- measured
+# via platform/joint_states effort: ~11-12 N*m just holding cut_init, 19-26 N*m while moving at ~0.14 rad/s.
+# Once the drive saturates, gain is irrelevant and gravity wins: joint_2 dropped from -0.65 to -2.1 rad mid
+# zero->cut_init, couldn't climb back from -2.35 on cut_init->zero, and this was also grid_cutter's patch-2
+# servo stall (blocked toward 0, free toward -2.5). With 40 N*m every move tracks within ~0.06 rad and a full
+# cut_stem runs patch after patch (peak 24 N*m, >14 N*m for 27% of the run). Gains from 1e4/1e3 to 1e7/1e6 all
+# need the same torque, so the extra demand isn't the drive fighting itself. OPEN: static gravity from the URDF
+# masses (which match the imported USD) predicts only ~7.5 N*m at cut_init and ~9-10 N*m peak; the real arm
+# works within 14 N*m. Self-collision and joint friction ruled out; chassis pitch/rocking not yet checked. This
+# is therefore a disclosed workaround, not a realistic torque model. None = keep the URDF limit.
+ARM_JOINT_2_MAX_FORCE = 40.0
 
 
 def configure_arm_drives(stage, root):
@@ -877,7 +917,8 @@ def configure_arm_drives(stage, root):
     has no effect regardless of what IsaacArticulationController sends) -- this reconfigures just the arm/
     gripper joints' DriveAPI directly on the imported USD, leaving every other joint (wheels, rockers, ...)
     on the global velocity-drive settings untouched. Matched by "arm_0" appearing anywhere in the joint prim's
-    own name, covering both arm_0_joint_N and arm_0_gripper_*_joint uniformly without hardcoding either list.
+    own name, covering both arm_0_joint_N and arm_0_gripper_*_joint uniformly without hardcoding either list
+    (except arm_0_joint_2's own stronger gain, see above).
     No-op for every model without an arm (nothing named "arm_0" exists in their USD).
     """
     from pxr import Usd, UsdPhysics
@@ -885,11 +926,15 @@ def configure_arm_drives(stage, root):
     for prim in Usd.PrimRange(stage.GetPrimAtPath(root)):
         if "arm_0" not in prim.GetName():
             continue
+        stiffness = ARM_JOINT_2_STIFFNESS if prim.GetName() == "arm_0_joint_2" else ARM_DRIVE_STIFFNESS
+        damping = ARM_JOINT_2_DAMPING if prim.GetName() == "arm_0_joint_2" else ARM_DRIVE_DAMPING
         for dof in ("angular", "linear"):
             drive = UsdPhysics.DriveAPI.Get(prim, dof)
             if drive:
-                drive.GetStiffnessAttr().Set(ARM_DRIVE_STIFFNESS)
-                drive.GetDampingAttr().Set(ARM_DRIVE_DAMPING)
+                drive.GetStiffnessAttr().Set(stiffness)
+                drive.GetDampingAttr().Set(damping)
+                if prim.GetName() == "arm_0_joint_2" and ARM_JOINT_2_MAX_FORCE is not None:
+                    drive.GetMaxForceAttr().Set(ARM_JOINT_2_MAX_FORCE)
 
 
 def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params):

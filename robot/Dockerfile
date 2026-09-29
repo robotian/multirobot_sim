@@ -25,8 +25,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-jazzy-image-transport-plugins \
         ros-jazzy-foxglove-bridge \
         ros-jazzy-rmw-zenoh-cpp \
+        ros-jazzy-nav2-common \
+        ros-jazzy-pcl-ros \
+        ros-jazzy-moveit-ros-move-group \
+        ros-jazzy-moveit-servo \
+        ros-jazzy-apriltag \
+        ros-jazzy-apriltag-msgs \
+        ros-jazzy-camera-ros \
+        python3-serial \
         gettext-base x11-apps \
     && rm -rf /var/lib/apt/lists/*
+# nav2_common: colcon_ws/src/mtu32_husky/mtu32_bringup (MTU's own private lab package, bind-mounted at runtime,
+# not baked into this image) imports nav2_common.launch.RewrittenYaml across most of its launch files -- a real
+# dependency of that package, not something to patch around in its own source.
+# pcl_ros/moveit_ros_move_group/moveit_servo: mtu32_bringup's bringup_main.launch.py/pcl_filter.launch.py/
+# moveit.launch.py need these -- generic ROS/MoveIt2 framework packages, not vendored in robot_data/j100_0921/
+# colcon_ws/src (unlike the MTU-custom and forked-public packages copied into colcon_ws/src/, see that folder).
+# apriltag/apriltag-msgs/camera-ros: colcon_ws/src/apriltag_ros (copied from robot_data, needed by
+# bringup_main.launch.py) depends on these at CMake config time; likewise generic framework packages, not
+# vendored alongside it.
+# python3-serial: colcon_ws/src/pruner_action_server's own node does `import serial` (pyserial, for the real
+# pruner actuator's serial link) -- a plain Python dependency, not a ROS package, so it's not caught by any
+# colcon build step; only surfaces as a runtime ModuleNotFoundError when the node actually starts.
 
 # clearpath_generator_robot + clearpath_sensors: the real per-robot param/launch generator a physical Clearpath
 # robot runs (github.com/clearpathrobotics/clearpath_robot, jazzy branch) -- NOT packaged in the public Jazzy apt
@@ -54,7 +74,7 @@ RUN bash -c "source /opt/ros/jazzy/setup.bash && cd /opt/clearpath_robot_ws && c
 COPY config/robot.a300.yaml.tmpl config/robot.a200.yaml.tmpl config/robot.j100.yaml.tmpl config/robot.r100.yaml.tmpl config/robot.j100_0936.yaml.tmpl config/robot.rviz.tmpl /opt/clearpath/
 COPY entrypoint.sh /entrypoint.sh
 COPY bin/ /usr/local/bin/
-RUN chmod +x /entrypoint.sh /usr/local/bin/teleop /usr/local/bin/camera_view /usr/local/bin/robot_state /usr/local/bin/rviz /usr/local/bin/foxglove /usr/local/bin/generate_params
+RUN chmod +x /entrypoint.sh /usr/local/bin/teleop /usr/local/bin/camera_view /usr/local/bin/robot_state /usr/local/bin/rviz /usr/local/bin/foxglove /usr/local/bin/generate_params /usr/local/bin/generate_srdf /usr/local/bin/pruner_stub /usr/local/bin/restart_ros /usr/local/bin/arm_goto /usr/local/bin/arm_joints
 
 # ROS workspace user. Ubuntu 24.04 (this image's base) already ships a uid/gid 1000 "ubuntu" account, which is
 # renamed rather than adding a second uid 1000 user; 1000 is also the typical host user's uid, so files the

@@ -296,8 +296,41 @@ So the levers that matter are the number of robots with cameras and async render
 Besides the robots, the sim spawns some static scene dressing in `build_world()` (`sim/scripts/setup_scene.py`):
 
 - coloured target boxes (one per robot, with a physics collider — robots can drive into them), a wall and pillars, all for the cameras to look at;
-- three lavender plants (`SM_Lavender_Nanite_01.usd` under `sim/assets/lavender/`, `add_lavender()`), referenced with `instanceable=True` so the ~1.26M-triangle mesh is shared rather than tripled, and scaled by 0.01 to convert the asset's centimetre units into this stage's metres. They sit in a row off to the side of the robots' lane, with no collider (decoration only). They cost about 3–4 fps at 2 robots on this GPU — see *Faster streaming* if that's a problem, or edit/remove the `add_lavender(...)` calls.
-- They render fairly dark under the current lighting; the plant's material (converted from Unreal) needs more light than the boxes/wall to read clearly. Raising `dome`/`sun` light intensity in `build_world()` fixes it but overexposes the rest of the scene, so it hasn't been changed — worth a supplemental local light near the plants if this matters.
+- three lavender plants (`SM_Lavender_Nanite_01.usd` under `sim/assets/lavender/`, `add_lavender()`), referenced with `instanceable=True` so the ~1.26M-triangle mesh is shared rather than tripled, and scaled by 0.01 to convert the asset's centimetre units into this stage's metres. They sit in a row off to the side of the robots' lane, with no collider (decoration only). They cost about 3–4 fps at 2 robots on this GPU — see *Faster streaming* if that's a problem, or edit/remove the `add_lavender(...)` calls. A small local `RectLight` above the row (`lavender_fill` in `build_world()`) fills them in without raising the scene's global lights (which overexposes everything else) — see *Lavender material* below for how the plant itself was fixed and how to tune its look further.
+
+### Lavender material
+
+The plant is a Nanite mesh exported from Unreal, shipped with its own real MDL shaders and albedo/normal textures (`sim/assets/lavender/Materials/`) — but as exported, none of its 4 materials (`MI_Stem_01`, `MI_Leaf_high_01`, `MI_Lavender_Flower_Branch_01`, `MI_Leaf_01`) were actually wired to a shader implementation: each material's `outputs:surface` had no connection at all, so Isaac silently fell back to the mesh's own baked `displayColor` primvar — a flat grayscale AO/lightmap channel, not real color, which is why it rendered as a dark, nearly colorless silhouette. Three fixes, applied directly to `sim/assets/lavender/SM_Lavender_Nanite_01.usd` (`.usd.orig` alongside it is the untouched backup from before any of this):
+
+1. **Real shaders.** Each material's existing shader prim (which already carried the correct `TintColor`/`ColorFresnel`/... values from the Unreal export) now points at its real `.mdl` module in `Materials/`, instead of nothing.
+2. **`doubleSided`.** All 5 mesh sections had `doubleSided=False`; for blade-thin foliage geometry like this, that silently culls/darkens roughly half of all viewing angles. Set to `True`.
+3. **Subsurface translucency.** The shaders are built on NVIDIA's `OmniUe4Subsurface` module, which has a real `diffuse_transmission_bsdf` lobe for light passing through thin geometry — but every material hard-coded `subsurface_color = 0` (black) and `opacity = 1.0` in its `.mdl` source, which disabled transmission entirely *and* wasted half its shading budget on a black reflection lobe. `MI_Stem_01.mdl` and `MI_Lavender_Flower_Branch_01.mdl` now expose this as two real, tunable parameters — **Subsurface Color** and **Subsurface Opacity** — under a new "07 - Subsurface" parameter group. `MI_Leaf_01`/`MI_Leaf_high_01` still have it hard-coded off; the same fix would apply there too if it matters.
+
+| Close-up | In the scene |
+|---|---|
+| ![lavender close-up, stems and flower spikes visible](docs/images/lavender_closeup.png) | ![lavender row alongside a target box](docs/images/lavender_in_scene.png) |
+
+*(Both grabbed from `j100_0921`'s own camera feed over ROS — `sensor_msgs/Image` on `sensors/camera_0/color/image`, rotated 180° for display — not the Isaac Sim client's own viewport, which renders noticeably cleaner: its RTX-Real-Time mode converges better than this path-traced ROS camera stream, especially on thin geometry like the stems. The rotation isn't a sim quirk: `j100_0921`'s (and `a200_0333`'s) real camera is physically mounted rolled 180° — see `robot_data/j100_0921/robot.yaml`'s `zed_mount` link (`rpy: [3.14159, 0, 0]`) — so the raw topic is genuinely upside-down on both the real robot and here, matching hardware faithfully.)*
+
+**Tuning it live, in the Isaac Sim client, no file editing required:**
+
+1. **File → Open Stage**, and open `/sim/assets/lavender/SM_Lavender_Nanite_01.usd` directly — standalone, not through the fleet scene. The three plants in the fleet are `instanceable=True` copies of this file, which makes their materials read-only when selected there.
+2. In the **Stage** panel, expand `Root → Looks` and click the material to edit (`MI_Stem_01`, `MI_Leaf_high_01`, `MI_Lavender_Flower_Branch_01`, or `MI_Leaf_01`).
+3. In the **Property** panel, its inputs show up grouped and labelled — straight from the `.mdl` file's own `anno::display_name`/`anno::in_group` annotations, e.g. "01 - Albedo" → **Tint Color**, "07 - Subsurface" → **Subsurface Color**/**Subsurface Opacity**. Edit them and the viewport updates live, no restart needed.
+4. **Ctrl+S** to save back to the file, then restart the sim (`docker restart a300-isaac-sim`, or `docker compose up -d`) to see it in the full fleet scene.
+
+To edit live *inside* the running fleet scene instead of the standalone file: select a plant (`/World/lavender/plant_0` in the Stage tree), uncheck **Instanceable** in the Property panel for that session, then drill into `Looks` the same way. That only edits the fleet's own in-memory session layer, though — to make it stick, set your edit target (Window → Layers) to the `SM_Lavender_Nanite_01.usd` sublayer first, or just use the standalone-file route above, which is simpler for anything you want to keep.
+
+Current tuned values, as a reference starting point:
+
+| Material | Parameter | Value |
+|---|---|---|
+| `MI_Lavender_Flower_Branch_01` | Brightness dots | `9.0` (was `3.0`) |
+| `MI_Lavender_Flower_Branch_01` | Tint Color | `(0.50, 0.35, 0.75)` (was `(0.29, 0.20, 0.46)`) |
+| `MI_Lavender_Flower_Branch_01` | Subsurface Color | `(0.55, 0.35, 0.72)` |
+| `MI_Lavender_Flower_Branch_01` | Subsurface Opacity | `0.6` |
+| `MI_Stem_01` | Subsurface Color | `(0.55, 0.80, 0.35)` |
+| `MI_Stem_01` | Subsurface Opacity | `0.6` |
 
 ## Known limitations
 
@@ -330,7 +363,7 @@ Besides the robots, the sim spawns some static scene dressing in `build_world()`
 | `colcon_ws/src/` | ROS workspace shared by every robot container, see *ROS workspace* |
 | `docker/fastdds_udp.xml` | FastDDS profile (UDP only, since containers don't share `/dev/shm`) |
 | `docker/isaac-sim.Dockerfile`, `docker/isaac-entrypoint.sh` | Isaac Sim image with a system ROS 2 Jazzy (needed for zenoh) |
-| `sim/assets/lavender/` | `SM_Lavender_Nanite_01.usd` and its Materials, referenced three times as scene decoration |
+| `sim/assets/lavender/` | `SM_Lavender_Nanite_01.usd` and its real `Materials/` (MDL shaders + textures, see *Lavender material*), referenced three times as scene decoration |
 
 See `CLAUDE.md` for more detail on how the pieces fit together.
 

@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>moveit_sim_bridge</name>
+  <version>0.0.1</version>
+  <description>
+    Bridges MoveIt's trajectory/gripper execution (FollowJointTrajectory, GripperCommand) to this project's
+    own sim arm command topic (arm_0/joint_command), since the simulated arm has no real ros2_control
+    hardware interface for move_group's moveit_simple_controller_manager to talk to.
+  </description>
+  <maintainer email="noreply@example.com">isaac_sim_project</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>control_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>trajectory_msgs</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

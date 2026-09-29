@@ -791,3 +791,501 @@ project's own established practice of re-verifying a named claim instead of assu
   `robot/entrypoint.sh` (source the new overlay before `generate_params`), `robot/bin/generate_params`
   (rewritten to use `RobotParamGenerator`/`RobotLaunchGenerator`), `CLAUDE.md` (superseded the "sensors gap"/
   "LaunchGenerator dead end" paragraph with this finding).
+
+## Addendum: real EKF localization, then a full real MTU bringup launch file, made to actually run against the sim
+
+User asked to actually run some of the generated real launch tree "like the real robot does," flagging that
+some of it directly touches hardware or topics with no sim source (e.g. battery status). Scoped down via two
+direct questions: hardware-only telemetry with no sim source (battery, wifi, diagnostics) gets excluded cleanly,
+no fake stubs; real `ros2_control` (wheel/arm) also excluded for now, since OmniGraph is already the working
+substitute and a real sim hardware-interface bridge is a separate, larger, unscoped follow-up. The one thing
+wanted for real: EKF, since it only reads `platform/odom`, which the sim genuinely publishes.
+
+- Before I could finish proposing my own wrapper launch file for this, **the user had already written their
+  own** (`colcon_ws/src/mtu32_husky/mtu32_bringup/launch/sim_robot_upstart.launch.py`, MTU's own private
+  package): a single `robot_localization` `ekf_node`, reading the real generated `localization.yaml`, with a
+  `{'publish_tf': False}` override -- independently arriving at the same design (including the same TF-conflict
+  reasoning) my own not-yet-approved plan had. Treated as the canonical version going forward; my own draft
+  plan file was abandoned.
+- **Launching it hit a real error**: `ModuleNotFoundError: No module named 'nav2_common'` (imported for
+  `RewrittenYaml`, unused in this file but genuinely used across most of `mtu32_bringup`'s *other* launch files
+  -- confirmed by grepping the whole package, not just patched around in this one file). Fixed by adding
+  `ros-jazzy-nav2-common` to `robot/Dockerfile`.
+- **A second, silent bug found while verifying the fix actually did something** (checked `ros2 param get` live
+  rather than trusting a clean launch log): the `ekf_node`'s `Node()` action never set `name='ekf_node'`, so it
+  ran under `robot_localization`'s own default name `ekf_filter_node` -- silently mismatched against the
+  generated `localization.yaml`'s own node-name-keyed structure (`j100_0921: ekf_node: ros__parameters: ...`),
+  so none of the real per-robot values (`frequency: 50.0`, `odom0: platform/odom`) ever actually loaded; it ran,
+  publishing nothing useful, with the stock `robot_localization` defaults instead (`frequency` reads back as
+  `30.0`). Fixed with a one-line `name="ekf_node"` addition to the user's file. Re-verified live after rebuilding
+  `mtu32_bringup`: `odom0`/`frequency`/`publish_tf` all read back correctly, `platform/odom/filtered` actually
+  publishes at ~28Hz, and `/tf` publisher count is unaffected (three publishers before and after: the sim's own
+  OmniGraph one, `robot_state_publisher`, and `ekf_node`'s own inert-but-declared handle) -- confirming
+  `publish_tf: False` genuinely suppressed the broadcast rather than just being accepted as a parameter.
+  (Along the way, cleaned up several of my own leftover test processes from repeated `docker exec` launches that
+  briefly caused real duplicate-node-name warnings -- a self-inflicted testing artifact, not a bug in anything
+  real, resolved with a plain container restart before the final clean verification run.)
+
+Immediately after, user asked to make `sim_robot_upstart.launch.py` "the main launch file for the simulation
+robot," add an `IncludeLaunchDescription` for `bringup_main.launch.py` (a much bigger MTU launch file: laser
+scan filtering, depth-to-laserscan, AprilTag detection, dock pose TF, point-cloud filtering, a "grid cutter"
+MoveIt action server, a pruner action server, gamepad-driven stem cutting, and MoveIt `move_group`+`servo_node`
+after a delay) into it, and pointed at `robot_data/j100_0921/colcon_ws/src` (that real robot's own actual,
+working colcon workspace snapshot) as the place to find whatever packages were missing, to be copied into the
+shared, bind-mounted `colcon_ws/src/`.
+
+- **10 packages copied verbatim from `robot_data/j100_0921/colcon_ws/src/`** into `colcon_ws/src/`:
+  `mocap_fake_localizer`, `docking_utils`, `stow_arm_cpp`, `pruner_action_server`, `kinova_game_pad` (MTU-custom
+  code), plus `laser_filters`, `depthimage_to_laserscan`, `apriltag_ros`, `plant_cutter_msgs`,
+  `serial_interfaces` (forked/vendored public packages) -- copied from source rather than substituted with apt
+  equivalents deliberately, to stay version/config-consistent with the launch/config files actually written
+  against them (the user's own instruction: copy from that specific folder, not "find any equivalent"). Found by
+  reading `bringup_main.launch.py` and its own further includes (`moveit.launch.py`, `pcl_filter.launch.py`) for
+  every `package=`/`get_package_share_directory()` reference, then cross-checking each new package's own
+  `package.xml` `depend`s against what else `robot_data`'s src tree had, catching `plant_cutter_msgs`/
+  `serial_interfaces` as transitive needs that weren't in the first obvious pass.
+- **7 more packages added to `robot/Dockerfile`'s apt list**, found only by letting `colcon build` fail and
+  reading its real errors rather than trying to pre-derive the full dependency tree by hand: `pcl_ros`,
+  `moveit_ros_move_group`, `moveit_servo` (generic MoveIt2/PCL framework packages `bringup_main`/`moveit`/
+  `pcl_filter`.launch.py need, absent from `robot_data`'s own src tree -- confirming the real robot installs
+  these from apt too, not vendored), then `apriltag`/`apriltag-msgs`/`camera-ros` (apriltag_ros's own missing
+  CMake deps, caught by an actual `CMake Error` during the colcon build), then `python3-serial` (a plain,
+  non-ROS Python dependency -- `pruner_action_server`'s own node does `import serial` -- invisible to colcon
+  build entirely, only surfaced as a runtime `ModuleNotFoundError` once the node actually started).
+- **Launching the combined file hit one more real, structural blocker beyond missing packages**:
+  `moveit.launch.py` (included via `bringup_main.launch.py`, after a delay) reads `/etc/clearpath/robot.srdf`
+  directly and failed with a plain "No such file or directory" -- this file had simply never been generated by
+  anything in this project. Root cause: `clearpath_generator_common`'s own `generate_semantic_description`
+  console_script (the tool that would normally write it) was already known, from a much earlier session, to
+  "crash with an Eigen assertion" and was never run -- re-investigated rather than left as a permanent
+  limitation, since the user's new ask now genuinely needed it. **Reproduced live, twice** (once via the
+  stand-alone `generate_semantic_description` script, once via its own inner `moveit_collision_updater` binary
+  directly): the crash is a real, reliable `stack smashing`/segfault inside `moveit_collision_updater`'s
+  exhaustive `--trials 100000` random-sampling self-collision search, not an occasional flake, and not
+  model-specific -- reproduced on both an armed robot (`j100_0921`) and an armless one (`a300_00036`).
+  **Found a real, working fix by reading the tool's own `--help`**: `--default --always` (disable exactly the
+  two colliding-pair search categories that crash) plus `--trials 1` avoids the crash entirely and still
+  produces a complete, valid SRDF (confirmed by inspection: real planning groups, group states, hundreds of
+  real `disable_collisions` entries from the cheap adjacent-link check, which doesn't need the crashing random
+  search). Implemented as a new script, `robot/bin/generate_srdf` (run at boot, right after `generate_params`),
+  reimplementing `generate_semantic_description`'s own two-step logic with the safe flags instead of calling the
+  crashing stock script. Two more real things this new script had to handle, both caught by testing an actual
+  fresh container boot rather than trusting a manual mid-session run: (1) `/etc/clearpath/robot.urdf.xacro`
+  doesn't exist yet at the point `entrypoint.sh` would run this -- it's normally written by `robot_state`'s own
+  background loop, which starts *after* this in the boot sequence -- fixed by having `generate_srdf` run
+  `generate_description` itself first, redundant with `robot_state`'s own later run but harmless and
+  order-independent; (2) `j100_0922` (the armless twin, whose xacro has the already-known dangling
+  `camera_1_joint`→`arm_0_end_effector_link` reference `scripts/flatten_urdf.py`'s `prune_dangling_joints`
+  already fixes for the *sim's* flattened URDF) hit the exact same dangling-joint problem again here, since this
+  is a completely different, freshly-xacro'd URDF that pass never touches -- `moveit_collision_updater`'s own
+  strict URDF loader aborts on it (unlike plain `xacro`, which never validates). Fixed by re-implementing the
+  same `prune_dangling_joints` logic inline in `generate_srdf` (not imported -- `flatten_urdf.py` is a host-side
+  build script, not installed in this image) before handing the cleaned URDF to `moveit_collision_updater`.
+  Verified live: all 4 currently-configured real robots (`j100_0921`, `a300_00036`, `a200_0333`, `j100_0922`)
+  now get a real, non-empty `/etc/clearpath/robot.srdf` at every boot, with zero tracebacks/aborts in any of
+  their logs.
+- **Full end-to-end result, verified over an actual 20+ second run** (not just a launch-and-immediately-check):
+  every node in `sim_robot_upstart.launch.py` (now including `bringup_main.launch.py`) starts and stays up --
+  `ekf_node`, `scan_to_scan_filter_chain`, `depthimage_to_laserscan_node`, `apriltag_node`, `tf2_pose_node`,
+  `filter_crop_box_node`, `grid_cutter_action_server`, `pruner_server`, `cut_stem_gamepad_node`, `move_group`,
+  `servo_node` -- `move_group`/`servo_node` both genuinely load the real robot model and initialize
+  successfully (`servo_node`'s own twist-mode activation service call returns `success=True`). `drive_test.py`
+  still passes afterward, confirming none of this touched the sim's own working drive pipeline. **Remaining
+  warnings, deliberately left as-is, not chased**: `pruner_server` logs a clean (non-crashing) failure to open
+  `/dev/ttyOpenCR` -- real pruner hardware this sim has no equivalent of, same category as every other
+  real-hardware gap this session already accepted as out of scope; the `arm_0_gripper` planning group logs
+  `'is not a chain'` and gets no KDL kinematics solver -- expected, a parallel-jaw gripper group doesn't need
+  IK; `move_group` logs "No 3D sensor plugin(s) defined for octomap updates" -- expected, no 3D perception
+  source is configured; `tf2_pose_node`'s `jackal_charger_april` TF lookup failures are expected too -- that
+  frame only exists once an AprilTag dock target is actually visible in-camera, which nothing in the current
+  scene provides.
+- Files touched: `colcon_ws/src/mtu32_husky/mtu32_bringup/launch/sim_robot_upstart.launch.py` (the
+  `bringup_main.launch.py` include, the `nav2_common`/`name="ekf_node"` fixes -- the user's own file, edited
+  directly during live debugging), `robot/bin/generate_srdf` (new), `robot/entrypoint.sh` (call site, right
+  after `generate_params`), `robot/Dockerfile` (`nav2_common`/`pcl_ros`/`moveit_ros_move_group`/`moveit_servo`/
+  `apriltag`/`apriltag-msgs`/`camera-ros`/`python3-serial` added, `chmod +x` for `generate_srdf`), 10 packages
+  copied into `colcon_ws/src/` from `robot_data/j100_0921/colcon_ws/src/` (see above), `CLAUDE.md` (new
+  `generate_srdf` and `sim_robot_upstart.launch.py` paragraphs).
+
+## Addendum: the arm accepted cut_stem goals but never actually moved -- a new moveit_sim_bridge package closes the real gap
+
+User: "for j100_0921, the arm start to move with '...send_goal /j100_0921/cut_stem...' command. but it does
+not [move]." First reproduced properly rather than trusted at face value: my own prior verification run had
+left several overlapping test launches half-cleaned-up (two `grid_cutter_action_server` zombies, orphaned
+`move_group`/`servo_node` still alive from a killed parent, a stale `/j100_0921/cut_stem` DDS advertisement with
+no live server behind it) -- a `docker restart j100_0921` for a genuinely clean slate, then one single fresh
+launch, was needed before the real behavior could even be observed.
+
+- **Root cause, confirmed live via `ros2 action info`**: `move_group`'s own `moveit_simple_controller_manager`
+  plugin is a real, permanent *client* of `/j100_0921/manipulators/arm_0_joint_trajectory_controller/
+  follow_joint_trajectory` (`control_msgs/action/FollowJointTrajectory`) -- 0 action servers existed for it.
+  This project's arm has no real `ros2_control` hardware interface at all (Isaac's own OmniGraph drives it
+  directly via `arm_0/joint_command`, position-mode, per `configure_arm_drives`/the "Arm + gripper" section in
+  `sim/scripts/setup_scene.py`) -- so every `MoveGroupInterface::execute()` call failed instantly (~150ms, far
+  too fast to be real motion) with error code -4 (`CONTROL_FAILED`), confirmed by reading `move_group`'s own log
+  line by line rather than assuming from the action's outcome alone.
+- **Checked with the user before building new infrastructure**: this is exactly the "real sim hardware-interface
+  bridge" the earlier EKF-launch plan-mode session explicitly scoped *out* as "a separate, larger, unscoped
+  follow-up." Since the user's actual current goal genuinely needs *some* execution path to exist, asked
+  directly rather than silently reversing that decision or silently doing nothing -- confirmed: build a small,
+  scoped bridge (not a full ros2_control `SystemInterface` plugin).
+- **New package: `colcon_ws/src/moveit_sim_bridge/`** (ament_python, project-owned -- not MTU's own code, since
+  this is purely a sim-side compensation, unlike everything else copied from `robot_data` this session), one
+  node with three pieces, two of which were only discovered necessary by testing the actual end-to-end goal
+  rather than stopping at the first fix:
+  1. A `FollowJointTrajectory` action server at the exact name above, publishing each waypoint as a
+     `sensor_msgs/JointState` position command to `arm_0/joint_command`, paced by the waypoint's own
+     `time_from_start` (a disclosed simplification: time-based, not feedback-convergence-based -- it trusts
+     `IsaacArticulationController`'s own already-tuned position servo to actually get there, the same way the
+     real hardware's own controller would, rather than re-implementing tolerance/settling logic itself).
+  2. A `GripperCommand` action server at `.../arm_0_gripper_controller/gripper_cmd`, commanding all 4 of the
+     Kinova 2F Lite's real finger joints (from `robot.srdf`'s own `arm_0_gripper` group) to one shared position
+     -- no mimic-joint solver, overridable via a `gripper_joint_names` parameter.
+  3. **Found only after (1) alone still left something broken**: with just the action server built and verified
+     (arm genuinely reached its first `move_group`-planned pose -- `platform/joint_states` for `arm_0_joint_1`/
+     `_2` moved from ~0 to -0.51/-1.37 rad, confirmed by reading actual joint state before/after, not just
+     trusting a log line), `grid_cutter_action_server`'s own later *servo*-based fine-approach phase still timed
+     out ("servo_to_pose timed out after 15.0s"). Read `mtu32_bringup`'s own `servo_config.yaml` rather than
+     guessing: `moveit_servo`'s `command_out_type: trajectory_msgs/JointTrajectory` means it streams single-point
+     trajectories directly onto a **plain topic** (`command_out_topic`, 100Hz), never through the action at all
+     -- a completely separate output path nothing was listening on. Fixed with a third piece: a plain
+     subscriber on that same topic, forwarding each single-point message straight to `arm_0/joint_command` the
+     same way.
+- **Wired into `sim_robot_upstart.launch.py`** (the user's own main launch file) as another `Node()` alongside
+  the already-present `ekf_node`, in the same `load_nodes` `GroupAction`.
+- **Verified live, end to end, after both fixes**: sent the exact same goal from the user's own report
+  (`ros2 action send_goal /j100_0921/cut_stem plant_cutter_msgs/action/CutStem "{start_cutting: true}"`) against
+  a freshly-restarted container running one single clean launch; `grid_cutter_action_server` now logs genuine
+  `Execute request success!` / `Reached 'pose ...'` for its planned poses, confirmed independently via the raw
+  `platform/joint_states` topic actually changing. `drive_test.py` still passes afterward.
+- **The action's own overall "patch" still comes back failed, for a completely different and already-accepted
+  reason, not a regression or a remaining bug in this new bridge**: each patch's own next step calls
+  `pruner_server` (`Received goal to send integer: 42`), which fails with `Cannot send data. Serial port is not
+  open` -- the exact same real pruner-hardware gap already documented in the previous addendum (no
+  `/dev/ttyOpenCR` device in this container), unrelated to arm motion, not chased further this pass.
+- Files touched: `colcon_ws/src/moveit_sim_bridge/` (new package: `package.xml`, `setup.py`, `setup.cfg`,
+  `moveit_sim_bridge/bridge_node.py`), `colcon_ws/src/mtu32_husky/mtu32_bringup/launch/
+  sim_robot_upstart.launch.py` (new `Node()` entry), `CLAUDE.md` (new `moveit_sim_bridge` paragraph, updated the
+  prior paragraph's "remaining warnings" list now that the arm-motion gap it once listed is fixed).
+
+## Addendum: the arm moved, but the gripper still didn't -- a persistent-joint-state bug in the new bridge, plus real physical fallout from testing the old one
+
+User: "regardless 'pruner_server' status, the gripper should open and close. but the gripper does not move." --
+correctly separating the already-accepted pruner-hardware gap from a second, genuinely separate defect,
+immediately after the arm-motion fix above.
+
+- **Isolated the claim rather than trusting it**: a raw, direct `GripperCommand` goal (nothing else running)
+  genuinely closed the gripper -- confirmed via `platform/joint_states`, not just the action's own reported
+  `reached_goal: true` -- and it *stayed* closed indefinitely while polled. So the bridge's gripper handling
+  worked in isolation; the bug had to be in how it interacted with everything else running during a real
+  `cut_stem` sequence.
+- **Reproduced against the real sequence, polling joint states every second rather than just reading the
+  action's own result**: the gripper opened right on cue (`try_prune_once`'s own "open the gripper before
+  approaching" step), but the instant the *next* arm-only command arrived (a `moveit_servo` stream point, or
+  another trajectory goal), the gripper silently reopened -- not eventually, immediately, every time.
+- **Root cause**: `arm_0/joint_command`'s own subscriber (`ROS2SubscribeJointState`/`IsaacArticulationController`,
+  the same mechanism `setup_scene.py`'s own comment already documents as "holds its last-received message's
+  values between messages... re-applies them every tick") only ever remembers the *last full message's* own
+  name/position arrays -- it does not merge across messages. The bridge (from the previous addendum) was
+  publishing separate arm-only messages (trajectory waypoints, servo stream points) and gripper-only messages
+  (open/close), so any arm-only message wholesale replaced the entire commanded set and dropped the gripper's
+  just-closed target the instant it arrived. Not a rare race: `try_prune_once` always calls another arm servo
+  move immediately after closing the gripper, so this was guaranteed to happen on every single patch attempt.
+- **Fixed by keeping the bridge's own persistent last-known position for every joint it has ever been told
+  about, and publishing all of them together on every update** (a small `dict` merge, lock-protected since the
+  action servers and the servo-topic subscriber can all run concurrently under the `MultiThreadedExecutor`) --
+  a gripper command can no longer be silently overwritten by an unrelated arm command, or vice versa.
+- **A second, unrelated thing found while re-verifying**: repeated testing of the *pre-fix* bridge had left the
+  arm/gripper in a genuinely corrupted physical state -- gripper joints reading wildly out of range (e.g. 2.5
+  rad, well outside any sane open/close value) and an arm joint stuck ~2.3 rad away from a commanded 0 and not
+  converging even when correctly re-commanded, confirmed live rather than assumed. Root cause: a joint dropped
+  from the commanded array (the exact bug just fixed) leaves `IsaacArticulationController` no longer actively
+  driving it that tick, and depending on the position servo's own state at that instant this manifested as a
+  genuinely wild, physically-real displacement, not a display/echo artifact -- confirmed by directly commanding
+  the same joints back to 0 and observing them fail to visibly converge within several seconds afterward. Also
+  confirmed `docker restart j100_0921` (the ROS-side container) does **not** reset this -- the robot's physical
+  joint state is owned by Isaac Sim, a separate, still-running container -- only `docker restart a300-isaac-sim`
+  (re-running `setup_scene.py`'s own spawn logic) actually gave the arm a clean starting pose again.
+- **Verified live, on a freshly-reset arm, after both fixes**: sent the user's own exact goal again and polled
+  `platform/joint_states` continuously (not just the action's own result) -- the gripper genuinely closes and
+  *holds* its position through subsequent arm motion this time, matching `grid_cutter_action_server`'s own real
+  open→approach→close→(pruner attempt, fails)→reopen-and-retry cycle exactly. `drive_test.py` still passes
+  afterward.
+- Files touched: `colcon_ws/src/moveit_sim_bridge/moveit_sim_bridge/bridge_node.py` (persistent merged joint
+  state, lock-protected), `CLAUDE.md` (extended the `moveit_sim_bridge` paragraph with this fix and the
+  physical-corruption/sim-restart finding).
+
+## Addendum: the gripper held correctly now, but moved the wrong direction -- a real <mimic> joint the bridge was ignoring
+
+User, immediately after the previous fix: "the gripper motion is reversed. it closes with openning motion
+command, vice versa."
+
+- **Read the real URDF rather than guessing at a sign flip**: `/etc/clearpath/robot.urdf`'s own gripper joints
+  showed only `arm_0_gripper_right_finger_bottom_joint` is independently actuated (range -0.1 to 0.96); the
+  other 3 are `<mimic>` joints of it with their own real multipliers -- `left_finger_bottom_joint` at `1.0`, but
+  both finger *tip* joints at `-0.676` (their own axis is physically opposite the bottom joints', which is what
+  the negative multiplier compensates for). The bridge (previous addendum) was sending `GripperCommand`'s single
+  `position` value identically to all 4 joint names, never reading any of this -- so the 2 tip joints were
+  always commanded with the wrong sign relative to the 1 real driven joint, which is exactly what a user watching
+  the whole gripper would describe as "reversed," not a single uniform sign error that a naive `-position` fix
+  would have addressed.
+- **Fixed** by treating `position` as `arm_0_gripper_right_finger_bottom_joint`'s own raw value and deriving the
+  other 3 from their real multipliers (`gripper_joint_multipliers`, a new parallel parameter to
+  `gripper_joint_names`) instead of copying it verbatim to every joint.
+- **Verified live, joint-by-joint, not just via the action's own reported result**: `position: 0.9` (close) now
+  moves both bottom joints positive (~0.75, short of the full 0.9 target -- plausibly contact/settle time, not
+  re-chased) and both tip joints negative (-0.5, landing exactly on that joint's own URDF lower limit of -0.50)
+  -- a single, physically consistent closing motion. `position: 0.0` (open) returns all 4 to ~0.
+- **Needed a fully clean physical baseline to test against, not just a fresh launch**: residual corruption from
+  testing the *pre-multiplier-fix* bridge (gripper joints commanded with the wrong sign, plus the
+  already-known pre-merge-fix corruption from the addendum before this one) meant `docker restart j100_0921`
+  alone wasn't enough -- had to restart `a300-isaac-sim` itself again to get a trustworthy zero-ish starting
+  pose before the joint-by-joint verification above could mean anything.
+- Re-ran the full `cut_stem` sequence and `drive_test.py` afterward: both still work, no regression from this
+  change.
+- Files touched: `colcon_ws/src/moveit_sim_bridge/moveit_sim_bridge/bridge_node.py` (mimic-aware gripper
+  multipliers, replacing the flat "same position to all 4 joints" logic), `CLAUDE.md` (extended the
+  `moveit_sim_bridge` paragraph with this finding).
+
+## Addendum: a fake serial device for pruner_action_server -- and the first fully successful cut_stem patch this session
+
+User: "can you make a fake device on /dev/ttyOpenCR for pruner_server to work properly?" -- the one remaining
+gap from the whole arm/gripper investigation above, now asked for directly.
+
+- **Read `pruner_action_server`'s own `pruner_server.py` before building anything**, rather than assuming "open
+  the port" would be enough: it writes `"<target_integer>\n"`, then reads lines for up to 30s waiting for a
+  literal `"STATUS:DONE"`/`"STATUS:FAIL"` line before reporting the goal's own success/failure. A bare PTY with
+  nothing on the other end would open fine but then time out every single call -- the stub has to actually
+  *respond*, not just exist.
+- **New script, `robot/bin/pruner_stub`**: pure Python stdlib, no `rclpy`/ROS dependency at all (it doesn't need
+  ROS -- it only ever talks over the fake serial link). Uses `os.openpty()` to create a real PTY and symlinks
+  `/dev/ttyOpenCR` to its slave side -- confirmed this needs no new system package (`socat` and similar were the
+  first idea, but pyserial's own `Serial()` call opens a PTY slave exactly like a real tty, no special-casing
+  needed). Reads the incoming integer command, sleeps 2s to simulate a real pruning cycle, writes back
+  `"STATUS:DONE\n"` -- deliberately always succeeds, since this sim has no failure mode of its own to report.
+- **Wired in as another restart-looped background service in `entrypoint.sh`**, alongside `robot_state`/
+  `foxglove` (same "restarted if it dies" pattern) -- harmless on every model that never launches
+  `pruner_action_server` at all, so no per-model guarding needed.
+- **Verified in stages, not just "it opens now"**: first a direct `SendInteger` goal, confirming the full
+  write→wait→`STATUS:DONE`→result round trip (`Command sent...` → `Goal succeeded. Pruning confirmed.`). Then
+  the real `cut_stem` goal -- which needed a fully clean physical arm state to mean anything (the same
+  corrupted-resting-pose lesson from the addenda above recurred here too: `servo_node` was still alive from an
+  earlier aborted run and kept fighting a manual reset attempt, so `a300-isaac-sim` had to be restarted again for
+  a trustworthy zero pose before this test). Result: **the first fully successful `cut_stem` patch this entire
+  session** -- `Reached 'pose ...'` (arm) → pruner `Goal succeeded. Pruning confirmed.` (the new stub) →
+  `Planning`/`Reached 'named pose drop'` (the real post-prune retract-and-drop sequence). `drive_test.py` still
+  passes afterward.
+- Files touched: `robot/bin/pruner_stub` (new), `robot/entrypoint.sh` (new background-service line),
+  `robot/Dockerfile` (`chmod +x` for the new script), `CLAUDE.md` (new `pruner_stub` paragraph).
+
+## Addendum: the arm moved too fast and overshot -- the bridge was jumping straight to each waypoint instead of interpolating
+
+User, comparing directly against real-robot behavior they'd tested themselves: "the arm moves too fast compare
+to the real robot I have tested. And it is overshooting at the goal position."
+
+- **Root cause, reasoned from first principles rather than guessed at blindly**: `_execute_trajectory` published
+  exactly one `JointState` per trajectory waypoint, at that waypoint's own `time_from_start`. A real
+  `JointTrajectoryController` continuously *interpolates* between a planned trajectory's own (often sparse)
+  waypoints, so the real robot's commanded position ramps smoothly between them. This bridge instead handed
+  `IsaacArticulationController`'s PD position servo (`configure_arm_drives`' own `STIFFNESS`/`DAMPING` in
+  `sim/scripts/setup_scene.py` -- that code's own comment already flagged these as "not the Kinova's own real
+  servo gains... adjust if the arm moves too slowly/oscillates in practice") a sequence of large instantaneous
+  target jumps instead of a ramp, and it tried to close each one as fast as its own gains allowed -- fast, and
+  prone to overshoot on a step input, independent of how slowly the trajectory itself was actually paced.
+- **Fixed by linearly interpolating between consecutive waypoints** at a fixed 50Hz (`INTERP_PERIOD_S`, roughly
+  a real JTC's own control-loop cadence) instead of jumping straight to each one -- removes the step inputs
+  without needing to retune the PD gains themselves. The first waypoint is still jumped to directly (matches a
+  MoveIt-generated trajectory's own first point normally being at `time_from_start == 0`, i.e. the planning
+  start state -- no prior point exists to interpolate from).
+- **Verified with a controlled, timestamp-correlated test, not just eyeballing it**: sent a raw 2-point
+  `FollowJointTrajectory` goal (`arm_0_joint_1`: 0.0 → 1.0 rad over a planned 4s) directly, bracketing the goal
+  send and every poll with real host timestamps to avoid the exact trap an earlier, uncorrelated poll fell into
+  (it looked like the arm reached the target in ~1.5s, which would have meant the fix didn't work at all --
+  re-tested with proper timestamps and found that was just `docker exec`/action-client discovery latency before
+  polling even started, not a real result). With real correlation: 0.09 rad at goal+0.5s, ~1.0 rad by goal+5s
+  (matching the planned ~4s duration), settling at `1.0001` -- smooth, no measurable overshoot.
+- **Re-verified against the real usage pattern**, not just the isolated single-joint test: ran the actual
+  `cut_stem` sequence again afterward and it still completes its own real motion/gripper/pruner cycle correctly.
+  `drive_test.py` still passes.
+- Files touched: `colcon_ws/src/moveit_sim_bridge/moveit_sim_bridge/bridge_node.py` (waypoint interpolation,
+  replacing the flat "publish once per waypoint" logic), `CLAUDE.md` (extended the `moveit_sim_bridge` paragraph
+  with this finding).
+
+## Addendum: a restart_ros script for a fast in-container ROS reset -- which then surfaced a real, previously-unnoticed robot_state bug on j100_0922
+
+User: "create a script to stop and restart all the ros nodes in the robot containder [container]." Motivated
+directly by this whole session's own repeated pain: getting a genuinely clean ROS-graph state for testing kept
+requiring a full `docker restart` (or, worse, restarting `a300-isaac-sim` itself) -- slow, and a bigger hammer
+than needed for "just get rid of stale/orphaned nodes before the next test."
+
+- **Inspected the real process tree live before designing anything** (`ps aux` inside a busy `j100_0921` running
+  the full `sim_robot_upstart.launch.py` stack), rather than assuming a kill pattern would work: found
+  `robot_state`/`foxglove`/`pruner_stub` are each supervised by their own `while true; do X || true; sleep 2;
+  done` background loop in `entrypoint.sh`, and -- important, easy to get wrong -- those three loop *processes*
+  are completely indistinguishable from each other by cmdline (`ps` shows all three as the literal inherited
+  `/bin/bash /entrypoint.sh sleep infinity`, since bash subshells don't get a distinct argv0). That ruled out
+  trying to individually target or preserve specific loops by pattern; instead, the loops don't need touching
+  at all -- killing only their *current worker process* is enough, since the still-alive loop notices the exit
+  and respawns a fresh one within ~2s on its own.
+- **New script, `robot/bin/restart_ros`**: `pkill -9` against a pattern broad enough to catch everything
+  actually running in this project (`ros2 (run|launch)`, `/opt/ros/.../lib/`, `colcon_ws/install/.../lib/`, plus
+  `pruner_stub` explicitly since it's a bare `python3 <path>` invocation matching none of the others) --
+  verified against the real `ps aux` output line by line before trusting it, not just written from memory of
+  what "should" be running. Confirmed this pattern does *not* match PID 1 (`sleep infinity`), the three loop
+  supervisors, or the `ros2cli` discovery daemon (a long-lived CLI helper, not a "node," deliberately left
+  alone) -- so nothing gets killed by accident. After killing, waits, then reports back which of the three
+  self-healing services came back and which didn't -- and is explicit that anything else (a manually
+  `ros2 launch`'d stack) is simply stopped, not relaunched, since the script has no way to know what command you
+  wanted reissued.
+- **Verified live**: launched the full stack, confirmed a big, busy process tree; ran `restart_ros`; confirmed
+  via a fresh `ps aux` that PID 1 and the three loop supervisors survived untouched, everything else was gone
+  (zombied, harmlessly -- their reaping parent, the killed `ros2 launch`, is gone too, a known cosmetic
+  leftover, not a resource leak), and `robot_state`/`foxglove`/`pruner_stub` were back up within the script's
+  own wait margin. Also confirmed via `ros2 node list` that the *ROS graph* itself was clean afterward (no
+  stale entries for the killed nodes), not just that their OS processes were gone, and that a fresh relaunch of
+  `sim_robot_upstart.launch.py` afterward worked normally. `drive_test.py` still passes.
+- **Testing this on `j100_0922` (not just `j100_0921`, where all the arm/gripper work above happened) surfaced
+  a real, separate, previously-unnoticed bug**: `robot_state_publisher` reported "NOT back up yet" after the
+  restart, repeatably, not just a one-off timing miss. Its own log showed the exact same dangling
+  `camera_1_joint`→`arm_0_end_effector_link` reference `generate_srdf` (two addenda ago) and
+  `scripts/flatten_urdf.py`'s own `prune_dangling_joints` (much earlier session) already fix elsewhere --
+  except `robot/bin/robot_state`'s own in-container xacro processing had never gotten that fix at all. Root
+  cause: `robot_state`'s own `while true; do robot_state || true; sleep 2; done` loop's `|| true` had been
+  silently swallowing this exact abort at *every single normal boot* of `j100_0922` all session -- nobody had
+  actually looked closely at `/tmp/robot_state.log` before now, so `robot_state_publisher` for this one robot
+  had likely never actually been running successfully at all, this whole time. Fixed by re-implementing
+  `prune_dangling_joints` inline in `robot_state` too (same pattern as `generate_srdf`'s own reimplementation,
+  for the same reason -- `flatten_urdf.py` is a host-side build script, not installed in this image), applied
+  to `robot_state`'s own freshly-xacro'd URDF before handing it to `robot_state_publisher`'s strict loader.
+  Verified live: `robot_state.log` now shows the same two joints dropped, then a real "Robot initialized" line,
+  `robot_state_publisher` stays up, and `/j100_0922/tf_static` genuinely publishes real transform data
+  afterward (confirmed by reading actual message content, not just that the process exists).
+- **One remaining thing found while verifying this, explicitly left alone as out of scope**: `j100_0922`'s own
+  `/j100_0922/platform/odom`/`platform/joint_states` (published by the *sim*, not anything in the robot
+  container) aren't publishing at all right now, while `j100_0921`'s own equivalent topics work fine --
+  confirmed this is unrelated to `restart_ros` (which never touches the sim container) and is a separate,
+  pre-existing sim-side state issue, not caused by anything this addendum touched. Not chased further this
+  pass.
+- Files touched: `robot/bin/restart_ros` (new), `robot/bin/robot_state` (dangling-joint pruning, matching
+  `generate_srdf`'s own fix), `robot/Dockerfile` (`chmod +x` for `restart_ros`), `CLAUDE.md` (new `restart_ros`
+  paragraph, corrected "two restarting background services" → three, documented the `robot_state` fix, added
+  `restart_ros` to the Commands list).
+
+## Addendum: pushed back on -- correctly -- and a real joint_2-specific gain fix found, but it only solved half the problem
+
+User, after the interpolation fix above: "the arm moves too fast compare to the real robot I have tested. And
+it is overshooting at the goal position." Then, after I initially misdiagnosed this as the same singularity
+issue from the addendum before it: "the stiffness increase did not resolve the issue. Even with the previous
+setting, the arm could hold the zero state. Problem was when it starts moving... compare the arm command input
+and the joint states, and see if it follows tightly." -- correctly pointing out I hadn't actually measured
+anything yet, just assumed.
+
+- **Built a proper commanded-vs-observed comparison** (a throwaway rclpy node subscribing to both
+  `arm_0/joint_command` and `platform/joint_states`) and ran it during an actual `zero`→`cut_init`
+  `FollowJointTrajectory` move. Confirmed the user right: `arm_0_joint_2` specifically overshoots by over 0.6 rad
+  during the move (swinging *through* zero tracking error, not just lagging), while joints 1 and 3 show only
+  small, bounded following error the whole time -- a real, joint-2-specific underdamped oscillation, not the
+  uniform "arm can't hold gravity" story the earlier `1.0e7`/`1.0e5` uniform-gain test seemed to fix (that test
+  only checked *static* holding at `cut_init`, never the actual moving transient -- a real gap in my own
+  verification, caught by the user re-reading my own claim skeptically).
+- **Two uniform-gain attempts both failed for the same underlying reason**: scaling stiffness+damping together
+  preserves the same damping *ratio*, so joint_2 -- the "shoulder"/highest-effort-limit joint (14 N·m vs. 7-10
+  for the others), carrying by far the most gravitational load of the 6 -- stayed just as relatively underdamped
+  regardless of the absolute scale. Damping alone (stiffness left at the original value) didn't fix joint_2
+  either, and *added* much worse lag to joints 1/3, which had been fine before. One set of uniform gains
+  genuinely cannot serve joints this differently loaded.
+- **Fixed with a joint_2-only, much stronger gain** (`ARM_JOINT_2_STIFFNESS`/`ARM_JOINT_2_DAMPING` = `1.0e7`/
+  `1.0e6` in `configure_arm_drives`, vs. `1.0e5`/`1.0e4` for every other arm/gripper joint) -- a targeted,
+  minimal-blast-radius change rather than perturbing all 6 joints again. Verified live: the same `zero`→
+  `cut_init` move now settles to `err≈0.002` almost immediately after the commanded ramp finishes, versus still
+  not fully settled 44 seconds later under the old uniform gain. Resting/spawn behavior (all joints holding ~0
+  with no commands) confirmed unaffected for the other 5 joints.
+- **This genuinely fixed what the user reported -- but the real `cut_stem` sequence's own patch-2 `servo_to_pose`
+  stall (from three addenda ago) turned out to be a separate, still-unresolved problem sharing only
+  `arm_0_joint_2` as a symptom, not the same root cause.** Confirmed by testing the full sequence with the new
+  gain: patches 0 and 1 succeed (with normal RRTConnect retry variance, not a regression), patch 2 still times
+  out at the exact same ~0.19m short, unchanged from every earlier test.
+- **Redid the commanded-vs-observed comparison specifically during a live patch-2 stall, with the new gain
+  active**: `cmd` (what `moveit_servo` is telling the bridge) sits essentially frozen at one value the entire
+  time -- consistent with `moveit_servo`'s own logged "Moving closer to a singularity, decelerating" from
+  several addenda back, meaning it has genuinely stopped commanding much joint_2 velocity -- while `obs` (the
+  real simulated position) independently *oscillates* by over a full radian around a completely different
+  value. This is conclusive on two points: (1) it's not a `moveit_servo`-side commanded-signal instability
+  (the command is stable), and (2) since this persists even at 100x the original gain, it's not a simple
+  insufficient-torque problem either.
+- **Retested the user's own "maybe it's just speed" theory directly, a second time, now with the stronger gain
+  -- and disproved it again**: a genuinely slow, hand-stepped approach (0.02 rad/step, ~0.3s settle each,
+  `moveit_servo`/MoveIt not involved at all) to the same target still gets stuck, in the same ~-1.7 to -2.4 rad
+  range, every time -- reachable cleanly in one direction (more negative: -2.5 reached exactly, repeatedly) and
+  consistently blocked in the other (less negative, toward 0), regardless of approach speed or gain strength.
+  This directional, position-dependent pattern is the same one found several addenda ago, before the user's
+  gravity hypothesis -- re-confirmed, not just assumed to still hold.
+- **Dumped TF positions for every arm link** (`base_link`→`arm_0_shoulder_link`→...→
+  `arm_0_gripper_gripper_base_link`, plus `top_mount_link`/`top_shelf_link`) at the stuck configuration and
+  computed pairwise distances looking for a self-collision candidate, rather than continuing to guess blindly.
+  Nothing came back suspiciously close by link-*origin* distance alone (closest non-adjacent pairs:
+  `top_mount_link`↔`arm_0_base_link` at 0.19m, `arm_0_upper_wrist_link`↔`arm_0_gripper_gripper_base_link` at
+  0.11m) -- but this is an acknowledged imperfect proxy, since it ignores each link's actual mesh/collision-shape
+  extent, so it doesn't rule out a real self-collision, just fails to obviously confirm one.
+- **Left open, not resolved this pass**: the joint_2 gain fix is kept (real, verified improvement for the
+  transient-overshoot case the user originally reported). Patch 2's own servo stall needs either visual
+  inspection of the arm at the stuck configuration (Foxglove/RViz -- not available in this session) or a PhysX
+  contact-report query (a new sim-side script, more invasive than anything tried so far) to actually identify
+  what's physically stopping it, rather than more indirect joint-state comparisons. `drive_test.py` still passes
+  throughout; nothing in this addendum touched the wheel-drive pipeline.
+- Files touched: `sim/scripts/setup_scene.py` (`ARM_JOINT_2_STIFFNESS`/`ARM_JOINT_2_DAMPING`, per-joint gain
+  logic in `configure_arm_drives`), `CLAUDE.md` (two new paragraphs documenting the fix and the still-open
+  patch-2 investigation).
+
+## Addendum: a local web UI (`tools/sim_ui/`) for driving the investigation
+
+User: "to investigate this problem, i want you to create a web ui ... start, stop, and reset the simulation
+scene, and spawn robots ... start the sim_robot_upstart.launch.py, and move the arm to one of the predefined
+state, like 'cut_init' or 'stow'."
+
+- **Local server, not a hosted page**: it has to run docker commands on this host. `tools/sim_ui/server.py`
+  (Python stdlib `ThreadingHTTPServer`, no new dependencies) + `index.html` (vanilla JS, no CDN). Every button maps
+  onto an existing command: start = `scripts/fleet.sh`, stop = `scripts/stop_sim.sh`, reset scene =
+  `docker restart a300-isaac-sim` + wait for healthy, spawn = write `NUM_ROBOTS`/`ROBOT_MODEL_<i>` into `.env`
+  then `scripts/fleet.sh N`, launch start = the same `docker exec -d ... ros2 launch mtu32_bringup
+  sim_robot_upstart.launch.py` used by hand all session (output to `/tmp/sim_robot_upstart.log` in the robot),
+  launch stop = `restart_ros`. Long actions run as in-memory background jobs; the page polls their logs.
+- **Two new in-container helpers** in `robot/bin/` (so they also work from the CLI): `arm_goto <state>` reads
+  group_states from `/etc/clearpath/robot.srdf` and either plans+executes via `move_group`'s `move_action`
+  (MoveGroup goal with joint constraints, like RViz's "plan & execute") or, with `--direct`, sends a 2-point
+  `FollowJointTrajectory` straight to `moveit_sim_bridge` (no planning, duration from the joint delta and the
+  1.6 rad/s URDF limit x velocity scale); gripper states go through `GripperCommand`. `arm_joints [--record S]`
+  prints commanded (`arm_0/joint_command`) vs observed (`platform/joint_states`) as JSON; the UI's "Record"
+  option runs it alongside a move and plots both per joint.
+- **Safety**: binds 127.0.0.1 by default; POST requires `Content-Type: application/json` (forces a CORS
+  preflight the server never answers, so other sites can't trigger docker commands); robot names are checked
+  against running containers, state/group names against `^[A-Za-z0-9_]+$`, models against `sim/assets`.
+- **Verified via the API** (no browser available in this session -- page JS syntax-checked with `node --check`,
+  but not clicked through): status, launch start (MoveIt came up), `cut_init` via MoveIt plan (`SUCCESS`, 281
+  recorded samples), `stow` via direct mode, gripper close/open, joints snapshot, CSRF and name-validation
+  rejections. **Useful finding from the first recording**: the direct `stow` move showed `joint_2` lagging its
+  command by up to 0.93 rad mid-move (settling to 0.0001 after) even with the dedicated joint_2 gain -- so the
+  transient tracking problem is reduced but not gone, and the plot now makes it visible without ad-hoc scripts.
+- Files: `tools/sim_ui/{server.py,index.html}` (new), `robot/bin/{arm_goto,arm_joints}` (new),
+  `robot/Dockerfile` (chmod), `CLAUDE.md` (commands + a `tools/sim_ui/` note).
+
+## Addendum: joint_2 root cause = drive torque limit (14 N*m), fixed with ARM_JOINT_2_MAX_FORCE = 40
+
+User, looking at the UI's joint plots: "As we observed, it drops drastically." Reading the recorded samples
+(`/api/job?id=...` result) showed joint_2 tracking within ~0.05 rad until ~-0.65 rad, then falling to -2.1 while
+commanded -0.85, and, on cut_init->zero, drifting *down* to -2.35 while commanded 0 -- only ever moving with gravity.
+
+- `platform/joint_states` effort for joint_2 read 13.9995 N*m near cut_init: saturated. The USD drive's
+  `maxForce = 14` comes from the URDF effort limit; `configure_arm_drives` set stiffness/damping only. That is why
+  the 100x gain increase earlier "didn't help": any error already requested the full 14 N*m.
+- Test (user-approved): `ARM_JOINT_2_MAX_FORCE = 40.0`. zero<->cut_init both track (max err ~0.06 rad, final
+  0.002/0.0014). Gains 1e5/1e4 and 1e4/1e3 tested too: same tracking, same torque (peak ~26, hold ~11-13 N*m),
+  so torque demand is gain-independent.
+- Full `cut_stem` retest: 9+ patches, each reached -> "Pruning confirmed" -> drop, no servo stall (the old
+  patch-2 stall was this same saturation). joint_2 effort median 11.2, p95 17.5, peak 24.3 N*m, >14 for 27%.
+- User: "let's settle with this fix". Kept 40 N*m with original joint_2 gains (1e7/1e6).
+- **Open**: measured torque ~1.5x (hold) to ~2x (moving, roughly +10-13 N*m at 0.14 rad/s) the static
+  gravity torque computed by FK from the URDF masses (masses/COM/inertia match the imported USD; FK matches
+  measurement at `zero`). Ruled out: joint friction/damping (none authored), drive gain, self-collision
+  (disabled on the articulation root as a test: no change, reverted). Not checked: chassis pitch/rocking
+  during arm moves, environment contact. The real arm works within 14 N*m, so 40 is a disclosed workaround.

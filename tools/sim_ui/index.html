@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sim Fleet Control</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --fg: #1d2330; --muted: #6b7385; --line: #dde1e8;
+    --accent: #2f6fde; --ok: #1f9d55; --warn: #c98a00; --bad: #d64545; --cmd: #e07a1f; --obs: #2f6fde;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14171d; --card: #1c2029; --fg: #e4e7ee; --muted: #8a92a5; --line: #2c3240;
+            --accent: #5b8ff0; --cmd: #f0994a; --obs: #6aa0ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: center; }
+  header h1 { font-size: 17px; margin: 0; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; padding: 16px 20px; }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  .card h2 { font-size: 14px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit; }
+  button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+  button.danger { background: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  select, input { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.ok { color: var(--ok); border-color: var(--ok); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); }
+  .pill.bad { color: var(--bad); border-color: var(--bad); }
+  .muted { color: var(--muted); }
+  .robot { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+  .robot:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
+  .robot h3 { margin: 0; font-size: 15px; }
+  .states button { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin: 8px 0 0;
+        max-height: 320px; overflow: auto; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; }
+  table { border-collapse: collapse; font: 12px ui-monospace, monospace; margin-top: 6px; }
+  td, th { padding: 2px 8px; text-align: right; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  .jobs { max-height: 220px; overflow: auto; }
+  .job { display: flex; gap: 8px; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+  .job:hover, .job.sel { background: var(--bg); }
+  .plots { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin-top: 8px; }
+  .plots canvas { width: 100%; height: 150px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  .legend { font-size: 12px; } .legend b { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin: 0 4px 0 10px; }
+  #toast { position: fixed; bottom: 16px; right: 16px; background: var(--bad); color: #fff; padding: 8px 12px; border-radius: 6px; display: none; max-width: 60ch; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sim Fleet Control</h1>
+  <span id="simPill" class="pill">sim: ?</span>
+  <span class="muted" id="updated"></span>
+</header>
+<main>
+  <div class="col">
+    <section class="card">
+      <h2>Simulation</h2>
+      <div class="row">
+        <button onclick="post('/api/sim/start')">Start</button>
+        <button class="danger" onclick="confirm('Stop and remove every container?') && post('/api/sim/stop')">Stop</button>
+        <button class="ghost" onclick="post('/api/sim/reset')" title="Restart the sim container: fresh scene, robots back at spawn pose; robot ROS nodes keep running">Reset scene</button>
+      </div>
+      <div class="muted" id="simInfo"></div>
+    </section>
+
+    <section class="card">
+      <h2>Spawn robots</h2>
+      <div class="row">
+        <label>Robots <select id="slotCount" onchange="renderSlots()"></select></label>
+        <button onclick="spawn()">Spawn (restarts sim)</button>
+      </div>
+      <div id="slots"></div>
+    </section>
+
+    <section class="card">
+      <h2>Robots</h2>
+      <div id="robots" class="muted">loading...</div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="card">
+      <h2>Jobs</h2>
+      <div id="jobs" class="jobs muted">none yet</div>
+      <div id="jobTitle" class="muted" style="margin-top:8px"></div>
+      <pre id="jobLog" hidden></pre>
+    </section>
+
+    <section class="card" id="plotCard" hidden>
+      <h2>Joint tracking</h2>
+      <div class="legend muted"><b style="background:var(--cmd)"></b>commanded <b style="background:var(--obs)"></b>observed</div>
+      <div id="plots" class="plots"></div>
+    </section>
+
+    <section class="card" id="joinCard" hidden>
+      <h2 id="joinTitle">Joints</h2>
+      <div id="joinBody"></div>
+    </section>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+let status = null, slotsInit = false, selectedJob = null, armStates = {}, lastJobStatus = {};
+
+async function api(path, body) {
+  const opt = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  const r = await fetch(path, opt);
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.style.display = 'block'; setTimeout(() => t.style.display = 'none', 6000); }
+async function post(path, body = {}) {
+  try { const job = await api(path, body); selectedJob = job.id; refreshJobs(); } catch (e) { toast(e.message); }
+}
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// ------------------------------------------------------------ status
+async function refreshStatus() {
+  try { status = await api('/api/status'); } catch (e) { return; }
+  const sim = status.sim;
+  const pill = document.getElementById('simPill');
+  const health = sim ? (sim.status.match(/\((\w+)/) || [])[1] : null;
+  pill.textContent = 'sim: ' + (sim ? (health || sim.state) : 'not created');
+  pill.className = 'pill ' + (!sim || sim.state !== 'running' ? 'bad' : health === 'healthy' ? 'ok' : 'warn');
+  document.getElementById('simInfo').textContent = sim ? `${sim.name}: ${sim.status} · NUM_ROBOTS=${status.num_robots}` : 'no sim container -- press Start';
+  document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+  if (!slotsInit) initSlots();
+  renderRobots();
+}
+
+function initSlots() {
+  slotsInit = true;
+  const sel = document.getElementById('slotCount');
+  sel.innerHTML = Array.from({ length: status.max_slots + 1 }, (_, i) => `<option>${i}</option>`).join('');
+  sel.value = status.num_robots;
+  renderSlots(status.slots);
+}
+function renderSlots(preset) {
+  const n = +document.getElementById('slotCount').value;
+  const cur = preset || [...document.querySelectorAll('#slots select')].map(s => s.value);
+  document.getElementById('slots').innerHTML = Array.from({ length: n }, (_, i) =>
+    `<div class="row"><span class="muted" style="width:52px">slot ${i}</span><select>${status.models.map(m =>
+      `<option ${m === (cur[i] || status.slots[i]) ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>`).join('');
+}
+function spawn() {
+  const models = [...document.querySelectorAll('#slots select')].map(s => s.value);
+  if (confirm(`Restart the sim with ${models.length} robot(s): ${models.join(', ') || '(none)'}?`)) post('/api/spawn', { models });
+}
+
+// ------------------------------------------------------------ robots
+function renderRobots() {
+  const box = document.getElementById('robots');
+  const open = new Set([...box.querySelectorAll('details[open]')].map(d => d.dataset.robot));
+  if (!status.robots.length) { box.innerHTML = '<span class="muted">no robot containers</span>'; return; }
+  // Only rebuild when the set/state of robots changes, so inputs being edited aren't wiped every poll.
+  const sig = JSON.stringify(status.robots.map(r => [r.name, r.state, r.launch]));
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.innerHTML = status.robots.map(r => {
+    const up = r.state === 'running';
+    return `<div class="robot" data-robot="${esc(r.name)}">
+      <div class="row"><h3>${esc(r.name)}</h3>
+        <span class="pill ${up ? 'ok' : 'bad'}">${esc(r.state)}</span>
+        <span class="pill ${r.launch ? 'ok' : ''}">upstart ${r.launch ? 'running' : 'stopped'}</span></div>
+      ${up ? `<div class="row">
+        <button onclick="post('/api/launch/start',{robot:'${esc(r.name)}'})" ${r.launch ? 'disabled' : ''}>Start sim_robot_upstart</button>
+        <button class="ghost" onclick="post('/api/launch/stop',{robot:'${esc(r.name)}'})" title="restart_ros: kills every ROS node; robot_state/foxglove/pruner_stub come back">Stop (restart_ros)</button>
+        <button class="ghost" onclick="showLaunchLog('${esc(r.name)}')">Launch log</button>
+        <button class="ghost" onclick="showJoints('${esc(r.name)}')">Joints</button></div>
+      <details data-robot="${esc(r.name)}" ${open.has(r.name) || r.launch ? 'open' : ''} ontoggle="this.open && loadStates('${esc(r.name)}')">
+        <summary>Arm</summary>
+        <div class="row">
+          <label>Group <select class="group" onchange="renderStates('${esc(r.name)}')"></select></label>
+          <label><input type="checkbox" class="direct"> direct (no planning)</label>
+        </div>
+        <div class="row">
+          <label>Velocity <input type="range" class="vel" min="0.05" max="1" step="0.05" value="0.3"
+            oninput="this.nextElementSibling.textContent=this.value"><span>0.3</span></label>
+          <label>Record <input type="number" class="rec" min="0" max="120" value="12" style="width:60px"> s</label>
+        </div>
+        <div class="row states"><span class="muted">loading states...</span></div>
+      </details>` : ''}
+    </div>`;
+  }).join('');
+  box.querySelectorAll('details[open]').forEach(d => loadStates(d.dataset.robot));
+}
+
+async function loadStates(robot) {
+  if (!armStates[robot]) {
+    try { armStates[robot] = await api('/api/arm/states?robot=' + encodeURIComponent(robot)); }
+    catch (e) { return toast(e.message); }
+  }
+  const el = document.querySelector(`.robot[data-robot="${robot}"]`);
+  const sel = el.querySelector('.group');
+  if (!sel.options.length) sel.innerHTML = Object.keys(armStates[robot]).map(g => `<option>${esc(g)}</option>`).join('');
+  renderStates(robot);
+}
+function renderStates(robot) {
+  const el = document.querySelector(`.robot[data-robot="${robot}"]`);
+  const group = el.querySelector('.group').value;
+  el.querySelector('.states').innerHTML = Object.keys(armStates[robot][group] || {}).map(s =>
+    `<button onclick="goto('${esc(robot)}','${esc(group)}','${esc(s)}')">${esc(s)}</button>`).join('');
+}
+function goto(robot, group, state) {
+  const el = document.querySelector(`.robot[data-robot="${robot}"]`);
+  post('/api/arm/goto', {
+    robot, group, state,
+    direct: el.querySelector('.direct').checked,
+    velocity_scale: +el.querySelector('.vel').value,
+    record: group.endsWith('gripper') ? 0 : +el.querySelector('.rec').value,
+  });
+}
+
+async function showLaunchLog(robot) {
+  try {
+    const { log } = await api('/api/launch/log?robot=' + encodeURIComponent(robot));
+    showPanel(`${robot}: sim_robot_upstart log (last 300 lines)`, `<pre>${esc(log || '(empty)')}</pre>`);
+  } catch (e) { toast(e.message); }
+}
+async function showJoints(robot) {
+  try {
+    const { cmd, obs } = await api('/api/joints?robot=' + encodeURIComponent(robot));
+    const names = Object.keys(obs).sort();
+    const f = v => v === undefined ? '-' : v.toFixed(4);
+    showPanel(`${robot}: joints (rad)`, `<table><tr><th>joint</th><th>commanded</th><th>observed</th><th>error</th></tr>${
+      names.map(n => `<tr><td>${esc(n)}</td><td>${f(cmd[n])}</td><td>${f(obs[n])}</td><td>${cmd[n] === undefined ? '-' : f(cmd[n] - obs[n])}</td></tr>`).join('')}</table>
+      <div class="row"><button class="ghost" onclick="showJoints('${esc(robot)}')">Refresh</button></div>`);
+  } catch (e) { toast(e.message); }
+}
+function showPanel(title, html) {
+  document.getElementById('joinCard').hidden = false;
+  document.getElementById('joinTitle').textContent = title;
+  document.getElementById('joinBody').innerHTML = html;
+}
+
+// ------------------------------------------------------------ jobs
+async function refreshJobs() {
+  let jobs;
+  try { jobs = await api('/api/jobs'); } catch (e) { return; }
+  const box = document.getElementById('jobs');
+  if (jobs.length) box.innerHTML = jobs.map(j => `<div class="job ${j.id === selectedJob ? 'sel' : ''}" onclick="selectedJob='${j.id}';refreshJobs()">
+    <span class="pill ${j.status === 'done' ? 'ok' : j.status === 'failed' ? 'bad' : 'warn'}">${j.status}</span>
+    <span>${esc(j.name)}</span><span class="muted" style="margin-left:auto">${new Date(j.started * 1000).toLocaleTimeString()}</span></div>`).join('');
+  if (!selectedJob && jobs.length) selectedJob = jobs[0].id;
+  const finished = jobs.filter(j => j.status !== 'running' && lastJobStatus[j.id] === 'running');
+  jobs.forEach(j => lastJobStatus[j.id] = j.status);
+  if (finished.length) refreshStatus();
+  if (selectedJob) {
+    try {
+      const j = await api('/api/job?id=' + selectedJob);
+      document.getElementById('jobTitle').textContent = `${j.name} -- ${j.status}`;
+      const pre = document.getElementById('jobLog');
+      const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+      pre.hidden = false;
+      pre.textContent = j.log.join('\n') || '(no output yet)';
+      if (atBottom) pre.scrollTop = pre.scrollHeight;
+      if (j.result && j.result.samples && pre.dataset.plotted !== j.id) { pre.dataset.plotted = j.id; plot(j.result.samples); }
+    } catch (e) { selectedJob = null; }
+  }
+  setTimeout(refreshJobs, jobs.some(j => j.status === 'running') ? 1000 : 3000);
+}
+
+// ------------------------------------------------------------ plotting
+function plot(samples) {
+  const card = document.getElementById('plotCard'), box = document.getElementById('plots');
+  card.hidden = false;
+  const joints = [...new Set(samples.flatMap(s => Object.keys(s.obs)))].filter(n => /arm_0_joint_\d/.test(n)).sort();
+  box.innerHTML = joints.map(n => `<div><div class="muted">${esc(n)}</div><canvas data-j="${esc(n)}"></canvas></div>`).join('');
+  const css = getComputedStyle(document.documentElement);
+  box.querySelectorAll('canvas').forEach(cv => {
+    const j = cv.dataset.j, dpr = devicePixelRatio || 1;
+    cv.width = cv.clientWidth * dpr; cv.height = cv.clientHeight * dpr;
+    const g = cv.getContext('2d'); g.scale(dpr, dpr);
+    const W = cv.clientWidth, H = cv.clientHeight, pad = { l: 44, r: 6, t: 6, b: 18 };
+    const series = [['cmd', css.getPropertyValue('--cmd'), [5, 3]], ['obs', css.getPropertyValue('--obs'), []]];
+    const vals = samples.flatMap(s => series.map(([k]) => s[k][j]).filter(v => v !== undefined));
+    if (!vals.length) return;
+    let lo = Math.min(...vals), hi = Math.max(...vals);
+    if (hi - lo < 0.02) { lo -= 0.01; hi += 0.01; }
+    const t1 = samples[samples.length - 1].t;
+    const x = t => pad.l + (t / t1) * (W - pad.l - pad.r), y = v => pad.t + (hi - v) / (hi - lo) * (H - pad.t - pad.b);
+    g.fillStyle = css.getPropertyValue('--muted'); g.font = '10px system-ui';
+    g.fillText(hi.toFixed(2), 2, pad.t + 8); g.fillText(lo.toFixed(2), 2, H - pad.b);
+    g.fillText('0s', pad.l, H - 4); g.fillText(t1.toFixed(0) + 's', W - 20, H - 4);
+    for (const [k, color, dash] of series) {
+      g.strokeStyle = color; g.lineWidth = 1.6; g.setLineDash(dash); g.beginPath();
+      let started = false;
+      for (const s of samples) {
+        const v = s[k][j];
+        if (v === undefined) continue;
+        started ? g.lineTo(x(s.t), y(v)) : g.moveTo(x(s.t), y(v));
+        started = true;
+      }
+      g.stroke();
+    }
+  });
+}
+
+refreshStatus(); setInterval(refreshStatus, 4000);
+refreshJobs();
+</script>
+</body>
+</html>

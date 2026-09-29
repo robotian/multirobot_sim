@@ -10,6 +10,37 @@ xacro /etc/clearpath/robot.urdf.xacro -o /etc/clearpath/robot.urdf
 # robot_description contains commas/colons, so it has to travel in a params file rather than a -p argument
 python3 - <<'PY'
 import json
+import xml.etree.ElementTree as ET
+
+# Same fix as scripts/flatten_urdf.py's own prune_dangling_joints / generate_srdf's reimplementation of it:
+# mtu32_description's xacro unconditionally mounts camera_1 on arm_0_end_effector_link, which doesn't exist on
+# an armless robot (e.g. j100_0922) -- xacro itself never validates this, but robot_state_publisher's own
+# strict URDF loader does, and was aborting every single time this script ran, crash-looping silently (found
+# via restart_ros actually surfacing it, not previously noticed -- the loop's own "|| true" swallowed the
+# abort at every normal boot too). Re-implemented here rather than imported since flatten_urdf.py is a
+# host-side build script, not installed in this image.
+def prune_dangling_joints(root):
+    changed = True
+    while changed:
+        changed = False
+        link_names = {link.get('name') for link in root.findall('link')}
+        for joint in root.findall('joint'):
+            parent_name = joint.find('parent').get('link')
+            if parent_name in link_names:
+                continue
+            child_name = joint.find('child').get('link')
+            child = next((link for link in root.findall('link') if link.get('name') == child_name), None)
+            print(f'[robot_state] dropping joint {joint.get("name")!r}: parent {parent_name!r} is never defined as a link')
+            root.remove(joint)
+            if child is not None:
+                root.remove(child)
+            changed = True
+            break
+
+tree = ET.parse("/etc/clearpath/robot.urdf")
+prune_dangling_joints(tree.getroot())
+tree.write("/etc/clearpath/robot.urdf")
+
 urdf = open("/etc/clearpath/robot.urdf").read()
 open("/tmp/robot_description.yaml", "w").write("/**:\n  ros__parameters:\n    robot_description: " + json.dumps(urdf) + "\n")
 PY
