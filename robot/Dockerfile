@@ -28,10 +28,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gettext-base x11-apps \
     && rm -rf /var/lib/apt/lists/*
 
+# clearpath_generator_robot + clearpath_sensors: the real per-robot param/launch generator a physical Clearpath
+# robot runs (github.com/clearpathrobotics/clearpath_robot, jazzy branch) -- NOT packaged in the public Jazzy apt
+# repo (only clearpath_generator_common is, via ros-jazzy-clearpath-generator-common above), so it's built from
+# source here instead. clearpath_generator_common's own ParamGenerator/LaunchGenerator leave generate_sensors()
+# (and, for LaunchGenerator, every method) abstract/NotImplementedError -- RobotParamGenerator/RobotLaunchGenerator
+# are the real subclasses that implement them. clearpath_sensors is a second, separate package (default per-
+# sensor-type param/launch templates, e.g. the ZED2i/microstrain-IMU ones RobotParamGenerator's generate_sensors()
+# merges real robot.yaml overrides into) that RobotParamGenerator/RobotLaunchGenerator read via
+# get_package_share_directory('clearpath_sensors') at generation time, so both packages are needed, not just
+# clearpath_generator_robot. Only these two of the repo's six packages are built: the other four
+# (clearpath_robot metapackage, clearpath_hardware_interfaces, clearpath_motor_drivers, clearpath_tests) are for
+# real motor-controller/CAN hardware this sim has no equivalent of. Both packages' package.xml exec_depends list
+# many genuinely-unavailable hardware/sensor-driver packages (clearpath_hardware_interfaces, micro_ros_agent,
+# realsense2_camera, velodyne_driver, ...) -- confirmed harmless: colcon build never checks exec_depends, and the
+# actual code here only imports clearpath_config/clearpath_generator_common/its own modules, never those
+# packages' own Python (confirmed by successfully building and running this standalone before adding it here).
+RUN git clone --depth 1 -b jazzy https://github.com/clearpathrobotics/clearpath_robot.git /tmp/clearpath_robot_src \
+    && mkdir -p /opt/clearpath_robot_ws/src \
+    && cp -r /tmp/clearpath_robot_src/clearpath_generator_robot /tmp/clearpath_robot_src/clearpath_sensors /opt/clearpath_robot_ws/src/ \
+    && rm -rf /tmp/clearpath_robot_src
+RUN bash -c "source /opt/ros/jazzy/setup.bash && cd /opt/clearpath_robot_ws && colcon build" \
+    && rm -rf /opt/clearpath_robot_ws/build /opt/clearpath_robot_ws/log
+
 COPY config/robot.a300.yaml.tmpl config/robot.a200.yaml.tmpl config/robot.j100.yaml.tmpl config/robot.r100.yaml.tmpl config/robot.j100_0936.yaml.tmpl config/robot.rviz.tmpl /opt/clearpath/
 COPY entrypoint.sh /entrypoint.sh
 COPY bin/ /usr/local/bin/
-RUN chmod +x /entrypoint.sh /usr/local/bin/teleop /usr/local/bin/camera_view /usr/local/bin/robot_state /usr/local/bin/rviz /usr/local/bin/foxglove
+RUN chmod +x /entrypoint.sh /usr/local/bin/teleop /usr/local/bin/camera_view /usr/local/bin/robot_state /usr/local/bin/rviz /usr/local/bin/foxglove /usr/local/bin/generate_params
 
 # ROS workspace user. Ubuntu 24.04 (this image's base) already ships a uid/gid 1000 "ubuntu" account, which is
 # renamed rather than adding a second uid 1000 user; 1000 is also the typical host user's uid, so files the
@@ -55,6 +78,7 @@ RUN printf '%s\n' \
         'else' \
         '    source /opt/ros/jazzy/setup.bash' \
         'fi' \
+        'source /opt/clearpath_robot_ws/install/setup.bash' \
         '[ -f /etc/robot_ns_env.sh ] && source /etc/robot_ns_env.sh' > /etc/ros_env.sh \
     && echo 'source /etc/ros_env.sh' >> /etc/bash.bashrc
 ENV RMW_IMPLEMENTATION=rmw_fastrtps_cpp \

@@ -622,3 +622,172 @@ instead of `LaserScan` (16 channels x 360 horizontal steps = 5760 rays, real VLP
 - Files touched: `sim/scripts/setup_scene.py` (`LIDAR3D_*` constants, `LIDAR3D_READ_SCRIPT`, `Lidar3dRead`
   wiring in `build_ros_graph` including the chassis-relative-offset computation, removed the old
   documented-no-op `add_lidar3d` function and its call site).
+
+## Addendum: physical properties questions, then a deliberate +10kg chassis mass override for j100_0921
+
+User asked for `j100_0921`'s component masses, then for its overall centre of gravity in the `base_link` frame,
+then to increase the chassis mass by 10kg. All three answered/implemented directly from the real generated data
+rather than estimated.
+
+- **Component masses**: extracted directly from every `<link><inertial><mass>` in the flattened
+  `sim/assets/j100_0921/j100_0921.urdf` (real Clearpath/Kinova values from the actual generator output, not
+  guessed) — chassis 16.523kg, each wheel 0.477kg, the Kinova Gen3 Lite arm+2F Lite gripper ~5.19kg total across
+  its 11 links, D405 camera 0.072kg; total declared mass 23.691kg. Flagged which links have **no** declared
+  mass at all (`top_mount_link`, `gps_1/2_link`, camera sub-frames, decorative `bar_*`/`unloader_wall_*`/
+  antenna links) — Isaac's importer falls back to a tiny "small sphere approximated" synthetic mass for these
+  at import time (the same "possibly invalid inertia tensor... negative mass" warnings already documented
+  elsewhere), not a real physical value, so they were excluded from any real mass total.
+- **Centre of gravity**: computed properly as a real mass-weighted average using live TF (`base_link -> <link>`
+  for every massed link, accounting for the arm's actual current joint angles) combined with each link's real
+  local CoM offset from the URDF, not a rough estimate. Hit a real, non-obvious gotcha getting there: a plain
+  `tf2_ros.TransformListener` subscribes to the **standard, unnamespaced** `/tf`/`/tf_static` topics by default,
+  but this project's own convention (documented in README/CLAUDE.md, needed for multiple robots to coexist) is
+  namespaced `/<robot>/tf`; the listener silently received nothing until the node was constructed with explicit
+  `cli_args=['--ros-args', '-r', '/tf:=/j100_0921/tf', '-r', '/tf_static:=/j100_0921/tf_static']`, the same
+  remap `robot/bin/rviz`'s own wrapper script already uses for exactly this reason. Reported both the full-
+  system CoG at the arm's current pose (confirmed live via `platform/joint_states` to be sitting at its
+  kinematic zero, not an arbitrarily extended test pose) and a pose-independent platform-only figure (chassis +
+  wheels + IMU, excluding the arm) as the more generally useful reference, since the arm's ~22% mass share
+  shifts the full-system figure substantially with joint angle.
+- **+10kg chassis mass override**: the chassis mass comes from Clearpath's own installed
+  `clearpath_platform_description` xacro (`clearpath_generator_common`'s own generated output), not from
+  anything in the robot's `robot.yaml` -- so there was no config field to just edit. Implemented as a new,
+  general (not `j100_0921`-specific) `apply_mass_deltas` pass in `scripts/flatten_urdf.py` (`link_name:delta_kg`
+  spec, e.g. `"chassis_link:10"`), wired up per-model in `scripts/gen_urdf.sh` (only `j100_0921` gets it,
+  clearly commented as a deliberate what-if experiment, not a hardware fact). Inertia tensor is deliberately
+  left unchanged -- recomputing it correctly would need to know the added mass's own shape/distribution, which
+  isn't modeled here; disclosed as a simplification, not presented as a physically exact reballast. Verified
+  live: `chassis_link: mass 16.523 -> 26.523 kg` printed during generation, confirmed in the flattened URDF,
+  total declared mass now 33.691kg (exactly +10 from the earlier 23.691kg baseline), fresh USD re-import
+  (`FORCE_REIMPORT=1`) picked it up, drive test still passes, and `j100_0922`'s own chassis mass confirmed
+  unaffected (16.523kg, unchanged) -- the override is genuinely scoped to just this one robot.
+- Files touched: `scripts/flatten_urdf.py` (`apply_mass_deltas`, `main()`'s new `mass_overrides` parameter),
+  `scripts/gen_urdf.sh` (per-model override wiring for `j100_0921`).
+
+## Addendum: real Clearpath platform/manipulator param generation, found by re-checking rather than trusting an earlier "no equivalent exists" conclusion
+
+User: "In the actual Clearpath robot, it generates configuration files and launch files based on the robot.yaml
+file using clearpath_generator_common package. In each robot container, generate[] those files so that I can
+run them later." An earlier session's own documented finding (CLAUDE.md: "There is no generate_launch/
+generate_params-equivalent package in the public Jazzy apt repo") was re-checked live rather than trusted at
+face value, matching the lesson from the RaycastSensor investigation two addenda ago -- and this time the
+earlier conclusion was half right, not fully right.
+
+- **Re-verified `clearpath_generator_common`'s own installed console_scripts first** (`ros2 pkg executables`):
+  still only `generate_bash`/`generate_description`/`generate_discovery_server`/`generate_semantic_description`/
+  `generate_vcan`/`generate_zenoh_router`/`moveit_collision_updater` -- confirmed no `generate_launch`/
+  `generate_params` executable exists, and a broader sweep of *every* installed ROS2 package's own executables
+  for anything matching found nothing either. The earlier conclusion about console_scripts was correct.
+- **What the earlier investigation missed**: it only looked for wrapped console_scripts, not the underlying
+  Python package's own modules. `clearpath_generator_common` also ships `param/generator.py`
+  (`ParamGenerator`) and `launch/generator.py` (`LaunchGenerator`) as plain importable classes, never wrapped in
+  a `ros2 run` entry point in this apt package at all -- found by listing every `.py` file under the installed
+  package and reading the ones that looked relevant, not by searching for a name that had already failed once.
+- **`ParamGenerator` is genuinely usable, confirmed live**: `generate_platform()` and `generate_manipulators()`
+  are fully implemented (only `generate_sensors()` raises `NotImplementedError` in this installed version --
+  confirmed by reading the class, not assumed) and produce real, correct output: ran it directly inside
+  `j100_0921`'s own container and got 11 real files under `/etc/clearpath/{platform,manipulators}/config/`
+  (`control.yaml`, `diagnostic_aggregator.yaml`, `diagnostic_updater.yaml`, `foxglove_bridge.yaml`,
+  `imu_filter.yaml`, `localization.yaml`, `teleop_interactive_markers.yaml`, `teleop_joy.yaml`,
+  `twist_mux.yaml`, plus `manipulators/config/{moveit,control}.yaml`). `platform/config/control.yaml`'s own
+  `diff_drive_controller` parameters independently confirm the exact same real calibrated values this project's
+  own `MODEL_PARAMS["j100_0921"]` already carries by hand (`wheel_separation_multiplier: 1.17`,
+  `left/right_wheel_radius_multiplier: 0.95`, `linear.x.max_velocity: 1.0`) -- a nice cross-check that this
+  project's own hand-derived numbers were right all along. Also confirmed live on a robot with **no** arm
+  (`a300_00036`): `generate_manipulators()` doesn't error out, it just writes a harmless, empty
+  `controller_manager` skeleton with no actual joints/controllers listed.
+- **`LaunchGenerator` is a dead end, confirmed by reading it, not assumed from its name**: every one of its
+  three generation methods (`generate_sensors`/`generate_platform`/`generate_manipulators`) is a bare
+  `raise NotImplementedError()` -- it's an abstract base meant to be subclassed by a downstream/private
+  bringup package this public apt repo doesn't ship, exactly matching the earlier session's original finding
+  for the *launch* side specifically (that part of the old conclusion holds up). This doesn't block much in
+  practice, though: the real launch files it would have generated thin wrapper scripts for
+  (`clearpath_control/launch/control.launch.py`, `clearpath_platform_description/launch/description.launch.py`,
+  `clearpath_manipulators/launch/{manipulators,control,moveit}.launch.py`) are themselves static, generic,
+  already-installed files that take `setup_path`/`namespace`/etc. as plain launch arguments -- they were
+  already directly runnable via `ros2 launch <pkg> <file>.launch.py setup_path:=/etc/clearpath/ namespace:=<ns>
+  ...` once their param dependencies exist, which is exactly what `ParamGenerator` now provides.
+- **Implemented as `robot/bin/generate_params`**, a small one-shot script (not a persistent background service,
+  unlike `robot_state`/`foxglove` -- this only needs to run once, like `generate_bash`) calling
+  `ParamGenerator(setup_path='/etc/clearpath/').generate_platform()` + `.generate_manipulators()` directly
+  (never `.generate()`, which would also call the unimplemented `generate_sensors()` and crash). Wired into
+  `robot/entrypoint.sh` right after `generate_bash`'s own output is sourced, so it runs unconditionally for
+  every model (real or generic, arm or not) as part of the real boot sequence, not as a separate manual step.
+  Verified live end-to-end through an actual image rebuild + full 4-robot `--force-recreate` (not just a manual
+  one-off exec): all 4 containers show the real "Generated config: ..." lines in their own boot logs, no
+  tracebacks (one harmless `ros-jazzy-clearpath-firmware package not found` warning, expected -- that's a
+  real-hardware-only package, not installed or needed here), and `drive_test.py` still passes afterward --
+  confirming this addition doesn't interfere with anything already working.
+- **Important caveat, disclosed rather than left for the user to discover by trying it**: these generated files
+  let the user run Clearpath's own real launch files, but actually doing so would **not** replace or integrate
+  with this project's own drive/sensor pipeline -- `control.launch.py` starts a real `ros2_control_node` +
+  `diff_drive_controller` expecting a real (or simulated) `ros2_control` hardware interface plugin, which this
+  project doesn't have at all (this sim drives wheels via its own OmniGraph nodes writing straight to Isaac's
+  PhysX joint drives, bypassing ros2_control entirely) -- so running it wouldn't make the robot move, and would
+  likely fight over shared topic names (`platform/odom`, `platform/joint_states`, `cmd_vel`) with what already
+  works. Framed to the user as "for inspection/reference, not a drop-in replacement," not silently left implicit.
+- Files touched: `robot/bin/generate_params` (new), `robot/entrypoint.sh` (call site), `robot/Dockerfile`
+  (`chmod +x` for the new script).
+
+## Addendum: the sensors/launch gap above was real but not permanent -- `clearpath_generator_robot` (from the `clearpath_robot` GitHub repo) closes it
+
+User, immediately after the above: "the sensor parameter will be generated by clearpath_robot package. check it"
+-- pointing at a specific package name I hadn't looked for. Checked rather than deferred, matching this
+project's own established practice of re-verifying a named claim instead of assuming the prior addendum's
+"genuine, confirmed gap" conclusion was the end of the story.
+
+- **Confirmed via a scratch clone** (`git clone --depth 1 -b jazzy https://github.com/clearpathrobotics/clearpath_robot.git`,
+  inspected then discarded): `clearpath_robot` is a real, public, source-only repo (not in the apt index --
+  only `clearpath_generator_common` is) with six packages. `clearpath_generator_robot` subclasses both of
+  `clearpath_generator_common`'s abstract bases: `RobotParamGenerator(ParamGenerator)` has a genuinely
+  implemented `generate_sensors()` (reads `sensors.get_all_sensors()`, filters to `get_launch_enabled()`, and
+  for each one instantiates `SensorParam` -- which needs a *second* package, `clearpath_sensors`, for its
+  default per-sensor-type param templates via `get_package_share_directory('clearpath_sensors')`), and
+  `RobotLaunchGenerator(LaunchGenerator)` likewise has all three methods genuinely implemented (not the
+  bare-abstract dead end the base class is). Both base classes also have a `generate()` aggregate
+  (`generate_sensors()`+`generate_platform()`+`generate_manipulators()` in one call) that only the *subclasses*
+  can safely use, since the base versions still raise on sensors.
+- **First attempt failed, second one revealed the right class name**: importing
+  `from clearpath_generator_robot.param.generator import ParamGenerator` resolved to the *base* class (an
+  inherited/re-exported name collision), not the real subclass -- reading the actual source file directly (not
+  guessing from the module path) showed the real name is `RobotParamGenerator`.
+- **`package.xml` for both new packages lists many genuinely-unavailable exec_depends** (`clearpath_hardware_interfaces`,
+  `micro_ros_agent`, `canopen_inventus_bringup`, `realsense2_camera`, `velodyne_driver`, `zed_wrapper`,
+  `phidgets_spatial`, ...) -- verified harmless before relying on it, not assumed: `colcon build` only checks
+  `build_depend`s, neither package.xml declares any, and the actual code (`param/generator.py`,
+  `param/sensors.py`, `launch/generator.py`, `launch/sensors.py`) only imports `clearpath_config`/
+  `clearpath_generator_common`/its own sibling modules -- confirmed by a real successful build+run in a
+  throwaway container before touching the actual project.
+- **Integrated into the real image** (`robot/Dockerfile`): clones `clearpath_robot` (jazzy branch, shallow) at
+  build time, copies out only `clearpath_generator_robot`+`clearpath_sensors` (the other four packages are
+  real-motor-controller/CAN-hardware-only, not needed), and `colcon build`s them into a separate
+  `/opt/clearpath_robot_ws` overlay (kept apart from the runtime `colcon_ws` bind mount, since this is baked
+  into the image, not user workspace content). Needed `bash -c "source ... && colcon build"` rather than a bare
+  `RUN ... && . setup.bash && ...` -- Docker's default `RUN` shell is `/bin/sh` (dash), which can't parse
+  `setup.bash`'s bash-only syntax (`Bad substitution`), caught immediately by the build failing, not assumed
+  away. `entrypoint.sh` now sources this overlay (after `/etc/clearpath/setup.bash`, before calling
+  `generate_params`); `/etc/ros_env.sh` (the file every `docker exec`/bashrc shell already sources) got the same
+  line added, so an interactive shell can also `python3 -c "from clearpath_generator_robot..."` directly.
+- **`robot/bin/generate_params` rewritten** to import `RobotParamGenerator`/`RobotLaunchGenerator` from
+  `clearpath_generator_robot` instead of the base classes from `clearpath_generator_common`, and call each
+  one's `.generate()` (now safe, since sensors is genuinely implemented in these subclasses) instead of calling
+  `generate_platform()`/`generate_manipulators()` individually.
+- **Verified live across all 4 currently-configured real robots** (image rebuild + `--force-recreate` on all
+  four, not just one): `j100_0921`/`j100_0922` each produced real `sensors/config/{camera_0,imu_1}.yaml` +
+  matching `launch/*.launch.py` (ZED2i + Microstrain IMU; GPS correctly absent, both `swiftnav_duro` entries
+  have `launch_enabled: false`), `a300_00036` produced `imu_0.yaml` only (Phidgets Spatial, no camera --
+  correctly reflects it having none), `a200_0333` produced `camera_0.yaml`+`lidar2d_0.yaml`+`lidar3d_0.yaml`
+  (D435, Hokuyo UST, Velodyne VLP16). No tracebacks in any of the 4 boot logs; `drive_test.py` on `j100_0921`
+  still passes afterward, confirming no regression to the working drive pipeline.
+- **Same caveat as the platform/manipulator params still applies, now also to sensors**: these are real,
+  runnable Clearpath launch files, not something this project's own pipeline consumes -- they default
+  `use_sim_time=false` (hardcoded in the base `LaunchGenerator.__init__`) and would drive real sensor driver
+  nodes (`realsense2_camera`, `microstrain_inertial_driver`, ...) this image doesn't have installed and that
+  would conflict with this project's own OmniGraph-published topics if it did. For inspection/reference only.
+- Scratch clone (`/tmp/clearpath_robot`) was on the host filesystem, not the session scratchpad, and has been
+  deleted now that its contents are copied into the real Dockerfile step -- nothing outside the project
+  references it any more.
+- Files touched: `robot/Dockerfile` (clone+build step, `/etc/ros_env.sh` overlay source line),
+  `robot/entrypoint.sh` (source the new overlay before `generate_params`), `robot/bin/generate_params`
+  (rewritten to use `RobotParamGenerator`/`RobotLaunchGenerator`), `CLAUDE.md` (superseded the "sensors gap"/
+  "LaunchGenerator dead end" paragraph with this finding).

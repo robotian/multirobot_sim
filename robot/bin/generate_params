@@ -1,0 +1,25 @@
+#!/bin/bash
+# What a real Clearpath robot's own bringup also does: generate the platform/manipulator/sensor ROS parameter
+# files (ros2_control config, diagnostics, localization, teleop, twist_mux, per-sensor driver params, ...) AND
+# their launch files from /etc/clearpath/robot.yaml, so the real Clearpath launch/param files this image ships
+# (clearpath_control/clearpath_platform_description/clearpath_manipulators/clearpath_sensors) can be inspected
+# or run later if wanted -- see CLAUDE.md for exactly what this can and can't produce, and why running those
+# launch files would conflict with this project's own drive/sensor pipeline rather than replace it (they default
+# to use_sim_time=false and drive real hardware interfaces this sim doesn't provide).
+#
+# clearpath_generator_common's installed console_scripts (generate_bash, generate_description, ...) do not
+# include this -- ParamGenerator/LaunchGenerator only exist as plain Python classes, never wrapped in a
+# `ros2 run` entry point in that apt package. Worse, generate_sensors() is abstract (raises NotImplementedError)
+# there, and LaunchGenerator has no concrete implementation of anything -- confirmed live, not assumed. The real
+# implementations (RobotParamGenerator/RobotLaunchGenerator) live in clearpath_generator_robot, a *different*,
+# source-only package (from the clearpath_robot GitHub repo, jazzy branch -- see Dockerfile for how it and its
+# clearpath_sensors dependency get built into this image), which is why this calls into that package by name
+# instead of clearpath_generator_common directly.
+set -e
+python3 - <<'PY'
+from clearpath_generator_robot.param.generator import RobotParamGenerator
+from clearpath_generator_robot.launch.generator import RobotLaunchGenerator
+
+RobotParamGenerator(setup_path='/etc/clearpath/').generate()
+RobotLaunchGenerator(setup_path='/etc/clearpath/').generate()
+PY

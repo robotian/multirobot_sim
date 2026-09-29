@@ -251,7 +251,35 @@ def merge_visual_only_links(root):
             changed = True  # a link merged away might itself have been the parent of another such joint
 
 
-def main(urdf_in, out_dir, urdf_name):
+def apply_mass_deltas(root, spec):
+    """Add a delta mass to one or more links' existing <inertial><mass> value.
+
+    `spec` is "link_name:delta_kg" entries separated by ";" (e.g. "chassis_link:10"). A deliberate what-if mass
+    change for experimentation (e.g. "how does the sim behave with a 10kg heavier chassis"), not a general
+    modeling feature -- callers wire it up per-model in scripts/gen_urdf.sh, not here. The inertia tensor is
+    left untouched: recomputing it correctly would need to know the added mass's own shape/distribution, which
+    this doesn't model -- a disclosed simplification, not a physically exact reballast.
+    """
+    for entry in spec.split(";"):
+        if not entry:
+            continue
+        link_name, delta_str = entry.split(":")
+        delta = float(delta_str)
+        for link in root.findall("link"):
+            if link.get("name") != link_name:
+                continue
+            mass_el = link.find("inertial/mass")
+            if mass_el is None:
+                raise ValueError(f"{link_name!r} has no <inertial><mass> to adjust")
+            old = float(mass_el.get("value"))
+            mass_el.set("value", str(old + delta))
+            print(f"{link_name}: mass {old:g} -> {old + delta:g} kg (delta {delta:+g}, inertia tensor unchanged)")
+            break
+        else:
+            raise ValueError(f"no link named {link_name!r} found")
+
+
+def main(urdf_in, out_dir, urdf_name, mass_overrides=""):
     tree = ET.parse(urdf_in)
     root = tree.getroot()
 
@@ -262,6 +290,9 @@ def main(urdf_in, out_dir, urdf_name):
     for tag in ("gazebo", "ros2_control"):
         for el in list(root.findall(tag)):
             root.remove(el)
+
+    if mass_overrides:
+        apply_mass_deltas(root, mass_overrides)
 
     prune_dangling_joints(root)
     merge_visual_only_links(root)
@@ -290,4 +321,4 @@ def main(urdf_in, out_dir, urdf_name):
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:4])
+    main(*sys.argv[1:5])

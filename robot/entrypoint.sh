@@ -67,6 +67,13 @@ chown -R robot:robot /home/robot/colcon_ws
 source /opt/ros/jazzy/setup.bash  # only to make `ros2 run` available for the next line
 ros2 run clearpath_generator_common generate_bash -s /etc/clearpath
 source /etc/clearpath/setup.bash  # sources ROS, colcon_ws, and sets ROS_DOMAIN_ID/RMW_IMPLEMENTATION from robot.yaml
+source /opt/clearpath_robot_ws/install/setup.bash  # overlay: clearpath_generator_robot + clearpath_sensors, built at image build time -- see Dockerfile
+# One-shot, like generate_bash above: writes /etc/clearpath/{platform,manipulators,sensors}/config/*.yaml and
+# .../launch/*.py (ros2_control, diagnostics, localization, teleop, twist_mux, per-sensor driver params, ...) so
+# the real, unmodified Clearpath launch files this image already has installed (clearpath_control/
+# clearpath_platform_description/clearpath_manipulators/clearpath_sensors) can be run against them later if
+# wanted -- see robot/bin/generate_params and CLAUDE.md for what this can/can't produce.
+generate_params
 # ROS_NAMESPACE is only honoured by launch files; `ros2 run` tools need `--ros-args -r __ns:=` (see bin/teleop).
 # (already written to /etc/robot_ns_env.sh above, for docker exec shells; this exports it for this process too.)
 export ROS_NAMESPACE="${ROBOT_NAMESPACE}"

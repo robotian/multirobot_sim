@@ -47,6 +47,11 @@ for m in $MODELS; do
     ros2 run clearpath_generator_common generate_description -s /tmp/setup
     xacro /tmp/setup/robot.urdf.xacro -o /tmp/setup/robot.urdf
     cp /tmp/setup/robot.yaml "/out/$m/robot.yaml"
-    python3 /flatten_urdf.py /tmp/setup/robot.urdf "/out/$m" "$m.urdf"
+    # Per-model what-if mass overrides (see flatten_urdf.py'"'"'s apply_mass_deltas): experimentation only, not a
+    # real hardware change -- j100_0921'"'"'s chassis_link is +10kg heavier than Clearpath'"'"'s own real value, at
+    # the user'"'"'s request.
+    mass_override=""
+    [ "$m" = "j100_0921" ] && mass_override="chassis_link:10"
+    python3 /flatten_urdf.py /tmp/setup/robot.urdf "/out/$m" "$m.urdf" "$mass_override"
 done
 '
