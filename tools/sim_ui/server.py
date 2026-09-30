@@ -142,10 +142,19 @@ def robots():
     for r in rows:
         r["slot"] = int(r["service"][5:])
         r["launch"] = False
+        r["move_group"] = False
+        r["cut_stem_action"] = False
         if r["state"] == "running":
             code, _ = sh(["docker", "exec", r["name"], "pgrep", "-f", "sim_robot_upstart.launch.py"], timeout=10)
             r["launch"] = code == 0
             r["cutting"] = sh(["docker", "exec", r["name"], "pgrep", "-f", CUT_MATCH], timeout=10)[0] == 0
+            # Check move_group availability (only check if launch is running)
+            if r["launch"]:
+                code, _ = in_robot(r["name"], "ros2 node list 2>/dev/null | grep -q move_group", timeout=5)
+                r["move_group"] = code == 0
+                # Check cut_stem action server availability
+                code, _ = in_robot(r["name"], "ros2 action list 2>/dev/null | grep -xq /$ROBOT_NAMESPACE/cut_stem", timeout=5)
+                r["cut_stem_action"] = code == 0
         else:
             r["cutting"] = False
     return sorted(rows, key=lambda r: r["slot"])

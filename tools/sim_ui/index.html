@@ -161,7 +161,7 @@ function renderRobots() {
   const open = new Set([...box.querySelectorAll('details[open]')].map(d => d.dataset.robot));
   if (!status.robots.length) { box.innerHTML = '<span class="muted">no robot containers</span>'; return; }
   // Only rebuild when the set/state of robots changes, so inputs being edited aren't wiped every poll.
-  const sig = JSON.stringify(status.robots.map(r => [r.name, r.state, r.launch, r.cutting]));
+  const sig = JSON.stringify(status.robots.map(r => [r.name, r.state, r.launch, r.cutting, r.move_group, r.cut_stem_action]));
   if (box.dataset.sig === sig) return;
   box.dataset.sig = sig;
   box.innerHTML = status.robots.map(r => {
@@ -174,8 +174,10 @@ function renderRobots() {
       ${up ? `<div class="row">
         <button onclick="post('/api/launch/start',{robot:'${esc(r.name)}'})" ${r.launch ? 'disabled' : ''}>Start sim_robot_upstart</button>
         <button class="ghost" onclick="post('/api/launch/stop',{robot:'${esc(r.name)}'})" title="restart_ros: kills every ROS node; robot_state/foxglove/pruner_stub come back">Stop (restart_ros)</button>
-        <button onclick="post('/api/cutstem/start',{robot:'${esc(r.name)}'})" ${!r.launch || r.cutting ? 'disabled' : ''}
-          title="ros2 action send_goal /&lt;ns&gt;/cut_stem plant_cutter_msgs/action/CutStem {start_cutting: true}; needs sim_robot_upstart running. Progress shows in Jobs.">Cut stem</button>
+        <button onclick="post('/api/cutstem/start',{robot:'${esc(r.name)}'})"
+          ${!r.launch || !r.move_group || !r.cut_stem_action || r.cutting ? 'disabled' : ''}
+          title="${!r.launch ? 'Start sim_robot_upstart first' : !r.move_group ? 'Waiting for move_group to be available (~20s)' : !r.cut_stem_action ? 'Waiting for cut_stem action server (~20s)' : 'ros2 action send_goal /&lt;ns&gt;/cut_stem plant_cutter_msgs/action/CutStem {start_cutting: true}'}">
+          ${r.cutting ? 'Cutting' : 'Cut stem'}</button>
         <button class="ghost" onclick="post('/api/cutstem/stop',{robot:'${esc(r.name)}'})" ${r.cutting ? '' : 'disabled'}
           title="Ctrl+C on the goal client: cancels the running cut_stem goal">Stop cutting</button>
         <button class="ghost" onclick="showLaunchLog('${esc(r.name)}')">Launch log</button>
