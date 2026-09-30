@@ -298,8 +298,11 @@ So the levers that matter are the number of robots with cameras and async render
 
 Besides the robots, the sim spawns some static scene dressing in `build_world()` (`sim/scripts/setup_scene.py`):
 
-- coloured target boxes (one per robot, with a physics collider — robots can drive into them), a wall and pillars, all for the cameras to look at;
-- three lavender plants (`SM_Lavender_Nanite_01.usd` under `sim/assets/lavender/`, `add_lavender()`), referenced with `instanceable=True` so the ~1.26M-triangle mesh is shared rather than tripled, and scaled by 0.01 to convert the asset's centimetre units into this stage's metres. They sit in a row off to the side of the robots' lane, with no collider (decoration only). They cost about 3–4 fps at 2 robots on this GPU — see *Faster streaming* if that's a problem, or edit/remove the `add_lavender(...)` calls. A small local `RectLight` above the row (`lavender_fill` in `build_world()`) fills them in without raising the scene's global lights (which overexposes everything else) — see *Lavender material* below for how the plant itself was fixed and how to tune its look further.
+- a **lavender farm** look, modelled on real photos of the field:
+  - **Ground:** the `/World/ground` box (80 x 80 m, physics-material friction for traction) has a dark-brown soil material (`GROUND_SOIL_COLOR`), so soil rather than a bright box shows through the grass. `add_ground_cover()` references one unscaled patch of `sim/assets/Ground_cover/ground_cover.usd` on top of it: a 100 x 100 m grass field of ~73k PointInstancer blades, 9–11 cm tall (the layer says `metersPerUnit=0.01` but its geometry is really in metres; tiling many patches exceeds the renderer's instance limit and nothing draws). Visual only, no collider.
+  - **Lavender rows:** `add_lavender()` plants (`SM_Lavender_Nanite_01.usd` under `sim/assets/lavender/`, instanceable, scaled by 0.006) form one overlapping hedge row on each side of the robots' driving lanes (`LAVENDER_ROW_*`, `LAVENDER_PLANT_PITCH`; 10 plants per row along +X). No collider. Each plant is ~1.26M triangles, so row length is what costs fps.
+  - **Horizon:** `add_horizon_vegetation()` scatters NVIDIA Omniverse library assets (`Assets/Vegetation/Trees|Shrub|Rocks` from the public `omniverse-content-production` S3 bucket, downloaded into `sim/assets/trees|shrubs|rocks/` together with their `materials/` or `textures/` folders, which the assets need or the foliage renders red) on an arc 19–29 m ahead: 36 trees (Douglas fir, black oak), 70 shrubs, 30 boulders (`TREE_*`/`SHRUB_*`/`ROCK_*`). The cameras clip at 30 m, so everything has to sit inside that. Each asset is sized from its own bbox to a random target height, and referenced under its own child prim because the asset roots carry xform ops. Some shrub assets are unusable (`Cedar_Shrub` has an empty bbox).
+  - **Sky and light:** the dome light uses `sim/assets/sky/farm_field_puresky_2k.hdr` (a cloud panorama, also the camera background) at `SKY_INTENSITY = 400`; the distant sun is intensity 10000, rotation (-60, 33, -30). The old target boxes, wall and pillars, and the lavender fill light, were removed.
 
 ### Lavender material
 
@@ -364,9 +367,10 @@ Current tuned values, as a reference starting point:
 | `sim/assets/<model>/`, `sim/generated/<model>/` | generated URDF and meshes, cached USD, one set per model |
 | `scripts/` | `fleet.sh` (choose the number of robots), `stop_sim.sh`, `colcon_build.sh`, URDF generation, X11 setup and the drive test |
 | `colcon_ws/src/` | ROS workspace shared by every robot container, see *ROS workspace* |
+| `sim/assets/Ground_cover/`, `sky/`, `trees/`, `shrubs/`, `rocks/` | Grass field USD, cloud HDR, and Omniverse-library vegetation used by `build_world()` (gitignored, see *Scene dressing*) |
 | `docker/fastdds_udp.xml` | FastDDS profile (UDP only, since containers don't share `/dev/shm`) |
 | `docker/isaac-sim.Dockerfile`, `docker/isaac-entrypoint.sh` | Isaac Sim image with a system ROS 2 Jazzy (needed for zenoh) |
-| `sim/assets/lavender/` | `SM_Lavender_Nanite_01.usd` and its real `Materials/` (MDL shaders + textures, see *Lavender material*), referenced three times as scene decoration |
+| `sim/assets/lavender/` | `SM_Lavender_Nanite_01.usd` and its real `Materials/` (MDL shaders + textures, see *Lavender material*), referenced as the lavender hedge rows |
 
 See `CLAUDE.md` for more detail on how the pieces fit together.
 

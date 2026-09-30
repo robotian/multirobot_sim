@@ -14,6 +14,7 @@ Configuration comes from environment variables (see docker-compose.yml):
 import asyncio
 import math
 import os
+import random
 import re
 import traceback
 
@@ -21,7 +22,7 @@ import carb
 import omni.kit.app
 import omni.timeline
 import omni.usd
-from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdPhysics, UsdShade
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade
 
 _num_robots = int(os.environ.get("NUM_ROBOTS", "3"))
 _models = [m.strip() for m in os.environ.get("ROBOT_MODELS", "a300").split(",") if m.strip()][:_num_robots]
@@ -59,9 +60,29 @@ MODEL_ASSETS = {
 # centimetres (metersPerUnit 0.01) but this stage is metres, and USD does not rescale geometry across that
 # boundary by itself, so references to it need an explicit 0.01 scale. LAVENDER_BASE_Z lifts each plant so its
 # lowest point (bbox min z, measured once in the source asset) sits on the ground instead of poking through it.
+SKY_HDR = "/sim/assets/sky/farm_field_puresky_2k.hdr"
+SKY_INTENSITY = 400
+TREE_USDS = [f"/sim/assets/trees/{n}.usd" for n in ("Douglas_Fir", "Black_Oak", "Douglas_Fir")]
+TREE_COUNT = 36
+TREE_DIST = 22.0  # the cameras clip at 30 m, so the tree line has to sit inside that
+TREE_HEIGHT = (7.0, 11.0)  # m
+SHRUB_USDS = [f"/sim/assets/shrubs/{n}.usd" for n in ("Rhododendron", "Lilac", "Goldflame_Spirea", "Barberry")]
+SHRUB_COUNT = 70
+SHRUB_DIST = 21.0
+SHRUB_HEIGHT = (1.0, 2.2)  # m
+ROCK_USDS = [f"/sim/assets/rocks/rock_small_{i:02d}.usda" for i in range(1, 7)]
+ROCK_COUNT = 30
+ROCK_DIST = 19.0
+ROCK_HEIGHT = (0.4, 1.0)  # m
+GROUND_SOIL_COLOR = (0.16, 0.10, 0.06)  # dark brown soil under the grass
+GROUND_COVER_USD = "/sim/assets/Ground_cover/ground_cover.usd"
 LAVENDER_USD = "/sim/assets/lavender/SM_Lavender_Nanite_01.usd"
 LAVENDER_SCALE = 0.006
 LAVENDER_BASE_Z = 0.05
+LAVENDER_ROW_OFFSET = 1.6   # row centre distance beyond the outermost robot lane, m
+LAVENDER_ROW_X0 = 2.0
+LAVENDER_PLANT_PITCH = 1.0  # plants are ~1.2 m wide, so they overlap into a hedge
+LAVENDER_ROW_PLANTS = 10
 
 # Per-model drive parameters, from each model's real clearpath_control/config/<model>/control/diff_4wd.yaml.
 # `chassis_link` is the URDF link the drive/odometry OmniGraph targets -- it must be a prim the URDF importer
@@ -752,6 +773,51 @@ def add_lavender(stage, path, pos, rot_z=0.0):
     return prim
 
 
+def add_ground_cover(stage, path="/World/GroundCover"):
+    """One GROUND_COVER_USD patch (a 100 x 100 m grass field, ~73k PointInstancer blades of ~9-11 cm) over the
+    80 x 80 m ground plane. The layer says metersPerUnit=0.01, but its geometry is really authored in metres
+    (blade meshes measure 0.09-0.11 units), so it is referenced unscaled. Visual only: no collider, so wheel
+    traction still comes from /World/ground."""
+    prim = stage.DefinePrim(path, "Xform")
+    prim.GetReferences().AddReference(GROUND_COVER_USD)
+    return prim
+
+
+def add_scatter(stage, root, usds, count, dist, height, seed, arc_deg=80.0):
+    """Scatter `count` copies of the given USDs on an arc ahead of the robots at a random radius in `dist` and a
+    random target height in `height` (m). Assets are Z-up and authored in cm, but referenced unscaled and sized
+    from their own measured bbox, so the scale factor is just target_height / bbox_height."""
+    rng = random.Random(seed)
+    UsdGeom.Xform.Define(stage, root)
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
+    sizes = {}
+    for u in set(usds):
+        st = Usd.Stage.Open(u)
+        r = cache.ComputeWorldBound(st.GetDefaultPrim() or st.GetPseudoRoot()).ComputeAlignedRange()
+        sizes[u] = r.GetSize()[2]
+        log(f"scatter asset {u}: size={r.GetSize()} up={UsdGeom.GetStageUpAxis(st)}")
+    for t in range(count):
+        ang = math.radians(-arc_deg + 2 * arc_deg * t / (count - 1)) + rng.uniform(-0.03, 0.03)
+        d = rng.uniform(*dist)
+        u = usds[rng.randrange(len(usds))]
+        k = rng.uniform(*height) / max(sizes[u], 1e-6)
+        # The asset's own root may carry xform ops, so it gets its own child prim under the placement Xform.
+        prim = stage.DefinePrim(f"{root}/item_{t}", "Xform")
+        stage.DefinePrim(f"{root}/item_{t}/asset", "Xform").GetReferences().AddReference(u)
+        xf = UsdGeom.Xformable(prim)
+        xf.AddTranslateOp().Set(Gf.Vec3d(d * math.cos(ang), d * math.sin(ang), 0.0))
+        xf.AddRotateXYZOp().Set(Gf.Vec3f(0.0, 0.0, rng.uniform(0, 360)))
+        xf.AddScaleOp().Set(Gf.Vec3d(k, k, k))
+
+
+def add_horizon_vegetation(stage):
+    """Tree line (NVIDIA Omniverse Assets/Vegetation/Trees) with shrubs and boulders (Shrub, Rocks) in front of
+    and between the trunks, so the horizon has no bare gap. All within the cameras' 30 m clipping range."""
+    add_scatter(stage, "/World/trees", TREE_USDS, TREE_COUNT, (TREE_DIST, TREE_DIST + 5), TREE_HEIGHT, 7, 80.0)
+    add_scatter(stage, "/World/shrubs", SHRUB_USDS, SHRUB_COUNT, (SHRUB_DIST, SHRUB_DIST + 8), SHRUB_HEIGHT, 11, 85.0)
+    add_scatter(stage, "/World/rocks", ROCK_USDS, ROCK_COUNT, (ROCK_DIST, ROCK_DIST + 8), ROCK_HEIGHT, 13, 85.0)
+
+
 def add_box(stage, path, size, pos, color):
     cube = UsdGeom.Cube.Define(stage, path)
     cube.CreateSizeAttr(1.0)
@@ -788,42 +854,38 @@ def build_world(stage):
     ground = add_box(stage, "/World/ground", (80, 80, 1), (0, 0, -0.5), (0.35, 0.37, 0.35))
     UsdShade.MaterialBindingAPI.Apply(ground.GetPrim()).Bind(mat, UsdShade.Tokens.weakerThanDescendants, "physics")
 
+    # Dirt-coloured surface, so what shows through the grass is soil, not a bright grey box.
+    soil = UsdShade.Material.Define(stage, "/World/Materials/ground_soil")
+    shader = UsdShade.Shader.Define(stage, "/World/Materials/ground_soil/shader")
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*GROUND_SOIL_COLOR))
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(1.0)
+    soil.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    UsdShade.MaterialBindingAPI(ground.GetPrim()).Bind(soil)
+    ground.CreateDisplayColorAttr([Gf.Vec3f(*GROUND_SOIL_COLOR)])
+
+    add_ground_cover(stage)
+    add_horizon_vegetation(stage)
+
     dome = UsdLux.DomeLight.Define(stage, "/World/Lights/dome")
-    dome.CreateIntensityAttr(350)
+    dome.CreateIntensityAttr(SKY_INTENSITY)
+    dome.CreateTextureFileAttr(SKY_HDR)  # cloudy sky panorama, also what the cameras see as background
+    dome.CreateTextureFormatAttr("latlong")
     sun = UsdLux.DistantLight.Define(stage, "/World/Lights/sun")
-    sun.CreateIntensityAttr(1500)
-    UsdGeom.Xformable(sun).AddRotateXYZOp().Set(Gf.Vec3f(-50, 20, 0))
+    sun.CreateIntensityAttr(10000)
+    UsdGeom.Xformable(sun).AddRotateXYZOp().Set(Gf.Vec3f(-60, 33, -30))
 
-    # Something for the cameras to look at: a coloured box in front of each robot, plus a wall and pillars.
-    palette = [(0.9, 0.15, 0.15), (0.15, 0.75, 0.2), (0.2, 0.3, 0.95), (0.95, 0.8, 0.1), (0.8, 0.2, 0.8)]
     n = len(ROBOTS)
-    for i in range(n):
-        y = (i - (n - 1) / 2) * ROBOT_SPACING
-        add_box(stage, f"/World/targets/box_{i}", (0.6, 0.6, 0.6), (3.0 + 0.7 * i, y, 0.3), palette[i % len(palette)])
-    span = ROBOT_SPACING * n + 2
-    add_box(stage, "/World/targets/wall", (0.3, span * 2, 2.0), (9.0, 0, 1.0), (0.75, 0.75, 0.8))
-    for j, (px, py) in enumerate([(5.5, -span), (6.5, span), (7.5, 0.0)]):
-        add_box(stage, f"/World/targets/pillar_{j}", (0.4, 0.4, 1.5), (px, py, 0.75), palette[(j + 3) % len(palette)])
 
-    # A small lavender row alongside the robots, clear of their driving lane and of the targets/wall/pillars.
-    lavender_y = ((n - 1) / 2) * ROBOT_SPACING + 2.0
-    for i, x in enumerate([4.0, 6.5, 9.0]):
-        add_lavender(stage, f"/World/lavender/plant_{i}", (x, lavender_y, 0.0), rot_z=i * 47.0)
-
-    # Local fill light over the lavender row only. The global dome(350)/sun(1500) above are tuned for the rest
-    # of the scene -- a flat global bump big enough to light the lavender properly (dome=1500/sun=4000, tried
-    # once) blew out the walls/boxes/ground everywhere else (see last_session.md), so instead of raising those,
-    # add a RectLight positioned just above the row. A rect/disk/sphere light's default (unrotated) orientation
-    # already faces -Z ("down", same convention the sun light above relies on before its own tilt), so no
-    # rotate op is needed to aim it at the plants below. Its intensity falls off with distance, and the row
-    # sits offset in Y from the robots/boxes/wall, so it brightens the lavender without measurably touching the
-    # rest of the scene's exposure.
-    lavender_light = UsdLux.RectLight.Define(stage, "/World/Lights/lavender_fill")
-    lavender_light.CreateWidthAttr(6.0)
-    lavender_light.CreateHeightAttr(2.0)
-    lavender_light.CreateIntensityAttr(6000)
-    lavender_light.CreateColorAttr(Gf.Vec3f(1.0, 0.96, 0.88))  # slightly warm, like sunlight
-    UsdGeom.Xformable(lavender_light).AddTranslateOp().Set(Gf.Vec3d(6.5, lavender_y, 2.8))
+    # Lavender farm: a hedge row of overlapping plants on each side of the fleet's driving lanes (robots drive
+    # along +X), like the real field's rows. Each plant is ~1.26M triangles, so the row length is what costs fps.
+    half = ((n - 1) / 2) * ROBOT_SPACING
+    k = 0
+    for side in (-1, 1):
+        y = side * (half + LAVENDER_ROW_OFFSET)
+        for x in [LAVENDER_ROW_X0 + LAVENDER_PLANT_PITCH * j for j in range(LAVENDER_ROW_PLANTS)]:
+            add_lavender(stage, f"/World/lavender/plant_{k}", (x, y, 0.0), rot_z=(k * 47.0) % 360)
+            k += 1
 
 
 def spawn_robot(stage, ns, model, index, count):

@@ -1289,3 +1289,9 @@ commanded -0.85, and, on cut_init->zero, drifting *down* to -2.35 while commande
   measurement at `zero`). Ruled out: joint friction/damping (none authored), drive gain, self-collision
   (disabled on the articulation root as a test: no change, reverted). Not checked: chassis pitch/rocking
   during arm moves, environment contact. The real arm works within 14 N*m, so 40 is a disclosed workaround.
+
+## Addendum: lavender-farm scene (2026-09-29)
+
+User asked to make the scene resemble their real lavender-farm photos. Done in `sim/scripts/setup_scene.py` (see CLAUDE.md "Sim" item 5 and README *Scene dressing*): grass field (`Ground_cover`), soil-coloured ground box, two lavender hedge rows, Omniverse-library trees/shrubs/boulders on the horizon, cloud-HDR dome (400) + sun (10000, rot -60/33/-30); target boxes/wall/pillars removed.
+- Findings: `ground_cover.usd` says cm but is really metres (blades 0.09-0.11 units); 400 tiles = 14.4M instances -> "Unable to create ... instances", nothing rendered; instanceable references of it didn't render either. Tree/shrub/rock assets need their sibling `materials/`/`textures/` dirs (else red foliage); asset roots carry xform ops (reference under a child prim); `Cedar_Shrub` bbox invalid; camera far clip is 30 m so vegetation sits at 19-29 m.
+- Verified by capturing j100_0921's `sensors/camera_0/color/image` (rotated 180) after each change; camera ~21 Hz with everything in. Not committed. Not done: buildings/mowed aisles from the photos, a textured soil, fps measurement with `FLEET_DEBUG=1`.
