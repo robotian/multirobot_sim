@@ -49,7 +49,8 @@ def launch_setup(context, *args, **kwargs):
     grid_cutter_node = Node(
         package='stow_arm_cpp',        
         executable='grid_cutter_action_server',    
-        name='grid_cutter_action_server',          
+        # no name=: it would become a process-wide `-r __node:=...` remap that renames the node's internal MoveIt
+        # worker/helper nodes too (all showing up as /<ns>/grid_cutter_action_server). The node names itself.
         namespace=namespace,
         parameters=node_parameters,
         remappings=[

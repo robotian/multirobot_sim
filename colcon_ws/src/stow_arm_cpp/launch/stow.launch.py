@@ -7,6 +7,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from clearpath_config.clearpath_config import ClearpathConfig
 from clearpath_config.common.utils.yaml import read_yaml
+from ament_index_python.packages import get_package_share_directory
 
 
 def launch_setup(context, *args, **kwargs):
@@ -48,6 +49,18 @@ def launch_setup(context, *args, **kwargs):
 
     robot_description_kinematics = {"robot_description_kinematics": kinematics_dict}
 
+    # Shared defaults + per-robot overrides, the same files grid_cutter_action_server uses (they are keyed by that
+    # node's name, so pick out just the parameters the stow node understands).
+    pkg_share = get_package_share_directory('stow_arm_cpp')
+    stow_keys = ('move_group', 'stow_pose', 'moveit_vel_scale', 'moveit_acc_scale', 'moveit_planning_time')
+    stow_params = {}
+    for name in ('grid_cutter_params.yaml', os.path.join('robots', f'{namespace}.yaml')):
+        path = os.path.join(pkg_share, 'config', name)
+        if os.path.isfile(path):
+            with open(path, 'r') as f:
+                params = yaml.safe_load(f)['/**/grid_cutter_action_server']['ros__parameters']
+            stow_params.update({k: v for k, v in params.items() if k in stow_keys})
+
     # Your custom C++ Stow Node (Action Client)
     stow_node = Node(
         package='stow_arm_cpp',        
@@ -59,6 +72,7 @@ def launch_setup(context, *args, **kwargs):
             robot_description_semantic,
             robot_description_kinematics,
             {"use_sim_time": use_sim_time},
+            stow_params,
         ],
         remappings=[
             ('/tf', 'tf'),

@@ -9,7 +9,11 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
+find_package(moveit_core REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
+find_package(moveit_msgs REQUIRED)
+find_package(shape_msgs REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
@@ -24,9 +28,6 @@ find_package(serial_interfaces REQUIRED)
 # 1. Target: Stow Arm Node
 # ==========================================
 add_executable(stow_arm_node src/stow_arm_node.cpp)
-target_include_directories(stow_arm_node PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>)
 ament_target_dependencies(stow_arm_node
   rclcpp
   moveit_ros_planning_interface
@@ -36,13 +37,13 @@ ament_target_dependencies(stow_arm_node
 # 2. Target: Grid Cutter Action Server
 # ==========================================
 add_executable(grid_cutter_action_server src/grid_cutter_action_server.cpp)
-target_include_directories(grid_cutter_action_server PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>)
 ament_target_dependencies(grid_cutter_action_server
   rclcpp
   rclcpp_action
+  moveit_core
   moveit_ros_planning_interface
+  moveit_msgs
+  shape_msgs
   geometry_msgs
   control_msgs
   visualization_msgs
@@ -51,6 +52,7 @@ ament_target_dependencies(grid_cutter_action_server
   plant_cutter_msgs
   serial_interfaces
 )
+target_link_libraries(grid_cutter_action_server Eigen3::Eigen)
 
 # ==========================================
 # Install Instructions

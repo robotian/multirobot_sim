@@ -10,8 +10,8 @@
     # continuous joint 5 wound to -5 rad), from which the servo approach whipped joint 1 by 3 rad into the robot's
     # own body (joint efforts spiked to ~670 N*m vs. 39 limits and the arm ended up jammed). 0.50-0.62 m is
     # comfortably inside its reach (reachable-circle radius is logged at start) and behind/beside the A200.
-    zone_x_min: 0.50
-    zone_x_max: 0.62
+    zone_x_min: 0.44
+    zone_x_max: 0.56
 
     # IK seed, 7 joints. The cutter solves IK for every approach/patch pose starting from this configuration and
     # takes the nearest solution, so it has to be a seed from which ALL of them land on one good branch. Chosen by
@@ -48,6 +48,23 @@
     # the shared 0.9 is the Kinova finger's range and would exceed this joint's limit.
     gripper_open: 0.0
     gripper_close: 0.8
+
+    # --- Tool frame ---
+    # tool_link is published as a static TF from ee_link (arm_0_end_effector_link). Every patch / approach / drop
+    # position and grasp_orientation is a pose of THIS frame; the planner is given the end-effector pose that
+    # puts tool_link there. Put it at the cutting point (between the fingertips) for each arm/gripper in
+    # config/robots/<namespace>.yaml. Default: identical to ee_link. tool_rpy is roll, pitch, yaw in ee_link.
+    # Measure with: ros2 run tf2_ros tf2_echo arm_0_end_effector_link <fingertip link>
+    # (Robotiq 2F-85, open: the fingertip link origins are at x=+-0.068, z=0.098 in ee_link.)
+    tool_link: tool_link
+    tool_xyz: [0.0, 0.0, 0.098]
+    tool_rpy: [0.0, 0.0, 3.14159]
+    publish_tool_tf: true
+    # grasp_orientation is the orientation of the TOOL frame. The IK seed / zone below were tuned for an end-effector
+    # orientation of [-0.5, 0.5, 0.5, 0.5]; with tool_rpy yaw = -90 deg the tool must be rotated by the same yaw to
+    # keep that end-effector orientation (q_tool = q_ee * Rz(-90 deg)). Without it the IK lands on a different branch
+    # (2-5 rad from the seed) and the servo stalls short of every patch. Recompute if tool_rpy changes.
+    grasp_orientation: [-0.7071, 0.0, 0.0, 0.7071]
 
     # The shared box (centre z = -0.3 in arm_0_base_link) puts the floor 1.5 cm below the ground for the Jackal,
     # whose arm base is 0.26 m above the ground. Here the arm base is 0.411 m above it (FK of the URDF:

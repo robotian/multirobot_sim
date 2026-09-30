@@ -27,26 +27,63 @@ A configurable number (0–8, three if `.env` doesn't say otherwise) of Clearpat
 ## Quick start
 
 ```bash
-# 0. Clone with the ROS packages in colcon_ws/src (several are git submodules)
-git clone --recurse-submodules https://github.com/robotian/multirobot_sim.git   # existing clone: git submodule update --init
+# 0. Get the code, including the ROS packages in colcon_ws/src (several are git submodules)
+git clone --recurse-submodules https://github.com/robotian/multirobot_sim.git
+cd multirobot_sim          # existing clone instead: git submodule update --init --recursive
 
-# 1. Build the images (robot + Isaac Sim with ROS 2 Jazzy) and generate the robot description (URDF + meshes)
+# 1. Log in to NVIDIA's registry once (NGC API key); the Isaac Sim base image is pulled during the build
+docker login nvcr.io
+
+# 2. Build both images: clearpath-robot:jazzy (every robot + the zenoh router) and a300-isaac-sim:6.0.0
 docker compose build
+
+# 3. Generate the robot descriptions (URDF + meshes -> sim/assets/); needs the robot image from step 2
 scripts/gen_urdf.sh
 
-# 2. Allow the containers to open windows on your display (once per login)
+# 4. Allow the containers to open windows on your display (once per login)
 scripts/x11_auth.sh
 
-# 3. Start the router, the simulation and the robots (NUM_ROBOTS in .env, default 3; see "Number of robots")
-docker compose up -d
+# 5. Choose the robots in .env (NUM_ROBOTS, ROBOT_MODEL_<i>; see "Number of robots"), then start everything
+scripts/fleet.sh            # or: scripts/fleet.sh 2  to also set NUM_ROBOTS
 docker compose logs -f isaac-sim     # wait for "[fleet] simulation running with N robots"
+
+# 6. Build the shared ROS workspace colcon_ws/src in the running robot containers (first time, and after editing packages)
+scripts/colcon_build.sh
 ```
 
-The first start is slow: Isaac Sim compiles shaders and imports the URDF to USD. Later starts reuse the caches. `sim/assets/` and `sim/generated/` are not in git; `scripts/gen_urdf.sh` and the first start create them, so run the script after every fresh clone.
+Notes:
 
-Then open the WebRTC Streaming Client and connect to `ISAACSIM_HOST` (from `.env`; use `127.0.0.1` when it runs on the same machine).
+- **Use `scripts/fleet.sh`, not a bare `docker compose up -d`, to start and to change the robot count or models:** it keeps the per-slot container names and hostnames in `.env` in sync and removes robot containers you no longer want. A bare `docker compose up -d` is fine for restarting an unchanged setup.
+- `robot_data/` (the real MTU robots' own `robot.yaml` files) and `sim/colcon_ws/` are not in git. Without them `gen_urdf.sh` still generates the four generic models (`a300`, `a200`, `j100`, `r100`); real-robot ids such as `j100_0921` only work once their `robot_data/<id>/robot.yaml` is present (see *Adding a real robot configuration file*).
+- The first start is slow: Isaac Sim compiles shaders and imports the URDF to USD. Later starts reuse the caches. `sim/assets/` and `sim/generated/` are not in git; `scripts/gen_urdf.sh` and the first start create them, so run the script after every fresh clone.
+- Then open the WebRTC Streaming Client and connect to `ISAACSIM_HOST` (from `.env`; use `127.0.0.1` when it runs on the same machine).
+- Optional: `python3 tools/sim_ui/server.py` serves a local web UI on <http://127.0.0.1:8090> to start/stop/reset the sim, spawn robots, run `sim_robot_upstart`, move the arm and start/stop `cut_stem`.
 
 Stop everything with `scripts/stop_sim.sh` (plain `docker compose down` misses robot services outside the active `NUM_ROBOTS` profile).
+
+### Rebuilding after a change
+
+Which command you need depends on what you edited. Nothing else is baked into an image.
+
+| You changed | Do this |
+|---|---|
+| `robot/Dockerfile`, `robot/entrypoint.sh`, `robot/bin/*` (`generate_srdf`, `robot_state`, `teleop`, ...), `robot/config/*.tmpl` | `docker compose build robot0`, then recreate the robots: `scripts/fleet.sh` (or `docker compose up -d --force-recreate <robot service>`). These files are copied into the image at build time. One build serves every slot: `robot0`..`robot7` share the tag `clearpath-robot:jazzy`. |
+| `docker/isaac-sim.Dockerfile`, `docker/isaac-entrypoint.sh` | `docker compose build isaac-sim`, then `scripts/fleet.sh` to recreate the sim |
+| `sim/scripts/setup_scene.py` (the scene, drive and sensor graphs) | no build: `./sim` is mounted. `docker restart a300-isaac-sim` |
+| a robot template (`robot.<model>.yaml.tmpl`), `scripts/flatten_urdf.py`, or a `robot_data/<id>/robot.yaml` | rebuild the robot image if it is a `.tmpl`, then `scripts/gen_urdf.sh`, then `docker restart a300-isaac-sim` (the sim re-imports the URDF when it changed; `FORCE_REIMPORT=1` forces it) |
+| ROS packages in `colcon_ws/src` | no image build: `scripts/colcon_build.sh [--packages-select <pkg>]`, then restart whatever node uses it (a running node keeps its old binary; for the arm stack relaunch `sim_robot_upstart`) |
+| `scripts/*.sh`, `scripts/drive_test.py` | nothing: `./scripts` is mounted into the robots (`gen_urdf.sh` and `fleet.sh` run on the host) |
+| `.env` | `scripts/fleet.sh` (a change to `NUM_ROBOTS` or a slot's model needs it; sim tuning variables only need the sim restarted) |
+
+Rebuild from scratch (new base image, or to pick up the latest apt packages and the `clearpath_robot` source that the Dockerfile clones at build time):
+
+```bash
+docker compose build --no-cache
+scripts/gen_urdf.sh
+scripts/fleet.sh
+```
+
+A running container keeps the image it was created from, so after `docker compose build` the robots only change once they are recreated. If a build fails or a robot seems to run old code, check `docker images clearpath-robot:jazzy` and that the container was recreated (`docker inspect <robot> --format '{{.Image}}'`). Dangling old layers can be cleaned with `docker image prune`.
 
 ## Number of robots
 
@@ -352,25 +389,32 @@ Current tuned values, as a reference starting point:
 
 ## Changing the robots
 
-- **Robot configuration:** each model has its own template, `robot/config/robot.<model>.yaml.tmpl` (`a300`/`a200`/`j100`/`r100`); edit the one you want to change, rebuild the image and run `scripts/gen_urdf.sh`. Each template's `system.ros2.middleware.implementation` follows `FLEET_RMW`, so `/etc/clearpath/robot.yaml` in each robot names the same middleware the container runs. The sim re-imports that model's USD when its URDF changes.
-- **Adding another model:** it needs (a) a new `robot.<code>.yaml.tmpl`, following the existing four as examples, (b) an entry in `MODEL_PARAMS` in `sim/scripts/setup_scene.py` (`MODEL_ASSETS` is derived from `sim/assets/`) — including its correct `chassis_link` name, the one URDF link the drive/odometry graph targets; check this against the imported USD (`UsdPhysics.ArticulationRootAPI`), it isn't always literally called `chassis_link`, see A200's case there — and re-check it again after any URDF-shape change, even one that looks unrelated (adding the Jackal fender fix below changed *which* link the importer chose as the root), (c) adding it to the `MODELS` list in `scripts/gen_urdf.sh`. If the new model has decorative parts with no collision/mass (check each `<link>` in its generated URDF), `scripts/flatten_urdf.py`'s `merge_visual_only_links` already folds those into their parent automatically — no per-model work needed unless the part also needs a mesh-orientation fix like the Jackal fender's.
+- **Generic model configuration:** each generic model has its own template, `robot/config/robot.<model>.yaml.tmpl` (`a300`/`a200`/`j100`/`r100`, plus `j100_0936`, whose own `robot_data` isn't available). Edit the one you want to change, rebuild the robot image (`docker compose build robot0`), run `scripts/gen_urdf.sh`, then `docker restart a300-isaac-sim`; the sim re-imports that model's USD when its URDF changes. Each template's `system.ros2.middleware.implementation` follows `FLEET_RMW`, so `/etc/clearpath/robot.yaml` in each robot names the same middleware the container runs. See *Rebuilding after a change*.
+- **Real robots** (`j100_0921`, `j100_0922`, `a200_0284`, `a300_00036`, ...): no template. Put the robot's own file in `robot_data/<id>/robot.yaml`; `scripts/gen_urdf.sh` and the robot container pick it up by folder name, with nothing to register in either script. The sim still needs a `MODEL_PARAMS` entry for it in `sim/scripts/setup_scene.py` (drivetrain, `chassis_link`, sensor links, arm settings). Step by step: *Adding a real robot configuration file*. Per-robot behaviour of the arm cutter (zone, IK seed, gripper range, drop pose, planning speed) goes in `colcon_ws/src/stow_arm_cpp/config/robots/<id>.yaml`, which overrides the shared `grid_cutter_params.yaml` (the stow node reads the same files).
+- **Adding another generic model:** it needs (a) a new `robot.<code>.yaml.tmpl` in `robot/config/`, following the existing four as examples, and a matching `COPY` line in `robot/Dockerfile`, (b) an entry in `MODEL_PARAMS` in `sim/scripts/setup_scene.py` (`MODEL_ASSETS` is derived from `sim/assets/`) — including its correct `chassis_link` name, the one URDF link the drive/odometry graph targets; check this against the imported USD (`UsdPhysics.ArticulationRootAPI`), it isn't always literally called `chassis_link`, see A200's case there — and re-check it again after any URDF-shape change, even one that looks unrelated (adding the Jackal fender fix changed *which* link the importer chose as the root), (c) adding it to the `MODELS` list in `scripts/gen_urdf.sh`. If the new model has decorative parts with no collision/mass (check each `<link>` in its generated URDF), `scripts/flatten_urdf.py`'s `merge_visual_only_links` already folds those into their parent automatically — no per-model work needed unless the part also needs a mesh-orientation fix like the Jackal fender's.
+- **MoveIt collision matrix (robots with an arm):** `robot/bin/generate_srdf` writes `/etc/clearpath/robot.srdf` at every container start. It uses `moveit_collision_updater` with `--trials 10000` and retries, because Clearpath's own default (100000 trials) crashes in this container, and too few trials wrongly mark arm-vs-body link pairs as never colliding, so MoveIt plans through the robot. Details in `CLAUDE.md`. Editing that script needs a robot image rebuild.
 - **More than 8 robots:** `docker-compose.yml` defines eight robot services (`robot0` … `robot7`, container-named from `ROBOT_MODEL_<i>` + the slot index), each active for the profiles `n<k>` with `k` above its index. Copy the last block for `robot8`, give it the next Foxglove port and a profile list extended by `n9`, raise `MAX` in `scripts/fleet.sh`, and use `NUM_ROBOTS=9`. The sim needs no change.
 
 ## Layout
 
 | Path | Purpose |
 |---|---|
-| `docker-compose.yml`, `.env` | the whole stack |
-| `robot/` | robot container image: `Dockerfile`, `entrypoint.sh`, helper commands in `bin/` (`teleop`, `camera_view`, `rviz`, `robot_state`, `foxglove`), per-model config templates `robot.a300/a200/j100/r100/j100_0936.yaml.tmpl` and the generic `robot.rviz.tmpl` (`j100_0921`/`j100_0922`/`a200_0333`/`a300_00036` each use their own real `robot_data/<id>/robot.yaml` directly, no template) |
-| `robot_data/<serial>/robot.yaml` | the real MTU robots' own actual Clearpath configs (source for the two templates above) |
-| `sim/scripts/setup_scene.py` | builds the Isaac Sim scene and ROS 2 graphs |
-| `sim/assets/<model>/`, `sim/generated/<model>/` | generated URDF and meshes, cached USD, one set per model |
-| `scripts/` | `fleet.sh` (choose the number of robots), `stop_sim.sh`, `colcon_build.sh`, URDF generation, X11 setup and the drive test |
-| `colcon_ws/src/` | ROS workspace shared by every robot container, see *ROS workspace* |
-| `sim/assets/Ground_cover/`, `sky/`, `trees/`, `shrubs/`, `rocks/` | Grass field USD, cloud HDR, and Omniverse-library vegetation used by `build_world()` (gitignored, see *Scene dressing*) |
+| `docker-compose.yml`, `.env` | the whole stack (`.env` holds this machine's LAN IP in `ISAACSIM_HOST`) |
+| `robot/` | robot container image: `Dockerfile`, `entrypoint.sh`, per-model config templates `config/robot.a300/a200/j100/r100/j100_0936.yaml.tmpl` and the generic `config/robot.rviz.tmpl`. Real robots in `robot_data/` use their own `robot.yaml` directly, no template. Everything here is baked into the image: rebuild after editing (*Rebuilding after a change*) |
+| `robot/bin/` | commands installed in every robot: `teleop`, `camera_view`, `rviz`, `foxglove`, `restart_ros` and the boot-time/background helpers `robot_state`, `generate_params`, `generate_srdf` (MoveIt collision matrix), `pruner_stub` (fake pruner serial device); arm tools `arm_goto` and `arm_joints` |
+| `robot_data/<id>/robot.yaml` | the real MTU robots' own Clearpath configs (`j100_0921`, `j100_0922`, `a200_0284`, `a300_00036`, ...), used unmodified. Not in git (private lab material); gitignored |
+| `sim/scripts/setup_scene.py` | builds the Isaac Sim scene and ROS 2 graphs (`./sim` is mounted into the sim container: edit, then `docker restart a300-isaac-sim`) |
+| `sim/assets/<model>/`, `sim/generated/<model>/` | generated URDF and meshes, cached USD, one set per model. Not in git; `gen_urdf.sh` and the first start create them |
+| `sim/colcon_ws/` | private ROS packages that `gen_urdf.sh` builds for URDF generation on the host (e.g. `mtu32_description`). Not in git |
+| `scripts/` | `fleet.sh` (choose robots, restart), `stop_sim.sh`, `colcon_build.sh`, `gen_urdf.sh` + `flatten_urdf.py` (URDF generation), `x11_auth.sh`, `drive_test.py`. Mounted read-only into the robots, so edits need no rebuild |
+| `colcon_ws/src/` | ROS workspace shared by every robot container (see *ROS workspace*): 7 git submodules plus plain packages. Arm cutting stack: `stow_arm_cpp` (`cut_stem` action server `grid_cutter_action_server`, stow node, per-robot config in `config/robots/`), `moveit_sim_bridge` (executes MoveIt trajectories and gripper commands in the sim), `pruner_action_server`, `plant_cutter_msgs`, `serial_interfaces`; launched by `mtu32_husky/mtu32_bringup`'s `sim_robot_upstart.launch.py` |
+| `tools/sim_ui/` | `server.py` + `index.html`: local web UI (port 8090) that runs the same scripts as this README: start/stop/reset the sim, spawn robots, `sim_robot_upstart`, arm moves with commanded-vs-observed plots, Cut stem |
+| `sim/assets/Ground_cover/`, `sky/`, `trees/`, `shrubs/`, `rocks/` | Grass field USD, cloud HDR, and Omniverse-library vegetation used by `build_world()` (gitignored, see *Scene*) |
+| `sim/assets/lavender/` | `SM_Lavender_Nanite_01.usd` and its real `Materials/` (MDL shaders + textures, see *Lavender material*), referenced as the lavender hedge rows |
 | `docker/fastdds_udp.xml` | FastDDS profile (UDP only, since containers don't share `/dev/shm`) |
 | `docker/isaac-sim.Dockerfile`, `docker/isaac-entrypoint.sh` | Isaac Sim image with a system ROS 2 Jazzy (needed for zenoh) |
-| `sim/assets/lavender/` | `SM_Lavender_Nanite_01.usd` and its real `Materials/` (MDL shaders + textures, see *Lavender material*), referenced as the lavender hedge rows |
+| `docs/images/` | images used by this README |
+| `CLAUDE.md`, `last_session.md` | detailed architecture notes and the latest session log (read these before changing the sim, arm or SRDF pipeline) |
 
 See `CLAUDE.md` for more detail on how the pieces fit together.
 
