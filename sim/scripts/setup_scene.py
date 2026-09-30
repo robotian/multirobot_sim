@@ -83,6 +83,8 @@ ROCK_DIST = 19.0
 ROCK_HEIGHT = (0.4, 1.0)  # m
 GROUND_SOIL_COLOR = (0.16, 0.10, 0.06)  # dark brown soil under the grass
 GROUND_COVER_USD = "/sim/assets/Ground_cover/ground_cover.usd"
+GROUND_COVER_SCALE_XY = 1.0
+GROUND_COVER_SCALE_Z = 0.6
 LAVENDER_USD = "/sim/assets/lavender/SM_Lavender_Nanite_01.usd"
 LAVENDER_SCALE = 0.006
 LAVENDER_BASE_Z = 0.05
@@ -175,6 +177,9 @@ MODEL_PARAMS = {
         max_linear=1.0, max_angular=1.0,
         camera_optical_link="camera_0_left_camera_frame_optical",
         imu_link="top_mount_link", imu_index=1, gps_links=["gps_1_link", "gps_2_link"], has_arm=True,
+        # RealSense D405 on arm_0_end_effector_link (mtu32_description's camera_1): its own URDF link, mounted
+        # with the ROS link convention (x fwd), so the default hand-built optical frame path applies.
+        wrist_camera=True,
     ),
     # j100_0936 still uses the old stripped robot.j100_0936.yaml.tmpl (platform.extras dropped, fake
     # top_mount->default_mount alias) -- its own robot_data folder isn't available to migrate it the same way
@@ -685,6 +690,8 @@ SPAWN_Z = 0.15  # base_link height: wheel bottoms end up ~1.4 cm above the groun
 HFOV_DEG = 69.4
 # ZED2i (real MTU robots, HD720 general.grab_resolution): Stereolabs' published horizontal FOV at 16:9.
 ZED_HFOV_DEG = 87.0
+# RealSense D405 (j100_0921's wrist camera_1): published depth/colour horizontal FOV ~87 deg.
+D405_HFOV_DEG = 87.0
 
 
 def find_prim(stage, root, name):
@@ -808,10 +815,13 @@ def add_lavender(stage, path, pos, rot_z=0.0):
 def add_ground_cover(stage, path="/World/GroundCover"):
     """One GROUND_COVER_USD patch (a 100 x 100 m grass field, ~73k PointInstancer blades of ~9-11 cm) over the
     80 x 80 m ground plane. The layer says metersPerUnit=0.01, but its geometry is really authored in metres
-    (blade meshes measure 0.09-0.11 units), so it is referenced unscaled. Visual only: no collider, so wheel
-    traction still comes from /World/ground."""
+    (blade meshes measure 0.09-0.11 units), so it is referenced at GROUND_COVER_SCALE_XY/_Z (1.0 = unscaled).
+    Visual only: no collider, so wheel traction still comes from /World/ground."""
     prim = stage.DefinePrim(path, "Xform")
     prim.GetReferences().AddReference(GROUND_COVER_USD)
+    UsdGeom.Xformable(prim).AddScaleOp().Set(
+        Gf.Vec3d(GROUND_COVER_SCALE_XY, GROUND_COVER_SCALE_XY, GROUND_COVER_SCALE_Z)
+    )
     return prim
 
 
@@ -929,7 +939,7 @@ def spawn_robot(stage, ns, model, index, count):
     return root
 
 
-def add_camera(stage, robot_root, optical_link=None, hfov_deg=HFOV_DEG):
+def add_camera(stage, robot_root, optical_link=None, hfov_deg=HFOV_DEG, index=0):
     """Colour camera. Frame chain: camera_0_link -> optical frame (z fwd, y down) -> USD camera.
 
     optical_link (MODEL_PARAMS' camera_optical_link): most models' D435i xacro doesn't produce a ROS-optical-
@@ -941,15 +951,16 @@ def add_camera(stage, robot_root, optical_link=None, hfov_deg=HFOV_DEG):
     if optical_link:
         optical = find_prim(stage, robot_root, optical_link)
     else:
-        link = find_prim(stage, robot_root, "camera_0_link")
-        optical = f"{link}/camera_0_color_optical_frame"
+        link = find_prim(stage, robot_root, f"camera_{index}_link")
+        optical = f"{link}/camera_{index}_color_optical_frame"
         xf = UsdGeom.Xform.Define(stage, optical)
         # rows = optical x/y/z axes expressed in the ROS link frame (x fwd, y left, z up)
         m = Gf.Matrix4d(1.0)
         m.SetRow3(0, Gf.Vec3d(0, -1, 0))
         m.SetRow3(1, Gf.Vec3d(0, 0, -1))
         m.SetRow3(2, Gf.Vec3d(1, 0, 0))
-        m.SetTranslateOnly(Gf.Vec3d(*[float(v) for v in os.environ.get("CAMERA_OFFSET", "0.0,0.0,0.0").split(",")]))
+        if index == 0:
+            m.SetTranslateOnly(Gf.Vec3d(*[float(v) for v in os.environ.get("CAMERA_OFFSET", "0.0,0.0,0.0").split(",")]))
         xf.AddTransformOp().Set(m)
 
     cam_path = f"{optical}/camera"
@@ -1056,7 +1067,7 @@ def configure_arm_drives(stage, root, drop_mimic_constraints=True):
                         max_force.Set(float(effort) * ARM_EFFORT_SCALE)
 
 
-def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params):
+def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, cam1_path=None):
     keys = og.Controller.Keys
     articulation_controller = "isaacsim.core.nodes.IsaacArticulationController"
 
@@ -1210,6 +1221,38 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params):
                 connections += [
                     ("RenderProduct.outputs:execOut", f"{name}.inputs:execIn"),
                     ("RenderProduct.outputs:renderProductPath", f"{name}.inputs:renderProductPath"),
+                ]
+
+    # --- wrist camera (camera_1, D405 on the arm's end effector): its own render product, same helpers as
+    # camera_0. frameId is camera_1_depth_optical_frame, which the robot's own robot_state_publisher already
+    # publishes from the real URDF (same standard link->optical rotation the D435i path builds by hand).
+    if cam1_path and CAM_STREAMS:
+        nodes += [("RenderProduct1", "isaacsim.core.nodes.IsaacCreateRenderProduct")]
+        values += [
+            ("RenderProduct1.inputs:cameraPrim", [usdrt_sdf.Path(cam1_path)]),
+            ("RenderProduct1.inputs:width", CAM_W),
+            ("RenderProduct1.inputs:height", CAM_H),
+        ]
+        connections += [("Tick.outputs:tick", "RenderProduct1.inputs:execIn")]
+        for stream, kind in (("color", "rgb"), ("depth", "depth")):
+            if stream not in CAM_STREAMS:
+                continue
+            pub, info = f"Pub1{stream.title()}", f"Pub1{stream.title()}Info"
+            nodes += [(pub, "isaacsim.ros2.bridge.ROS2CameraHelper"), (info, "isaacsim.ros2.bridge.ROS2CameraInfoHelper")]
+            for name, topic, extra in (
+                (pub, f"sensors/camera_1/{stream}/image", [(f"{pub}.inputs:type", kind)]),
+                (info, f"sensors/camera_1/{stream}/camera_info", []),
+            ):
+                values += [
+                    (f"{name}.inputs:nodeNamespace", ns),
+                    (f"{name}.inputs:topicName", topic),
+                    (f"{name}.inputs:frameId", "camera_1_depth_optical_frame"),
+                    (f"{name}.inputs:frameSkipCount", CAM_FRAME_SKIP),
+                    (f"{name}.inputs:useSystemTime", True),
+                ] + extra
+                connections += [
+                    ("RenderProduct1.outputs:execOut", f"{name}.inputs:execIn"),
+                    ("RenderProduct1.outputs:renderProductPath", f"{name}.inputs:renderProductPath"),
                 ]
 
     # --- IMU (real MTU robots only): a ScriptNode reads isaacsim.sensors.experimental.physics' IMU/IMUSensor
@@ -1519,7 +1562,10 @@ async def main():
             for _ in range(3):
                 await app.next_update_async()
             chassis = find_prim(stage, root, MODEL_PARAMS[model]["chassis_link"])
-            build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, MODEL_PARAMS[model])
+            cam1_path = None
+            if MODEL_PARAMS[model].get("wrist_camera"):
+                cam1_path = add_camera(stage, root, hfov_deg=D405_HFOV_DEG, index=1)
+            build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, MODEL_PARAMS[model], cam1_path)
             if MODEL_PARAMS[model].get("has_arm"):
                 configure_arm_drives(stage, root, MODEL_PARAMS[model].get("drop_mimic_constraints", True))
         aim_viewport()
