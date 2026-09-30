@@ -271,17 +271,43 @@ MODEL_PARAMS = {
         max_linear=1.0, max_angular=1.0,
         camera_optical_link="camera_0_left_camera_frame_optical",
         imu_link="top_mount_link", imu_index=1, gps_links=["gps_1_link", "gps_2_link"],
+        # Its mtu32 top frame, GPS spheres and ~13 frame links have no <inertial>, so PhysX weighs the robot 75 kg
+        # (URDF: 18.4 kg; top_mount_link 29.8 kg from its mesh at 1000 kg/m^3) with all of it high up: it tips
+        # backwards at 0.2 m/s. See fix_massless_bodies.
+        massless_density=100.0, frame_mass=0.02,
     ),
 }
 
-# Ridgeback's real sideways motion. Forward/back and rotation are left entirely to the same real
+# Velocity calibration. The open-loop wheel kinematics above (MODEL_PARAMS) cannot hold the commanded speed on a
+# skid-steer robot: a 0.2 rad/s in-place turn did not move at all (static-friction breakaway), 0.5 turned 0.2-0.6x,
+# a200's forward speed was +5%, j100_0921's reverse 0.6-0.9x. VEL_CTL_SCRIPT therefore closes a small PI loop per
+# robot around the DifferentialController (feed-forward = the commanded value, so the wheel params above still
+# matter), on the speed the chassis actually achieves; scripts/calibrate_velocity.py measures the result
+# (every model within ~5-8% over 0.1-1.0 m/s and 0.1-1.0 rad/s at 0.25 m/s^2 / 0.5 rad/s^2).
+# (kp_v, ki_v, int_limit_v [m/s], kp_w, ki_w, int_limit_w [rad/s]); per-model override via MODEL_PARAMS["vel_ctl"].
+# ki_w 10 is what removed the low-rate dead zone (5 left 0.1 rad/s at 0.75-0.85); the linear gains are kept low
+# because the combination kp 0.3 + ki 3 is about the most a light Jackal tolerates before its pitch oscillates.
+VELCTL_DEFAULT = (0.3, 3.0, 1.0, 0.5, 10.0, 3.0)
+VELCTL_LATERAL = (0.3, 6.0, 1.5)  # kp, ki, integrator limit of the sideways channel (Ridgeback's BodyDrive)
+VELCTL_ENABLED = os.environ.get("VELCTL", "1") == "1"  # VELCTL=0: open loop, for A/B comparisons
+# The feedback may command more than the robot's own limit (max_linear/max_angular clamp the *command* only).
+VELCTL_HEADROOM = 4.0
+# Physics time advanced per rendered frame: Kit runs floor(PHYSICS_HZ / SIM_RATE_HZ) fixed PhysX steps per frame
+# (22 Hz frames, 60 Hz physics -> 2 steps = 1/30 s, not the 1/22 s the timeline counts). Measured: the position
+# change per published odom message is 1/30 s of commanded velocity at SIM_RATE_HZ=22, for every model.
+# Consequence: real-time factor = render fps x this, e.g. 14 fps -> 0.47; SIM_RATE_HZ near 60/k (20, 15) would
+# make frames whole multiples of the step.
+PHYSICS_FRAME_DT = max(1, int(PHYSICS_HZ // SIM_RATE_HZ)) / PHYSICS_HZ
+
+# Ridgeback's real sideways motion (and, see below, its yaw rate). Forward/back is left entirely to the same real
 # DifferentialController + IsaacArticulationController wheel driving every model uses (genuine wheel-ground
 # rolling -- reliable even from a standstill, exactly like the other three models). Only linear.y is patched in
 # here, since real wheel rolling structurally cannot produce it (see MODEL_PARAMS' r100 comment). Every tick,
 # this reads the chassis' CURRENT actual world velocity, decomposes it into the chassis' own body frame,
 # replaces just the lateral component with the commanded vy (leaving the forward component -- whatever the real
-# diff-drive wheels produced -- untouched), and recomposes back to world frame; angular velocity is left alone
-# entirely (not passed to set_velocities at all), so rotation is 100% real wheel physics.
+# diff-drive wheels produced -- untouched), and recomposes back to world frame. Since the velocity-calibration
+# work it also sets the yaw rate (VelCtl's feedback-corrected command): rolling the cylinder wheels alone turned
+# the Ridgeback erratically (stick-slip), 0.74-1.0 of the command on repeat runs, now within ~1%.
 #
 # An earlier version set the FULL (vx, vy, wz) velocity directly every tick, bypassing wheel physics for
 # everything, not just Vy, and hit the same limitation described there: a *pure*, small in-place rotation
@@ -327,14 +353,83 @@ def compute(db):
     fwd = rot.TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))  # chassis' local +X axis, in world frame
     yaw = math.atan2(fwd[1], fwd[0])
 
-    lin, _ang = state.articulation.get_velocities()
+    lin, ang = state.articulation.get_velocities()
+    cur_wx, cur_wy, _cur_wz = ang.numpy()[0]
     cur_vx_w, cur_vy_w, cur_vz_w = lin.numpy()[0]
     cur_fwd = cur_vx_w * math.cos(yaw) + cur_vy_w * math.sin(yaw)  # decompose actual velocity into body frame
 
     vy = db.inputs.vy  # commanded lateral speed, body frame -- the only component this overrides
     vx_w = cur_fwd * math.cos(yaw) - vy * math.sin(yaw)
     vy_w = cur_fwd * math.sin(yaw) + vy * math.cos(yaw)
-    state.articulation.set_velocities(linear_velocities=[[vx_w, vy_w, cur_vz_w]])
+    # yaw rate too (VelCtl's feedback-corrected value): rolling the cylinder wheels alone turns the Ridgeback
+    # erratically (stick-slip), measured 0.74-1.0 of the command on repeat runs
+    state.articulation.set_velocities(
+        linear_velocities=[[vx_w, vy_w, cur_vz_w]], angular_velocities=[[cur_wx, cur_wy, float(db.inputs.wz)]]
+    )
+"""
+
+# Velocity feedback between cmd_vel and the DifferentialController (see VELCTL_* below): PI on the chassis'
+# measured body-frame forward speed and yaw rate, plus feed-forward (the commanded value itself).
+VEL_CTL_SCRIPT = """
+import math
+
+import omni.usd
+from pxr import UsdGeom, Gf
+
+
+def setup(db):
+    st = db.per_instance_state
+    st.prev = None
+    st.int_v = 0.0
+    st.int_w = 0.0
+    st.int_y = 0.0
+    st.mv = 0.0
+    st.mw = 0.0
+    st.my = 0.0
+
+
+def _chan(cmd, meas, integ, kp, ki, dt, lim):
+    if abs(cmd) < 1e-4:
+        return 0.0, 0.0
+    e = cmd - meas
+    integ = max(-lim, min(lim, integ + ki * e * dt))
+    return cmd + kp * e + integ, integ
+
+
+def compute(db):
+    st = db.per_instance_state
+    cmd_v = max(-db.inputs.max_v, min(db.inputs.max_v, float(db.inputs.cmd_v)))
+    cmd_w = max(-db.inputs.max_w, min(db.inputs.max_w, float(db.inputs.cmd_w)))
+    cmd_y = max(-db.inputs.max_v, min(db.inputs.max_v, float(db.inputs.cmd_y)))
+    # Measured from the chassis' pose change per physics frame, NOT from PhysX's reported velocity: the reported
+    # angular velocity read ~0.02-0.03 rad/s above the actual yaw change (a 0.1 rad/s command "measured" 0.1 while
+    # the robot turned 0.078), so a loop closed on it settled 20% low at low rates.
+    stage = omni.usd.get_context().get_stage()
+    xf = UsdGeom.Xformable(stage.GetPrimAtPath(str(db.inputs.chassisPath))).ComputeLocalToWorldTransform(0)
+    pos = xf.ExtractTranslation()
+    fwd = xf.ExtractRotation().TransformDir(Gf.Vec3d(1.0, 0.0, 0.0))
+    yaw = math.atan2(fwd[1], fwd[0])
+    dt = float(db.inputs.dt)
+    if st.prev is not None:
+        px, py, pyaw = st.prev
+        a = float(db.inputs.alpha)
+        v = ((pos[0] - px) * math.cos(yaw) + (pos[1] - py) * math.sin(yaw)) / dt
+        w = math.atan2(math.sin(yaw - pyaw), math.cos(yaw - pyaw)) / dt
+        y = (-(pos[0] - px) * math.sin(yaw) + (pos[1] - py) * math.cos(yaw)) / dt
+        st.mv += a * (v - st.mv)
+        st.mw += a * (w - st.mw)
+        st.my += a * (y - st.my)
+    st.prev = (pos[0], pos[1], yaw)
+    db.outputs.odom_lin = (st.mv, st.my, 0.0)
+    db.outputs.odom_ang = (0.0, 0.0, st.mw)
+    if not db.inputs.enabled:
+        db.outputs.out_v = cmd_v
+        db.outputs.out_w = cmd_w
+        db.outputs.out_y = cmd_y
+        return
+    db.outputs.out_y, st.int_y = _chan(cmd_y, st.my, st.int_y, db.inputs.kp_y, db.inputs.ki_y, dt, db.inputs.lim_y)
+    db.outputs.out_v, st.int_v = _chan(cmd_v, st.mv, st.int_v, db.inputs.kp_v, db.inputs.ki_v, dt, db.inputs.lim_v)
+    db.outputs.out_w, st.int_w = _chan(cmd_w, st.mw, st.int_w, db.inputs.kp_w, db.inputs.ki_w, dt, db.inputs.lim_w)
 """
 
 # Real MTU robots' Microstrain IMU (see MODEL_PARAMS' imu_link comment for why it's physically attached to
@@ -738,6 +833,46 @@ def enable_extensions(names):
         em.set_extension_enabled_immediate(n, True)
 
 
+PHYSICS_SOLVER = os.environ.get("PHYSICS_SOLVER", "PGS")
+
+
+def fix_massless_bodies(stage, root, density, frame_mass):
+    """Give every rigid body that has no mass authored by the URDF importer (a URDF link without <inertial>) a
+    realistic one. PhysX otherwise computes it from the collider volume at 1000 kg/m^3 (solid water) and gives a
+    collider-less frame link a default 1 kg: j100_0922 weighs 18.4 kg in its URDF and 75 kg in the sim (its
+    top_mount_link mesh 29.8 kg, each GPS sphere 5.9 kg, 13 frame links 1 kg each), all of it high above a 26 cm
+    wheelbase, and it tips over backwards at 0.2 m/s. Returns (bodies with density, frame bodies)."""
+    n_dens = n_frame = 0
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root)):
+        if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            continue
+        mapi = UsdPhysics.MassAPI(prim) if prim.HasAPI(UsdPhysics.MassAPI) else None
+        if mapi is not None and (mapi.GetMassAttr().Get() or 0) > 0:
+            continue
+        has_collider = any(
+            q.HasAPI(UsdPhysics.CollisionAPI)
+            for q in Usd.PrimRange(prim)
+            if q == prim or not q.HasAPI(UsdPhysics.RigidBodyAPI)
+        )
+        mapi = UsdPhysics.MassAPI.Apply(prim)
+        if has_collider:
+            mapi.CreateDensityAttr(float(density))
+            n_dens += 1
+        else:
+            mapi.CreateMassAttr(float(frame_mass))
+            n_frame += 1
+    return n_dens, n_frame
+
+
+def enable_wheel_ccd(stage, root):
+    """CCD on every wheel rigid body (see the solver comment in build_world)."""
+    from pxr import PhysxSchema
+
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root)):
+        if "wheel" in prim.GetName().lower() and prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            PhysxSchema.PhysxRigidBodyAPI.Apply(prim).CreateEnableCCDAttr(True)
+
+
 IMPORT_SETTINGS = {
     "merge_fixed_joints": os.environ.get("FLEET_MERGE_FIXED", "0") == "1",
     "merge_mesh": False,
@@ -881,7 +1016,13 @@ def build_world(stage):
     scene.CreateGravityMagnitudeAttr(9.81)
     from pxr import PhysxSchema
 
-    PhysxSchema.PhysxSceneAPI.Apply(scene.GetPrim()).CreateTimeStepsPerSecondAttr(PHYSICS_HZ)
+    scene_api = PhysxSchema.PhysxSceneAPI.Apply(scene.GetPrim())
+    scene_api.CreateTimeStepsPerSecondAttr(PHYSICS_HZ)
+    # Skid-steer wheels need the PGS solver (TGS, the default, barely turns them in place: angular velocity far
+    # below the wheel speeds; NVIDIA forum "Skid-Steered behavior for robots") plus CCD on the wheels (below).
+    # Measured here: PGS at the same 60 Hz costs no frame rate, 360 Hz halves it.
+    scene_api.CreateSolverTypeAttr(PHYSICS_SOLVER)
+    scene_api.CreateEnableCCDAttr(True)
     stage.SetTimeCodesPerSecond(SIM_RATE_HZ)
     stage.SetStartTimeCode(0)
     stage.SetEndTimeCode(10_000_000)
@@ -1113,26 +1254,54 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
     rear = ["rear_left_wheel_joint", "rear_right_wheel_joint"]
     nodes += [
         ("Diff", "isaacsim.robot.wheeled_robots.DifferentialController"),
+        ("VelCtl", "omni.graph.scriptnode.ScriptNode"),
         ("DriveFront", articulation_controller),
         ("DriveRear", articulation_controller),
     ]
+    create_attributes += [
+        ("VelCtl.inputs:cmd_v", "double"), ("VelCtl.inputs:cmd_w", "double"),
+        ("VelCtl.inputs:chassisPath", "token"), ("VelCtl.inputs:enabled", "bool"),
+        ("VelCtl.inputs:kp_v", "double"), ("VelCtl.inputs:ki_v", "double"), ("VelCtl.inputs:lim_v", "double"),
+        ("VelCtl.inputs:kp_w", "double"), ("VelCtl.inputs:ki_w", "double"), ("VelCtl.inputs:lim_w", "double"),
+        ("VelCtl.inputs:alpha", "double"), ("VelCtl.inputs:dt", "double"),
+        ("VelCtl.inputs:max_v", "double"), ("VelCtl.inputs:max_w", "double"),
+        ("VelCtl.inputs:cmd_y", "double"), ("VelCtl.outputs:out_y", "double"),
+        ("VelCtl.outputs:odom_lin", "double[3]"), ("VelCtl.outputs:odom_ang", "double[3]"),
+        ("VelCtl.inputs:kp_y", "double"), ("VelCtl.inputs:ki_y", "double"), ("VelCtl.inputs:lim_y", "double"),
+        ("VelCtl.outputs:out_v", "double"), ("VelCtl.outputs:out_w", "double"),
+    ]
+    kp_v, ki_v, lim_v, kp_w, ki_w, lim_w = params.get("vel_ctl", VELCTL_DEFAULT)
     values += [
+        ("VelCtl.inputs:script", VEL_CTL_SCRIPT),
+        ("VelCtl.inputs:chassisPath", chassis),
+        ("VelCtl.inputs:enabled", VELCTL_ENABLED),
+        ("VelCtl.inputs:kp_v", kp_v), ("VelCtl.inputs:ki_v", ki_v), ("VelCtl.inputs:lim_v", lim_v),
+        ("VelCtl.inputs:kp_w", kp_w), ("VelCtl.inputs:ki_w", ki_w), ("VelCtl.inputs:lim_w", lim_w),
+        ("VelCtl.inputs:alpha", 0.4), ("VelCtl.inputs:dt", PHYSICS_FRAME_DT),
+        ("VelCtl.inputs:max_v", params["max_linear"]), ("VelCtl.inputs:max_w", params["max_angular"]),
+        ("VelCtl.inputs:kp_y", VELCTL_LATERAL[0]), ("VelCtl.inputs:ki_y", VELCTL_LATERAL[1]),
+        ("VelCtl.inputs:lim_y", VELCTL_LATERAL[2]),
         ("Diff.inputs:wheelRadius", params["wheel_radius"]),
         ("Diff.inputs:wheelDistance", params["wheel_separation"] * params["separation_multiplier"]),
-        ("Diff.inputs:maxLinearSpeed", params["max_linear"]),
-        ("Diff.inputs:maxAngularSpeed", params["max_angular"]),
+        # headroom: VelCtl clamps the *command* to the robot's real limits, its feedback may exceed them
+        ("Diff.inputs:maxLinearSpeed", params["max_linear"] * VELCTL_HEADROOM),
+        ("Diff.inputs:maxAngularSpeed", params["max_angular"] * VELCTL_HEADROOM),
         ("DriveFront.inputs:targetPrim", [usdrt_sdf.Path(chassis)]),
         ("DriveFront.inputs:jointNames", front),
         ("DriveRear.inputs:targetPrim", [usdrt_sdf.Path(chassis)]),
         ("DriveRear.inputs:jointNames", rear),
     ]
     connections += [
-        # Diff recomputes wheel speeds when a Twist arrives, the drives apply them every tick
-        ("CmdVel.outputs:execOut", "Diff.inputs:execIn"),
+        # VelCtl (feedback on the commanded twist) feeds Diff every tick, the drives apply its wheel speeds
+        ("Tick.outputs:tick", "VelCtl.inputs:execIn"),
+        ("VelCtl.outputs:execOut", "Diff.inputs:execIn"),
         ("Tick.outputs:tick", "DriveFront.inputs:execIn"),
         ("Tick.outputs:tick", "DriveRear.inputs:execIn"),
-        ("BreakLin.outputs:x", "Diff.inputs:linearVelocity"),
-        ("BreakAng.outputs:z", "Diff.inputs:angularVelocity"),
+        ("BreakLin.outputs:x", "VelCtl.inputs:cmd_v"),
+        ("BreakAng.outputs:z", "VelCtl.inputs:cmd_w"),
+        ("BreakLin.outputs:y", "VelCtl.inputs:cmd_y"),
+        ("VelCtl.outputs:out_v", "Diff.inputs:linearVelocity"),
+        ("VelCtl.outputs:out_w", "Diff.inputs:angularVelocity"),
         ("Diff.outputs:velocityCommand", "DriveFront.inputs:velocityCommand"),
         ("Diff.outputs:velocityCommand", "DriveRear.inputs:velocityCommand"),
     ]
@@ -1144,6 +1313,7 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
         nodes += [("BodyDrive", "omni.graph.scriptnode.ScriptNode")]
         create_attributes += [
             ("BodyDrive.inputs:vy", "double"),
+            ("BodyDrive.inputs:wz", "double"),
             ("BodyDrive.inputs:chassisPath", "token"),
         ]
         values += [
@@ -1152,7 +1322,8 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
         ]
         connections += [
             ("Tick.outputs:tick", "BodyDrive.inputs:execIn"),
-            ("BreakLin.outputs:y", "BodyDrive.inputs:vy"),
+            ("VelCtl.outputs:out_y", "BodyDrive.inputs:vy"),
+            ("VelCtl.outputs:out_w", "BodyDrive.inputs:wz"),
         ]
 
     connections += [
@@ -1163,8 +1334,10 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
         ("Odom.outputs:execOut", "PubJoints.inputs:execIn"),
         ("Odom.outputs:position", "PubOdom.inputs:position"),
         ("Odom.outputs:orientation", "PubOdom.inputs:orientation"),
-        ("Odom.outputs:linearVelocity", "PubOdom.inputs:linearVelocity"),
-        ("Odom.outputs:angularVelocity", "PubOdom.inputs:angularVelocity"),
+        # published twist = VelCtl's pose-derived body velocity (PhysX's reported angular velocity read up to 25%
+        # above the real yaw change at low rates, and does not include BodyDrive's overrides)
+        ("VelCtl.outputs:odom_lin", "PubOdom.inputs:linearVelocity"),
+        ("VelCtl.outputs:odom_ang", "PubOdom.inputs:angularVelocity"),
         ("Odom.outputs:position", "PubTfOdom.inputs:translation"),
         ("Odom.outputs:orientation", "PubTfOdom.inputs:rotation"),
         ("SysTime.outputs:systemTime", "PubOdom.inputs:timeStamp"),
@@ -1562,6 +1735,11 @@ async def main():
             for _ in range(3):
                 await app.next_update_async()
             chassis = find_prim(stage, root, MODEL_PARAMS[model]["chassis_link"])
+            enable_wheel_ccd(stage, root)
+            if MODEL_PARAMS[model].get("massless_density"):
+                nd, nf = fix_massless_bodies(stage, root, MODEL_PARAMS[model]["massless_density"],
+                                             MODEL_PARAMS[model].get("frame_mass", 0.02))
+                log(f"{ns}: massless bodies: {nd} at {MODEL_PARAMS[model]['massless_density']} kg/m^3, {nf} frames")
             cam1_path = None
             if MODEL_PARAMS[model].get("wrist_camera"):
                 cam1_path = add_camera(stage, root, hfov_deg=D405_HFOV_DEG, index=1)
