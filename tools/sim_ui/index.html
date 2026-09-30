@@ -161,7 +161,7 @@ function renderRobots() {
   const open = new Set([...box.querySelectorAll('details[open]')].map(d => d.dataset.robot));
   if (!status.robots.length) { box.innerHTML = '<span class="muted">no robot containers</span>'; return; }
   // Only rebuild when the set/state of robots changes, so inputs being edited aren't wiped every poll.
-  const sig = JSON.stringify(status.robots.map(r => [r.name, r.state, r.launch]));
+  const sig = JSON.stringify(status.robots.map(r => [r.name, r.state, r.launch, r.cutting]));
   if (box.dataset.sig === sig) return;
   box.dataset.sig = sig;
   box.innerHTML = status.robots.map(r => {
@@ -169,10 +169,15 @@ function renderRobots() {
     return `<div class="robot" data-robot="${esc(r.name)}">
       <div class="row"><h3>${esc(r.name)}</h3>
         <span class="pill ${up ? 'ok' : 'bad'}">${esc(r.state)}</span>
-        <span class="pill ${r.launch ? 'ok' : ''}">upstart ${r.launch ? 'running' : 'stopped'}</span></div>
+        <span class="pill ${r.launch ? 'ok' : ''}">upstart ${r.launch ? 'running' : 'stopped'}</span>
+        ${r.cutting ? '<span class="pill ok">cutting</span>' : ''}</div>
       ${up ? `<div class="row">
         <button onclick="post('/api/launch/start',{robot:'${esc(r.name)}'})" ${r.launch ? 'disabled' : ''}>Start sim_robot_upstart</button>
         <button class="ghost" onclick="post('/api/launch/stop',{robot:'${esc(r.name)}'})" title="restart_ros: kills every ROS node; robot_state/foxglove/pruner_stub come back">Stop (restart_ros)</button>
+        <button onclick="post('/api/cutstem/start',{robot:'${esc(r.name)}'})" ${!r.launch || r.cutting ? 'disabled' : ''}
+          title="ros2 action send_goal /&lt;ns&gt;/cut_stem plant_cutter_msgs/action/CutStem {start_cutting: true}; needs sim_robot_upstart running. Progress shows in Jobs.">Cut stem</button>
+        <button class="ghost" onclick="post('/api/cutstem/stop',{robot:'${esc(r.name)}'})" ${r.cutting ? '' : 'disabled'}
+          title="Ctrl+C on the goal client: cancels the running cut_stem goal">Stop cutting</button>
         <button class="ghost" onclick="showLaunchLog('${esc(r.name)}')">Launch log</button>
         <button class="ghost" onclick="showJoints('${esc(r.name)}')">Joints</button></div>
       <details data-robot="${esc(r.name)}" ${open.has(r.name) || r.launch ? 'open' : ''} ontoggle="this.open && loadStates('${esc(r.name)}')">

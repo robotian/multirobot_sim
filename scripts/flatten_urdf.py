@@ -251,6 +251,131 @@ def merge_visual_only_links(root):
             changed = True  # a link merged away might itself have been the parent of another such joint
 
 
+def _rigid_inverse(m):
+    """Inverse of a rigid 4x4 transform (rotation transposed, translation = -R^T t)."""
+    rt = [[m[j][i] for j in range(3)] for i in range(3)]
+    t = [-sum(rt[i][k] * m[k][3] for k in range(3)) for i in range(3)]
+    return [rt[0] + [t[0]], rt[1] + [t[1]], rt[2] + [t[2]], [0, 0, 0, 1]]
+
+
+def weld_empty_root_children(root):
+    """If the URDF's root link is empty (no <visual>/<collision>/<inertial>) and has several fixed children,
+    re-parent all but the one that carries the mass onto that one, keeping every pose.
+
+    Found on the updated a300_00036 (D435 + Hokuyo + dual Duro GPS + wireless charger + Kinova arm): base_link is
+    a pure frame, and its direct fixed children are chassis_link (the only one with <inertial>) plus arch/estop/
+    button/eth/gps_0/gps_1/wireless_charger, which all have <collision> so merge_visual_only_links leaves them
+    alone. Isaac's importer does not make an empty root a body, so each of those children became its own
+    articulation root, jointed to the robot's root prim (a non-body, i.e. effectively the world): confirmed in the
+    generated physics.usda (PhysicsFixedJoint body0 = </a300_00036>), and the drive graph then failed on
+    base_link as chassis. Generic a300 never hit it because its extra children are visual-only and merge away.
+    Re-parenting them to chassis_link welds them into the moving body; base_link keeps its single child, i.e.
+    exactly generic a300's shape. Joint origins are recomputed as chassis_joint^-1 * child_joint, so nothing
+    moves relative to the robot. TF is unaffected (robot_state publishes from the un-flattened URDF).
+    """
+    links = {link.get("name"): link for link in root.findall("link")}
+    joints = root.findall("joint")
+    children = {j.find("child").get("link") for j in joints}
+    for name, link in links.items():
+        if name in children or any(link.find(t) is not None for t in ("visual", "collision", "inertial")):
+            continue
+        kids = [j for j in joints if j.find("parent").get("link") == name]
+        massive = [j for j in kids if links[j.find("child").get("link")].find("inertial") is not None]
+        if len(kids) < 2 or len(massive) != 1:
+            continue
+        main = massive[0]
+        main_name = main.find("child").get("link")
+        inv = _rigid_inverse(_origin_matrix(main.find("origin")))
+        for j in kids:
+            if j is main or j.get("type") != "fixed":
+                continue
+            origin = j.find("origin")
+            if origin is None:
+                origin = ET.SubElement(j, "origin")
+            xyz, rpy = _matrix_to_origin(_matmul(inv, _origin_matrix(origin)))
+            origin.set("xyz", xyz)
+            origin.set("rpy", rpy)
+            j.find("parent").set("link", main_name)
+            print(f"welding {j.get('name')!r} from empty root {name!r} onto {main_name!r}")
+
+
+def limit_continuous_mimic_followers(root):
+    """Give every `continuous` joint that has a <mimic> a finite <limit> derived from its mimic relation.
+
+    Found on a200_0284's Robotiq 2F-85: its inner-knuckle and finger-tip joints are `continuous` (no <limit>) and
+    <mimic> the driven left_knuckle_joint. Isaac's URDF importer turns <mimic> into NewtonMimicAPI constraints and
+    the physics engine then refuses those followers ("NewtonMimicAPI follower joint ... is a revolute joint without
+    a finite limit set. A finite limit is required.") -- 4 errors at timeline start, followed by a hard crash of the
+    sim container (exit 139) on one start and wild gripper/arm behaviour on another. The Kinova 2F Lite's followers
+    are ordinary limited revolute joints, so it never showed up before.
+
+    The followers' value is multiplier * (mimic target's value) + offset, so their range is the target's range mapped
+    through that (resolved through chains of mimics down to a joint that has its own limit). They become `revolute`
+    with that range; effort/velocity are copied from the driver, since a continuous joint has no <limit> to copy.
+    """
+    joints = {j.get("name"): j for j in root.findall("joint")}
+
+    def bounds(name, depth=0):  # (lower, upper, effort, velocity) of joint `name`, or None
+        j = joints.get(name)
+        if j is None or depth > 10:
+            return None
+        lim, mim = j.find("limit"), j.find("mimic")
+        if j.get("type") != "continuous" and lim is not None and lim.get("lower") is not None:
+            return (float(lim.get("lower")), float(lim.get("upper")), lim.get("effort", "10"), lim.get("velocity", "1"))
+        if mim is None:
+            return None
+        up = bounds(mim.get("joint"), depth + 1)
+        if up is None:
+            return None
+        m, o = float(mim.get("multiplier", 1.0)), float(mim.get("offset", 0.0))
+        lo, hi = sorted((m * up[0] + o, m * up[1] + o))
+        return lo, hi, up[2], up[3]
+
+    for j in joints.values():
+        mim = j.find("mimic")
+        if j.get("type") != "continuous" or mim is None:
+            continue
+        b = bounds(j.get("name"))
+        if b is None:
+            print(f"warning: continuous mimic joint {j.get('name')!r} has no bounded mimic target; left as is")
+            continue
+        j.set("type", "revolute")
+        lim = j.find("limit")
+        if lim is None:
+            lim = ET.SubElement(j, "limit")
+        lim.set("lower", f"{b[0]:.6g}")
+        lim.set("upper", f"{b[1]:.6g}")
+        lim.set("effort", b[2])
+        lim.set("velocity", b[3])
+        print(f"limiting continuous mimic follower {j.get('name')!r} to [{b[0]:.3g}, {b[1]:.3g}]")
+
+
+def limit_continuous_arm_joints(root, limit=3.12):
+    """Turn the arm's `continuous` joints into `revolute` joints limited to +-`limit` rad.
+
+    Found on a200_0284's Kinova Gen3 7-DOF (joints 1, 3, 5, 7 are continuous). MoveIt plans across +-pi (the
+    shortest way round a continuous joint), so a trajectory can end with e.g. joint 7 at 4.995 rad; the simulated
+    joint follows it there, and MoveIt then refuses every plan from that state ("Start state out of bounds" /
+    START_STATE_INVALID, verified: joint_7 = 4.995 -> START_STATE_INVALID, 3.0 -> SUCCESS), aborting the cutter
+    after its first patch. A real Kortex driver reports these joints inside +-pi. With finite limits MoveIt (via
+    robot_state's copy of the description, see robot/bin/robot_state) and PhysX both keep the joint inside +-limit,
+    and the planner takes the long way round when it has to. Wheels are `continuous` too and must stay so, hence
+    the arm_0_joint name filter. The Jackal/A300 Gen3 Lite arms have only limited joints, so this does nothing there.
+    """
+    for j in root.findall("joint"):
+        if j.get("type") != "continuous" or not j.get("name", "").startswith("arm_0_joint"):
+            continue
+        j.set("type", "revolute")
+        lim = j.find("limit")
+        if lim is None:
+            lim = ET.SubElement(j, "limit")
+        lim.set("lower", str(-limit))
+        lim.set("upper", str(limit))
+        lim.set("effort", lim.get("effort", "10"))
+        lim.set("velocity", lim.get("velocity", "1"))
+        print(f"limiting continuous arm joint {j.get('name')!r} to +-{limit}")
+
+
 def apply_mass_deltas(root, spec):
     """Add a delta mass to one or more links' existing <inertial><mass> value.
 
@@ -296,6 +421,9 @@ def main(urdf_in, out_dir, urdf_name, mass_overrides=""):
 
     prune_dangling_joints(root)
     merge_visual_only_links(root)
+    weld_empty_root_children(root)
+    limit_continuous_mimic_followers(root)
+    limit_continuous_arm_joints(root)
 
     copied = {}
     for mesh in root.iter("mesh"):

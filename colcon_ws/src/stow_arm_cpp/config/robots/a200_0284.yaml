@@ -1,0 +1,59 @@
+# Per-robot overrides for grid_cutter_action_server, loaded by launch/grid_cutter.launch.py AFTER the shared
+# grid_cutter_params.yaml (file name = the robot's ROS namespace; later files win). Only list what differs from
+# the shared defaults, which are tuned for the Jackal with the Kinova Gen3 Lite arm (6 joints, 2F Lite gripper).
+#
+# a200_0284: A200 with a Kinova Gen3 7-DOF arm (arm_0_joint_1..7) and a Robotiq 2F-85 gripper.
+/**/grid_cutter_action_server:
+  ros__parameters:
+    # Cutting zone, in arm_0_base_link. The shared 0.20-0.38 m (x) is tuned for the Gen3 Lite; the 7-DOF arm has much
+    # longer links, and at that range it had to fold into a contorted pose (shoulder at its 2.41 rad limit,
+    # continuous joint 5 wound to -5 rad), from which the servo approach whipped joint 1 by 3 rad into the robot's
+    # own body (joint efforts spiked to ~670 N*m vs. 39 limits and the arm ended up jammed). 0.50-0.62 m is
+    # comfortably inside its reach (reachable-circle radius is logged at start) and behind/beside the A200.
+    zone_x_min: 0.50
+    zone_x_max: 0.62
+
+    # IK seed, 7 joints. The cutter solves IK for every approach/patch pose starting from this configuration and
+    # takes the nearest solution, so it has to be a seed from which ALL of them land on one good branch. Chosen by
+    # scoring 49 candidate seeds (IK solutions at the zone centre): for each, solve compute_ik seeded from it at all
+    # 15 x/y positions of the zone (x 0.50/0.56/0.62 by y -0.05 .. 0.35, i.e. including the approach points 0.15 m
+    # before the patches), then rank by worst Jacobian condition number and worst joint-limit margin. This one stays
+    # within 0.55 rad of itself everywhere, with condition <= 19.9 and >= 0.6 rad from every joint limit. (An
+    # earlier seed interpolated for the zone centre only sent the first approach to joint 6 = its 2.23 rad limit,
+    # 4.1 rad from the seed, where the servo's joint-limit margin then blocked every move.)
+    preferred_joint_positions: [0.228, 1.565, -0.665, 1.192, -1.058, 1.077, 2.546]
+
+    # Drop configuration (joint space). The shared default is the named SRDF pose "drop", but this robot's
+    # robot.yaml defines no "drop" pose (the cut aborted with "Named target 'drop' is not defined"), and the stand-in
+    # "retract" is a folded pose from which the servo refuses to move ("singularity" x1500). After the drop pose the
+    # cutter servos the tool 10 cm down "into the unloader box", so it needs a well-conditioned pose above the box.
+    # This robot's robot.yaml defines a `basket` box next to the arm (arm_0_base_link: centre (-0.11,-0.32,0.16),
+    # 0.30 x 0.38 x 0.32 m) -- assumed to be the unloader. Tool pointing down at (-0.11, -0.32, 0.58): chosen by
+    # sampling move_group IK solutions and ranking by Jacobian condition number and joint-limit margin at that
+    # point AND 10 cm lower: condition <= 10.4, >= 0.52 rad from every limit, 0.32 rad of joint change to go down.
+    # Replace with a real "drop" pose in the robot.yaml (and delete this) if you want it defined on the robot itself.
+    drop_joint_positions: [1.525, 0.057, 0.331, 1.382, -0.019, 1.706, -1.288]
+
+    
+
+    # Planning speed. The shared 1.0 / 0.8 plans at the URDF limits (1.22 rad/s on this arm's wrists), but the
+    # simulated wrist joints only slew at ~0.5-0.8 rad/s (measured with single-joint moves), so on big moves (e.g.
+    # joint 7 swinging 2.15 rad) the arm fell ~1.2 rad behind the plan; MoveIt then either timed the move out
+    # (error -6: it allows 1.2x the planned duration + 0.5 s) or, before moveit_sim_bridge waited for the arm to
+    # settle, the cutter started its next step from a pose the arm hadn't reached.
+    moveit_vel_scale: 0.4
+    moveit_acc_scale: 0.4
+
+    # Robotiq 2F-85: driver arm_0_gripper_robotiq_85_left_knuckle_joint spans 0.0 (open) .. 0.8 rad (closed);
+    # the shared 0.9 is the Kinova finger's range and would exceed this joint's limit.
+    gripper_open: 0.0
+    gripper_close: 0.8
+
+    # The shared box (centre z = -0.3 in arm_0_base_link) puts the floor 1.5 cm below the ground for the Jackal,
+    # whose arm base is 0.26 m above the ground. Here the arm base is 0.411 m above it (FK of the URDF:
+    # base_footprint -> arm_0_base_link), so the box top goes at -0.426 (centre -0.451 for the 0.05 height).
+    ground_plane:
+      type: "box"
+      dimensions: [0.6, 0.6, 0.05]
+      pose: [0.3, 0.0, -0.451, 0.0, 0.0, 0.0, 1.0]
+      frame_id: "arm_0_base_link"

@@ -95,6 +95,8 @@ struct GridConfig
   int max_consecutive_failures;
   int moveit_attempts;
   std::string drop_pose, stow_pose;
+  std::vector<double> drop_joints;  // optional joint-space drop configuration (empty = use the named drop_pose)
+  double drop_lower_distance;       // how far the tool is servoed down into the unloader box before releasing (m)
 };
 
 class GridCutterActionServer : public rclcpp::Node
@@ -389,6 +391,12 @@ private:
     declare_if_not_declared("max_consecutive_failures", 3);
     declare_if_not_declared("moveit_attempts", 3);
     declare_if_not_declared("drop_pose", std::string("drop"));
+    // Optional: a joint configuration (move group joint order) to use INSTEAD of the named drop_pose, for robots whose
+    // SRDF (generated from their robot.yaml poses) has no "drop" state. Empty = use the named pose.
+    declare_if_not_declared("drop_joint_positions", std::vector<double>{});
+    // The tool is lowered this far (servo, straight down) after reaching the drop pose, then released and raised again.
+    // 0 = release right at the drop pose (for robots without an unloader box to reach into).
+    declare_if_not_declared("drop_lower_distance", 0.1);
     declare_if_not_declared("stow_pose", std::string("stow"));
 
     declare_if_not_declared("move_group", std::string("arm_0"));
@@ -401,9 +409,12 @@ private:
 
     declare_if_not_declared("base_frame", std::string("arm_0_base_link"));
     declare_if_not_declared("ee_link", std::string("arm_0_end_effector_link"));
-    declare_if_not_declared("servo_twist_topic", std::string("/j100_0921/manipulator/delta_twist_cmds"));
+    // Relative names: they resolve under this node's namespace (the robot's), so the same code works for
+    // /j100_0921, /a300_00036, ... (these used to be hardcoded to /j100_0921/..., which left the gripper
+    // action "not available" on every other robot).
+    declare_if_not_declared("servo_twist_topic", std::string("manipulator/delta_twist_cmds"));
     declare_if_not_declared("gripper_action",
-      std::string("/j100_0921/manipulators/arm_0_gripper_controller/gripper_cmd"));
+      std::string("manipulators/arm_0_gripper_controller/gripper_cmd"));
     declare_if_not_declared("pruner_action", std::string("/pruner_action_server"));
   }
 
@@ -501,6 +512,12 @@ private:
     c.max_consecutive_failures = get_int("max_consecutive_failures");
     c.moveit_attempts = get_int("moveit_attempts");
     c.drop_pose = get_string("drop_pose");
+    c.drop_joints = get_double_array("drop_joint_positions");
+    c.drop_lower_distance = get_double("drop_lower_distance");
+    if (!c.drop_joints.empty() && c.drop_joints.size() != n_joints) {
+      err = "drop_joint_positions must have " + std::to_string(n_joints) + " elements (or be empty)";
+      return false;
+    }
     c.stow_pose = get_string("stow_pose");
 
     if (c.dx <= 0.0 || c.dy <= 0.0) { err = "cutter_length and cutter_width must be > 0"; return false; }
@@ -671,6 +688,20 @@ private:
     RCLCPP_ERROR(
       this->get_logger(), "All %d attempts failed for '%s'.", cfg_.moveit_attempts, what.c_str());
     return false;
+  }
+
+  // The drop configuration: a joint-space target if drop_joint_positions is set, else the named SRDF pose.
+  bool trigger_drop_pose(const StopFn & stop)
+  {
+    if (cfg_.drop_joints.empty()) {return trigger_named_pose(cfg_.drop_pose, stop);}
+    stop_servo();
+    std::this_thread::sleep_for(100ms);
+    move_group_->clearPoseTargets();
+    if (!move_group_->setJointValueTarget(cfg_.drop_joints)) {
+      RCLCPP_ERROR(this->get_logger(), "drop_joint_positions is outside the joint limits.");
+      return false;
+    }
+    return plan_and_execute("drop configuration", stop);
   }
 
   bool trigger_named_pose(const std::string & pose_name, const StopFn & stop)
@@ -1147,7 +1178,7 @@ private:
   {
     // if (!servo_to_pose(p.x, approach_y(p), cfg_.z_cut, stop)) {return false;}
     if (!servo_to_pose(p.x, p.y, cfg_.z_cut + 0.07, stop)) {return false;}
-    if (!trigger_named_pose(cfg_.drop_pose, stop)) {return false;}
+    if (!trigger_drop_pose(stop)) {return false;}
 
     // lower the end effector 5 cm along z before releasing
     std::this_thread::sleep_for(200ms);  // let TF catch up with the final drop pose
@@ -1155,12 +1186,12 @@ private:
     if (!get_ee_position(x, y, z)) {return false;}
 
     // go further into the unloader box
-    if (!servo_to_pose(x, y, z - 0.1, stop)) {return false;}
+    if (cfg_.drop_lower_distance > 1e-3 && !servo_to_pose(x, y, z - cfg_.drop_lower_distance, stop)) {return false;}
 
     if (!send_gripper_command(cfg_.gripper_open, stop).ok) {return false;}
 
     // rise back up to the drop position
-    return servo_to_pose(x, y, z, stop);
+    return cfg_.drop_lower_distance <= 1e-3 || servo_to_pose(x, y, z, stop);
   }
 
   void safe_state()

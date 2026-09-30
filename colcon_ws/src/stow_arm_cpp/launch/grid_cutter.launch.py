@@ -38,6 +38,12 @@ def launch_setup(context, *args, **kwargs):
         {"use_sim_time": use_sim_time},
         param_file
     ]
+    # Optional per-robot overrides (config/robots/<namespace>.yaml), applied after the shared defaults above: the
+    # defaults are tuned for the Jackal j100_0921 (Gen3 Lite, 6 joints); robots with a different arm/gripper/mount
+    # only list what differs. No file = the shared defaults, i.e. unchanged behaviour for j100_0921.
+    robot_param_file = os.path.join(pkg_share, 'config', 'robots', f'{namespace}.yaml')
+    if os.path.isfile(robot_param_file):
+        node_parameters.append(robot_param_file)
 
     # The New Grid Cutter Node
     grid_cutter_node = Node(

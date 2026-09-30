@@ -20,6 +20,7 @@ import xml.etree.ElementTree as ET
 # abort at every normal boot too). Re-implemented here rather than imported since flatten_urdf.py is a
 # host-side build script, not installed in this image.
 def prune_dangling_joints(root):
+    pruned = False
     changed = True
     while changed:
         changed = False
@@ -35,11 +36,42 @@ def prune_dangling_joints(root):
             if child is not None:
                 root.remove(child)
             changed = True
+            pruned = True
             break
+    return pruned
+
+# Same fix as scripts/flatten_urdf.py's limit_continuous_arm_joints (see its docstring): the arm's continuous
+# joints get finite +-3.12 rad limits so MoveIt plans the long way round instead of across +-pi, which would leave a
+# simulated joint at e.g. 4.995 rad and make MoveIt reject the state (START_STATE_INVALID). Robots whose arm has
+# only limited joints (Gen3 Lite) are unaffected.
+def limit_continuous_arm_joints(root, limit=3.12):
+    changed = False
+    for j in root.findall('joint'):
+        if j.get('type') == 'continuous' and j.get('name', '').startswith('arm_0_joint'):
+            j.set('type', 'revolute')
+            lim = j.find('limit')
+            if lim is None:
+                lim = ET.SubElement(j, 'limit')
+            lim.set('lower', str(-limit))
+            lim.set('upper', str(limit))
+            lim.set('effort', lim.get('effort', '10'))
+            lim.set('velocity', lim.get('velocity', '1'))
+            changed = True
+    return changed
 
 tree = ET.parse("/etc/clearpath/robot.urdf")
-prune_dangling_joints(tree.getroot())
-tree.write("/etc/clearpath/robot.urdf")
+_pruned = prune_dangling_joints(tree.getroot())
+_limited = limit_continuous_arm_joints(tree.getroot())
+if _pruned or _limited:
+    tree.write("/etc/clearpath/robot.urdf")
+    # Other consumers read the raw robot.urdf.xacro instead of this cleaned URDF -- notably the shared
+    # mtu32_bringup moveit.launch.py (xacro.process_file on /etc/clearpath/robot.urdf.xacro), which makes
+    # move_group / moveit_servo / grid_cutter_action_server abort with "parent link ... not found" (a200_0284:
+    # its robot.yaml has links.box "basket" with parent arm_base_link, but the arm base link is arm_0_base_link).
+    # A fully expanded URDF is a valid xacro file too, so give them the pruned one. Only done when something was
+    # actually pruned, so robots with a clean description (j100_0921, a300_00036, ...) keep the generated xacro.
+    tree.write("/etc/clearpath/robot.urdf.xacro")
+    print("[robot_state] wrote the modified description (pruned dangling joints / limited continuous arm joints) to /etc/clearpath/robot.urdf.xacro too")
 
 urdf = open("/etc/clearpath/robot.urdf").read()
 open("/tmp/robot_description.yaml", "w").write("/**:\n  ros__parameters:\n    robot_description: " + json.dumps(urdf) + "\n")

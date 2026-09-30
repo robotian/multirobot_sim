@@ -1295,3 +1295,79 @@ commanded -0.85, and, on cut_init->zero, drifting *down* to -2.35 while commande
 User asked to make the scene resemble their real lavender-farm photos. Done in `sim/scripts/setup_scene.py` (see CLAUDE.md "Sim" item 5 and README *Scene dressing*): grass field (`Ground_cover`), soil-coloured ground box, two lavender hedge rows, Omniverse-library trees/shrubs/boulders on the horizon, cloud-HDR dome (400) + sun (10000, rot -60/33/-30); target boxes/wall/pillars removed.
 - Findings: `ground_cover.usd` says cm but is really metres (blades 0.09-0.11 units); 400 tiles = 14.4M instances -> "Unable to create ... instances", nothing rendered; instanceable references of it didn't render either. Tree/shrub/rock assets need their sibling `materials/`/`textures/` dirs (else red foliage); asset roots carry xform ops (reference under a child prim); `Cedar_Shrub` bbox invalid; camera far clip is 30 m so vegetation sits at 19-29 m.
 - Verified by capturing j100_0921's `sensors/camera_0/color/image` (rotated 180) after each change; camera ~21 Hz with everything in. Not committed. Not done: buildings/mowed aisles from the photos, a textured soil, fps measurement with `FLEET_DEBUG=1`.
+
+## Addendum: a300_00036 robot.yaml updated (arm, D435, Hokuyo, GPS, Microstrain IMU)
+
+User: "a300_00036 robot.yaml file is updated." -> regenerate and adapt (details in CLAUDE.md, "`a300_00036`, updated robot.yaml").
+- `gen_urdf.sh` OK; new URDF 102 links. `MODEL_PARAMS["a300_00036"]`: has_arm, lidar2d_link, gps_0/1, imu_link=top_plate_link,
+  imu_index=0, chassis_link=chassis_link, no more has_camera=False.
+- First live try (chassis_link=base_link): Odom graph error "base_link is not a valid rigid body or articulation root".
+  physics.usda showed 9 ArticulationRootAPIs and 7 fixed joints with body0 = the robot root prim (world). Root cause: empty
+  base_link + several collision children. Fix = `weld_empty_root_children` in flatten_urdf.py (see CLAUDE.md). After it: 1 root.
+- Verified: drive test, lidar/IMU/GPS/camera topics, arm joint command. Not verified: sim_robot_upstart on this robot, MoveIt/cut_stem.
+- `fleet.sh` doesn't restart a running sim -> `docker restart a300-isaac-sim` after regenerating URDFs (cost me one confusing
+  re-check that was still the old URDF). One unexplained segfault (139) on the first start; the next start was stable (90 s+).
+- .env: ROBOT_MODEL_0 was switched from j100_0921 to a300_00036 for testing (NUM_ROBOTS=1); revert or keep as wanted.
+
+## Addendum: "Cut stem" / "Stop cutting" buttons in the web UI
+
+User: "add a button to run the cut stem action to the webui". `tools/sim_ui/server.py`: `POST /api/cutstem/start` (job running
+`ros2 action send_goal --feedback /$ROBOT_NAMESPACE/cut_stem ... "{start_cutting: true}"`, exec'd with no wrapper shell so exactly one
+process matches `CUT_MATCH`; refuses if one is already running or the action server is missing) and `/api/cutstem/stop` (SIGINT to
+that client -> ros2cli cancels the goal). `robots()` gained a `cutting` flag; `index.html` has the two buttons + a "cutting" pill.
+Verified on a300_00036 via the API: start -> "Goal accepted", feedback "Patch 1/20 ..." streamed into the job log, cutting=true;
+stop -> "Canceling goal...", grid_cutter_action_server logged "Received request to cancel goal", flag back to false; stop with
+nothing running, bad robot name (400) and non-JSON POST (415) all handled. Page JS only syntax-checked (`node --check`), not clicked
+in a browser. Side observation: `ros2 action list` inside a300_00036 also shows a stale `/j100_0921/cut_stem` (old graph entry).
+
+## Addendum: cut_stem on a300_00036 -- works after making stow_arm_cpp's names relative
+
+User: "check the cut stem action on a300_00036". Reset sim, restarted sim_robot_upstart (all nodes up; only the known gripper-not-a-chain /
+no-octomap-sensor errors), ran cut_stem from the new UI button.
+- Run 1: arm reached every pose but every patch failed "Gripper action server not available" (3 attempts, then skipped).
+  Root cause: grid_cutter_action_server.cpp default `gripper_action` (and `servo_twist_topic`) and grid_cutter_params.yaml `pruner_action`
+  were absolute `/j100_0921/...`; the a300_00036 server is at `/a300_00036/manipulators/arm_0_gripper_controller/gripper_cmd` (the
+  `/j100_0921/...` entry in `ros2 action list` was a stale graph leftover). Fix: relative names (resolve under the node namespace).
+- `scripts/colcon_build.sh` refused to run ("no running robot containers"): its regex needed exactly 4 digits; now `{4,}`.
+- Rebuild (10 s) + relaunch + run: 20/20 patches, 0 failures, "Grid complete. Moving to stow.", Goal finished SUCCEEDED (~8 min; ~25 s/patch).
+  joint_2 torque-limit workaround (40 N*m) was in effect. Not compared: cut quality/positions relative to the real robot.
+- Uncommitted: stow_arm_cpp (2 files; plain-file package in this repo), scripts/colcon_build.sh, tools/sim_ui, flatten_urdf.py,
+  setup_scene.py (a300_00036 params), .env (ROBOT_MODEL_0=a300_00036 test setting), docs.
+
+## Addendum: a200_0284 "does not spawn correctly" -> MODEL_ASSETS KeyError + ROS domain mismatch
+
+User: "a200_0284 does not spawn correctly. check it." (after fixing the yaml typo and regenerating).
+- Sim log: `KeyError: 'a200_0284'` in import_urdf_if_needed -> MODEL_ASSETS was a hardcoded name tuple. Now derived from sim/assets/*/*.urdf.
+  Added MODEL_PARAMS["a200_0284"] (see CLAUDE.md). URDF validated (no dup names, sane inertias, all meshes present).
+- After that the sim ran ("simulation running with 1 robots") but the robot container saw only its own topics: robot.yaml has
+  domain_id 1, sim is on 0. entrypoint.sh now forces the fleet ROS_DOMAIN_ID onto the copied real yaml. Image rebuilt, container recreated.
+- Verified: drive 1.28 m @ 0.42 m/s, imu_0/gps_0/gps_1/camera publish, 7 arm joints, joint_1 and joint_4 follow commands and return to 0.
+- One Kit startup hang (6 min silent after 35 s) on the first try; second docker restart was fine. Cause unknown.
+- Uncommitted; .env currently ROBOT_MODEL_0=a200_0284 (test setting, like a300_00036 before).
+
+## Addendum: cut_stem on a200_0284 with the shared colcon_ws (result: 14/14; a300_00036 re-verified 20/20)
+
+User: "test the cut stem action on a200_0284 ... use the same source code (colcon_ws/src) for all different model."
+Full write-up is in CLAUDE.md ("`cut_stem` on `a200_0284` ..."). Order in which things broke, each fixed generically or per-robot:
+1. basket joint with a non-existent parent -> move_group/servo/cutter died (robot_state now rewrites the pruned xacro).
+2. cutter: 6-value IK seed vs 7 joints -> per-robot override file (config/robots/<ns>.yaml) + launch support.
+3. zone too close for the 7-DOF (contorted pose, servo whipped joint 1 into the robot body) -> zone x 0.50-0.62, seed scored via compute_ik.
+4. joint_2 torque saturated at the fixed 40 N*m -> ARM_EFFORT_SCALE x URDF effort for every arm joint.
+5. Robotiq: continuous mimic followers w/o limits (sim crash) -> limits from mimic relation; wrong-coefficient NewtonMimicAPI constraints ->
+   removed for this model (drop_mimic_constraints). This was the long one: identical numbers under every gain/force/self-collision setting.
+6. bridge reported trajectory success on playback time only while the sim wrist lagged ~1.2 rad -> settle wait + slower planning (0.4).
+7. continuous joints wound past +-pi -> MoveIt START_STATE_INVALID -> +-3.12 limits (flatten + robot_state).
+8. no `drop` pose in its robot.yaml -> joint-space stand-in over the `basket` (ASSUMPTION), drop_lower_distance 0.
+Open / to tell the user: the drop pose is a guess; the servo refused to move from it (kept as 0 lowering); left/right wheel-radius calibration and the
++6% speed; sim start flakiness (hang or segfault, second restart fixes); one transient MoveIt code -4 per ~20 patches (cutter retry recovers).
+.env: ROBOT_MODEL_0=a300_00036 (test setting; committed value is j100_0921).
+Uncommitted: nearly everything above (scripts/, robot/, sim/, colcon_ws/src/stow_arm_cpp + moveit_sim_bridge, tools/sim_ui, docs).
+
+## Addendum: RViz gripper execution failure + j100_0921 cut re-test
+- User: "Start from simple gripper action ... Open and close planning is successful, but it fails the execution." Found TIMED_OUT (0.5 s bound)
+  in the launch log from the user's RViz attempt; bridge slept 1.0 s. Fixed with target/stall detection. Verified via move_group (same as RViz
+  Plan & Execute) incl. 1-point plans and velocity scaling 1.0. Not clicked in RViz by me.
+- j100_0921 cut: first run 20/20 but "open" left the Lite's driven joint at -0.204 (mimic constraint vs. bridge offset). Constraints now removed
+  for all arms. Second run aborted at patch 9 after a sim stall caused by a streaming-client connect (13:13:39Z). Third run: 20/20, 0 retries,
+  60/60 gripper moves reached. a300_00036 and a200_0284 not re-run after the all-arms constraint change.
+- .env ROBOT_MODEL_0=j100_0921 (= committed value). Nothing committed.

@@ -1,6 +1,6 @@
 /**/grid_cutter_action_server:
   ros__parameters:
-    pruner_action: /j100_0921/pruner_action_server
+    pruner_action: pruner_action_server   # relative: resolves under the robot's namespace
     moveit_planning_time: 15
     moveit_vel_scale: 1.0
     moveit_acc_scale: 0.8
@@ -8,7 +8,7 @@
     zone_x_min: 0.20
     zone_x_max: 0.38  # max reach 0.4 m
     zone_y_min: 0.1
-    zone_y_max: 0.35
+    zone_y_max: 0.15
     zone_z_height: 0.05
     safe_z_height: 0.15
 
@@ -24,6 +24,10 @@
     # --- cutting performance param (in meters) ---
     pushing_dist: 0.03
     approach_offset: 0.15
+    # Release at the drop pose instead of servoing 10 cm down "into the unloader box" first (the shared default). The
+    # servo refused to move from this pose ("Very close to a singularity, emergency stop") and the box position is
+    # only an assumption anyway (see drop_joint_positions above).
+    drop_lower_distance: 0.1
 
     # --- IK seed for Cartesian moves (arm_0_joint_1 .. arm_0_joint_6, rad) ---
     # move_to_cartesian_pose picks the IK solution nearest this configuration. [] = use current state.
@@ -43,15 +47,16 @@
     servo_joint_margin: 0.2
 
 
-    collision_objects: ["ground_plane", "safety_cylinder"]
+    collision_objects: ["ground_plane"]
+    # collision_objects: ["ground_plane", "safety_cylinder"]
     ground_plane:
       type: "box"
       dimensions: [0.6, 0.6, 0.05]                # [length_x, width_y, height_z]
       pose: [0.3, 0.0, -0.3, 0.0, 0.0, 0.0, 1.0] # [x, y, z, qx, qy, qz, qw]
       frame_id: "arm_0_base_link"
 
-    safety_cylinder:
-      type: "cylinder"
-      dimensions: [0.4, 0.05]                    # [height, radius]
-      pose: [0.4, 0.2, 0.2, 0.0, 0.0, 0.0, 1.0]   # [x, y, z, qx, qy, qz, qw]
-      frame_id: "base_link"
+    # safety_cylinder:
+    #   type: "cylinder"
+    #   dimensions: [0.4, 0.05]                    # [height, radius]
+    #   pose: [0.4, 0.2, 0.2, 0.0, 0.0, 0.0, 1.0]   # [x, y, z, qx, qy, qz, qw]
+    #   frame_id: "base_link"

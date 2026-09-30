@@ -50,6 +50,16 @@ mkdir -p /etc/clearpath
 # whose folder isn't present) falls back to the existing stripped-down .tmpl path below, same as ever.
 if [[ "$ROBOT_MODEL" == *_* && -f "/robot_data/$ROBOT_MODEL/robot.yaml" ]]; then
     cp "/robot_data/$ROBOT_MODEL/robot.yaml" /etc/clearpath/robot.yaml
+    # ...except the ROS domain: that belongs to the simulated network (ROS_DOMAIN_ID from .env, shared by the
+    # sim and every robot container), not to one robot's real-world config. a200_0284's own yaml says
+    # domain_id: 1, so its container sat on domain 1 while the sim was on domain 0 and it never saw a single sim
+    # topic (j100_0921/a300_00036/... happen to use 0). Only the uncommented domain_id line is rewritten.
+    fleet_domain="${ROS_DOMAIN_ID:-0}"
+    real_domain="$(sed -n -E 's/^[[:space:]]*domain_id:[[:space:]]*([0-9]+).*/\1/p' /etc/clearpath/robot.yaml | head -1)"
+    if [[ -n "$real_domain" && "$real_domain" != "$fleet_domain" ]]; then
+        echo "[entrypoint] $ROBOT_MODEL: robot.yaml domain_id $real_domain -> $fleet_domain (the fleet's ROS_DOMAIN_ID)"
+        sed -i -E "s/^([[:space:]]*domain_id:[[:space:]]*)[0-9]+/\1${fleet_domain}/" /etc/clearpath/robot.yaml
+    fi
 else
     sed -e "s/__NS__/${ROBOT_NAMESPACE}/g" -e "s/__SERIAL__/${ROBOT_SERIAL}/g" \
         -e "s/__RMW__/${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}/g" \

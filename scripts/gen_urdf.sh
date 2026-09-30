@@ -6,7 +6,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 IMAGE="${ROBOT_IMAGE:-clearpath-robot:jazzy}"
-MODELS="a300 a200 j100 r100 j100_0921 j100_0936 a200_0333 a300_00036 j100_0922"
+# The four generic Clearpath catalog models (each from robot/config/robot.<model>.yaml.tmpl) plus one model per
+# real robot: every folder in robot_data/ that holds a robot.yaml (folder name = model id, e.g. j100_0921).
+MODELS="a300 a200 j100 r100"
+for d in robot_data/*/; do
+    name="$(basename "$d")"
+    [ -f "$d/robot.yaml" ] || continue
+    case " $MODELS " in *" $name "*) continue ;; esac
+    MODELS="$MODELS $name"
+done
+echo "generating: $MODELS"
 for m in $MODELS; do mkdir -p "sim/assets/$m"; done
 # Middleware/domain written into robot.yaml only to satisfy clearpath_config's schema (the URDF depends on
 # neither); FLEET_RMW from .env, like docker compose, and domain_id 0 (the actual per-robot value is filled in

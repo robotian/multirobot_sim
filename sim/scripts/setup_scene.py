@@ -47,13 +47,20 @@ CAM_STREAMS = set(filter(None, os.environ.get("CAMERA_STREAMS", "color,depth").s
 
 # Per-model URDF/USD paths, from scripts/gen_urdf.sh's output (sim/assets/<model>/) and the importer's cache
 # (sim/generated/<model>/, see import_urdf_if_needed).
+# Every model scripts/gen_urdf.sh has produced (sim/assets/<m>/<m>.urdf) is available -- gen_urdf.sh itself takes
+# the real robots from robot_data/<id>/, so a new robot needs no list edited here (only a MODEL_PARAMS entry).
+# The fixed names are kept as a floor so a listing problem can never make a known model disappear.
+_ASSET_ROOT = "/sim/assets"
+_GENERATED = [d for d in (os.listdir(_ASSET_ROOT) if os.path.isdir(_ASSET_ROOT) else [])
+              if os.path.isfile(f"{_ASSET_ROOT}/{d}/{d}.urdf")]
 MODEL_ASSETS = {
     m: {
         "urdf": f"/sim/assets/{m}/{m}.urdf",
         "usd_dir": f"/sim/generated/{m}",
         "usd_path": f"/sim/generated/{m}/{m}/{m}.usda",
     }
-    for m in ("a300", "a200", "j100", "r100", "j100_0921", "j100_0936", "a200_0333", "a300_00036", "j100_0922")
+    for m in sorted({"a300", "a200", "j100", "r100", "j100_0921", "j100_0936", "a200_0333", "a300_00036", "j100_0922"}
+                    | set(_GENERATED))
 }
 
 # Decorative lavender plants (SM_Lavender_Nanite_01.usd, default prim /Root). The asset's own layer is
@@ -202,22 +209,47 @@ MODEL_PARAMS = {
         max_linear=1.0, max_angular=1.0,
         lidar2d_link="lidar2d_0_laser", lidar3d_link="lidar3d_0_laser",
     ),
-    # a300_00036: only sensor is a phidgets_spatial IMU (parent: base_link in the real robot.yaml) -- no camera
-    # at all (has_camera=False guards add_camera/build_ros_graph's camera wiring, since find_prim would otherwise
-    # raise looking for a nonexistent camera_0_link). imu_link is base_link directly, not chassis_link: the
-    # sensor's own link (imu_0_link -- a300 has no separate "platform default" imu_0 the way j100 does, so the
-    # explicit sensor takes that slot) is visual-only with no separate mount chain above it, so
-    # merge_visual_only_links folds it straight into its own direct parent, base_link -- confirmed in the
-    # flattened URDF (no "imu" string survives; base_link's own <visual> is the merged sensor's box geometry).
-    # chassis_link="base_link", NOT generic a300's "chassis_link" -- caught live (not assumed), same class of bug
-    # as a200's inertial_link case and j100's fender-merge case: giving base_link real visual content it didn't
-    # have before (the merged IMU box) was enough to flip the importer's articulation root there too. First
-    # attempt at the generic a300 value hit "Articulation controller failed for prim '.../base_link/
-    # chassis_link'" with no import-time warning, exactly the documented failure signature for this class of bug.
+    # a300_00036 (real robot.yaml updated after this entry's first version, which had only a Phidgets IMU and no
+    # camera): now a full MTU field robot -- D435 (sensors.camera, via mounts.fath_pivot on top_plate_mount_c1,
+    # same camera_0_link name/hand-built-optical-frame path as a200_0333, so no camera_optical_link override), a
+    # Hokuyo UST 2D lidar (lidar2d_0_laser, on wireless_charger_link), dual SwiftNav Duro GPS (gps_0_link/
+    # gps_1_link -- a300 numbers its GPS from 0, unlike the Jackals' gps_1/gps_2), a Microstrain IMU, and a Kinova
+    # Gen3 Lite arm + 2F Lite gripper on top_plate_mount_e9 (has_arm), plus platform.extras -> mtu32_description's
+    # generic urdf/robot_description.urdf.xacro. Drivetrain unchanged (no platform_velocity_controller override).
+    # imu_link is top_plate_link: the Microstrain (imu_0_link, imu_index 0 -- a300 has no platform-default IMU
+    # occupying slot 0) and its empty mount frames are visual-only, so merge_visual_only_links folds them into
+    # the nearest link with real collision, top_plate_link -- confirmed in the flattened URDF (no "imu" string
+    # survives; top_plate_link's visuals are top_plate.dae plus one extra box), not assumed.
+    # chassis_link is "chassis_link" again (it was base_link while the Phidgets IMU box gave base_link geometry):
+    # base_link is now a pure frame, and flatten_urdf.py's weld_empty_root_children re-parents its extra collision
+    # children (arch/estop/button/eth, both GPS, wireless charger + lidar) onto chassis_link. Without that pass
+    # the importer rooted 8 separate articulations, pinned to the world (physics:body0 = the robot root prim),
+    # and the drive graph failed on base_link ("not a valid rigid body or articulation root"). Re-verified live
+    # per this project's rule for chassis_link after any URDF shape change.
     "a300_00036": dict(
-        chassis_link="base_link", drive="diff", wheel_radius=0.1625, wheel_separation=0.562, separation_multiplier=1.75,
+        chassis_link="chassis_link", drive="diff", wheel_radius=0.1625, wheel_separation=0.562, separation_multiplier=1.75,
         max_linear=2.0, max_angular=2.0,
-        has_camera=False, imu_link="base_link", imu_index=0,
+        imu_link="top_plate_link", imu_index=0, gps_links=["gps_0_link", "gps_1_link"], has_arm=True,
+        lidar2d_link="lidar2d_0_laser",
+    ),
+    # a200_0284: an A200 with the MTU field-robot loadout -- Microstrain IMU (imu_0), D435 (via sensors.camera on
+    # front_camera_mount_link, so the usual camera_0_link + hand-built optical frame), dual Duro GPS (gps_0/gps_1),
+    # SICK LMS1xx 2D lidar (lidar2d_0_laser, on top_plate_base_link) and a Kinova Gen3 *7-DOF* arm (arm_0_joint_1
+    # .. 7, no gripper: that section of the yaml is commented out) on arm_mount_plate_link. The arm graph and
+    # configure_arm_drives match by name/articulation, so 7 joints need nothing special.
+    # Drivetrain: the real robot.yaml overrides platform_velocity_controller with wheel_radius 0.157 and
+    # left/right radius multipliers 1.01 / 0.96 (wheel_separation_multiplier 1.875, max 1.0 m/s and 1.0 rad/s).
+    # This sim's DifferentialController takes a single radius, so wheel_radius = 0.157 * mean(1.01, 0.96) = 0.1546;
+    # the left/right asymmetry itself can't be represented (same "real calibrated value" approach as j100_0921).
+    # imu_link is base_link: the Microstrain and its mount frames are visual-only, so merge_visual_only_links folds
+    # them into base_link (confirmed: base_link gains exactly one extra "box" visual vs. the plain a200 URDF).
+    # chassis_link="base_link" like a200 (base_link has real visual+collision and several direct children, so the
+    # importer roots the articulation there) -- to be re-verified live with a drive test.
+    "a200_0284": dict(
+        chassis_link="base_link", drive="diff", wheel_radius=0.157 * (1.01 + 0.96) / 2, wheel_separation=0.555,
+        separation_multiplier=1.875, max_linear=1.0, max_angular=1.0,
+        imu_link="base_link", imu_index=0, gps_links=["gps_0_link", "gps_1_link"], has_arm=True,
+        lidar2d_link="lidar2d_0_laser",
     ),
     # j100_0922: same real robot.yaml lineage as j100_0921 (identical camera/IMU/GPS/links sections, same
     # platform_velocity_controller values) but with its entire manipulators.arms section commented out -- no
@@ -964,11 +996,18 @@ ARM_JOINT_2_DAMPING = 1.0e6
 # need the same torque, so the extra demand isn't the drive fighting itself. OPEN: static gravity from the URDF
 # masses (which match the imported USD) predicts only ~7.5 N*m at cut_init and ~9-10 N*m peak; the real arm
 # works within 14 N*m. Self-collision and joint friction ruled out; chassis pitch/rocking not yet checked. This
-# is therefore a disclosed workaround, not a realistic torque model. None = keep the URDF limit.
-ARM_JOINT_2_MAX_FORCE = 40.0
+# is therefore a disclosed workaround, not a realistic torque model.
+#
+# Made generic (was a fixed 40 N*m on arm_0_joint_2, i.e. 14 x ~3) when a200_0284's Kinova Gen3 7-DOF (joint effort
+# limits 39/39/39/39/9/9/9) went through the same failure at a bigger size: joint_2 sat at exactly the 40 N*m cap
+# for two seconds during the cutter's first plan move, then the arm collapsed and the physics went chaotic (joint 5
+# swung 7 rad in a second, joint 6 wound up to 14 rad, efforts of hundreds of N*m from the resulting collisions).
+# So every arm_0_joint_N drive now gets ARM_EFFORT_SCALE x its own URDF effort limit: 14 -> 42 for the Gen3
+# Lite's joint_2 (~ the old 40), 39 -> 117 for the 7-DOF's. The gripper joints keep their URDF limits.
+ARM_EFFORT_SCALE = 3.0
 
 
-def configure_arm_drives(stage, root):
+def configure_arm_drives(stage, root, drop_mimic_constraints=True):
     """Real MTU robots' Kinova arm+gripper: give every arm_0_*/gripper joint a real position-servo drive.
 
     IMPORT_SETTINGS' global override_joint_stiffness=0.0 is correct for the wheels (a pure velocity drive with
@@ -983,6 +1022,14 @@ def configure_arm_drives(stage, root):
     (except arm_0_joint_2's own stronger gain, see above).
     No-op for every model without an arm (nothing named "arm_0" exists in their USD).
     """
+    # Mimic constraints (drop_mimic_constraints, default on for every arm): the URDF importer turns each gripper
+    # <mimic> joint into a physics constraint (NewtonMimicAPI) on top of the position drive every arm_0 joint gets
+    # here, and moveit_sim_bridge also commands every gripper joint (from the URDF's own mimic multiplier/offset).
+    # Constraint and drives then fight: on the Kinova 2F Lite, commanding only the driven joint barely moved it (0.04
+    # rad for any target) and "open" left it at -0.204, outside its -0.1 limit (bridge pulls the tip to its +0.149
+    # offset, constraint + drive settle at bottom = -0.149/0.676); on a200_0284's Robotiq 2F-85 the constraints had
+    # wrong coefficients and closing threw joints >1 rad past their limits and spun the wrist. Removed (the whole API
+    # schema; clearing only the target relationship did nothing), each gripper joint follows its own command.
     from pxr import Usd, UsdPhysics
 
     for prim in Usd.PrimRange(stage.GetPrimAtPath(root)):
@@ -990,13 +1037,23 @@ def configure_arm_drives(stage, root):
             continue
         stiffness = ARM_JOINT_2_STIFFNESS if prim.GetName() == "arm_0_joint_2" else ARM_DRIVE_STIFFNESS
         damping = ARM_JOINT_2_DAMPING if prim.GetName() == "arm_0_joint_2" else ARM_DRIVE_DAMPING
+        mimic = prim.GetRelationship("newton:mimicJoint")  # set by the URDF importer for <mimic> follower joints
+        if drop_mimic_constraints and mimic and mimic.GetTargets():
+            # the joint keeps its position drive; only the constraint goes. Clearing the target alone wasn't enough
+            # (the constraint kept coupling the joints), so the API schema itself is removed as well.
+            mimic.ClearTargets(True)
+            prim.RemoveAppliedSchema("NewtonMimicAPI")
+            log(f"mimic follower {prim.GetName()}: mimic constraint removed (driven directly)")
         for dof in ("angular", "linear"):
             drive = UsdPhysics.DriveAPI.Get(prim, dof)
             if drive:
                 drive.GetStiffnessAttr().Set(stiffness)
                 drive.GetDampingAttr().Set(damping)
-                if prim.GetName() == "arm_0_joint_2" and ARM_JOINT_2_MAX_FORCE is not None:
-                    drive.GetMaxForceAttr().Set(ARM_JOINT_2_MAX_FORCE)
+                if re.fullmatch(r"arm_0_joint_\d+", prim.GetName()):
+                    max_force = drive.GetMaxForceAttr()
+                    effort = max_force.Get()  # the importer's copy of the URDF <limit effort>
+                    if effort and effort > 0:
+                        max_force.Set(float(effort) * ARM_EFFORT_SCALE)
 
 
 def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params):
@@ -1464,7 +1521,7 @@ async def main():
             chassis = find_prim(stage, root, MODEL_PARAMS[model]["chassis_link"])
             build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, MODEL_PARAMS[model])
             if MODEL_PARAMS[model].get("has_arm"):
-                configure_arm_drives(stage, root)
+                configure_arm_drives(stage, root, MODEL_PARAMS[model].get("drop_mimic_constraints", True))
         aim_viewport()
         set_viewport_resolution()
         for _ in range(10):

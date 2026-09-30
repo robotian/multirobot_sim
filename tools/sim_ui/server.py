@@ -25,6 +25,11 @@ PROJECT = "clearpath-fleet"
 SIM = "a300-isaac-sim"
 MAX_SLOTS = 8
 NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+# The cut_stem client (`ros2 action send_goal ... /<ns>/cut_stem`) is exec'd directly (no wrapper shell), so this
+# matches exactly one process per run; SIGINT to it makes ros2cli cancel the goal.
+CUT_MATCH = "ros2 action send_goal.*cut_stem"
+CUT_CMD = ('exec ros2 action send_goal --feedback /$ROBOT_NAMESPACE/cut_stem '
+           'plant_cutter_msgs/action/CutStem "{start_cutting: true}"')
 LAUNCH_LOG = "/tmp/sim_robot_upstart.log"
 LAUNCH_CMD = ("source /home/robot/colcon_ws/install/setup.bash && "
               f"exec ros2 launch mtu32_bringup sim_robot_upstart.launch.py > {LAUNCH_LOG} 2>&1")
@@ -140,6 +145,9 @@ def robots():
         if r["state"] == "running":
             code, _ = sh(["docker", "exec", r["name"], "pgrep", "-f", "sim_robot_upstart.launch.py"], timeout=10)
             r["launch"] = code == 0
+            r["cutting"] = sh(["docker", "exec", r["name"], "pgrep", "-f", CUT_MATCH], timeout=10)[0] == 0
+        else:
+            r["cutting"] = False
     return sorted(rows, key=lambda r: r["slot"])
 
 
@@ -229,6 +237,34 @@ def act_launch_stop(body):
     return start_job(f"{robot}: restart_ros", lambda j: j.run(["docker", "exec", robot, "restart_ros"]) == 0)
 
 
+def act_cutstem_start(body):
+    robot = running_robot(body.get("robot"))
+
+    def fn(j):
+        if sh(["docker", "exec", robot, "pgrep", "-f", CUT_MATCH])[0] == 0:
+            j.log("a cut_stem goal is already running")
+            return False
+        code, out = in_robot(robot, "ros2 action list 2>/dev/null | grep -x /$ROBOT_NAMESPACE/cut_stem", timeout=20)
+        if code != 0:
+            j.log("no cut_stem action server -- start sim_robot_upstart first and wait ~20 s for it to come up")
+            return False
+        return j.run(["docker", "exec", robot, "bash", "-c", CUT_CMD]) == 0
+
+    return start_job(f"{robot}: cut_stem", fn)
+
+
+def act_cutstem_stop(body):
+    robot = running_robot(body.get("robot"))
+
+    def fn(j):
+        # SIGINT, not SIGKILL: ros2 action send_goal cancels the goal on Ctrl+C, so the server stops the task.
+        code, _ = sh(["docker", "exec", robot, "pkill", "-INT", "-f", CUT_MATCH])
+        j.log("sent Ctrl+C to the cut_stem client (goal is cancelled)" if code == 0 else "no cut_stem goal running")
+        return True
+
+    return start_job(f"{robot}: stop cut_stem", fn)
+
+
 def act_arm_goto(body):
     robot = running_robot(body.get("robot"))
     state, group = body.get("state"), body.get("group", "arm_0")
@@ -290,6 +326,8 @@ POST = {
     "/api/launch/start": act_launch_start,
     "/api/launch/stop": act_launch_stop,
     "/api/arm/goto": act_arm_goto,
+    "/api/cutstem/start": act_cutstem_start,
+    "/api/cutstem/stop": act_cutstem_stop,
 }
 GET = {
     "/api/status": lambda q: status(),
