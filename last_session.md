@@ -1371,3 +1371,22 @@ Uncommitted: nearly everything above (scripts/, robot/, sim/, colcon_ws/src/stow
   for all arms. Second run aborted at patch 9 after a sim stall caused by a streaming-client connect (13:13:39Z). Third run: 20/20, 0 retries,
   60/60 gripper moves reached. a300_00036 and a200_0284 not re-run after the all-arms constraint change.
 - .env ROBOT_MODEL_0=j100_0921 (= committed value). Nothing committed.
+
+## Addendum: velocity calibration of all models (branch worktree-velocity-calibration)
+User: "calibrate the robots' linear and angular velocities ... 0.0 to 1.0 m/s / 0.0 to 1.0 rad/s ... within 10% ... low acceleration";
+then "put the arm to stow before it starts" and "search for contact property of isaac sim and its physics engine".
+- Method: `scripts/calibrate_velocity.py` (docker exec in a robot container; `--ns` drives another robot): stows the arm (SRDF `stow`), ramps cmd_vel at
+  0.25 m/s^2 / 0.5 rad/s^2, holds 8 s, measures from the pose in platform/odom over SIM time (odom stamps are wall clock; sim time = messages x 1/30 s).
+- Baseline (open loop): linear +0-5% except j100_0921 reverse 0.6-0.9x; angular dead zone (0.2 rad/s -> 0, 0.5 -> 0.2-0.6x), Ridgeback erratic.
+- What did not help the angular dead zone: wheel friction 0.1-0.4 (min combine), wheel drive damping x10/x1000, doubling wheel speed. PhysX has no anisotropic
+  friction (forum); PGS + CCD + patch friction + 360 Hz helped (forum advice), but only PGS+CCD at 60 Hz is free (360 Hz halves the frame rate).
+- Fix = `VelCtl` feedback + PGS/CCD + pose-based measurement + pose-based odom twist + Ridgeback lateral/yaw channels + j100_0922 mass fix. See CLAUDE.md.
+- Surprises: (1) a frame advances physics by floor(60/22)/60 = 1/30 s, not 1/22: physical rtf = fps/30 (debug rtf is timeline based and too high). (2) PhysX's reported
+  angular velocity is 0.02-0.03 rad/s above the real yaw change. (3) j100_0922 weighed 75 kg in the sim vs 18.4 kg URDF (massless links get collider volume x 1000 kg/m^3):
+  tipped over about every other reverse drive, feedback on or off. (4) `docker exec -e ROBOT_NAMESPACE=x` is overridden by /etc/robot_ns_env.sh (use --ns).
+  (5) a200_0333 has no robot_data, so no robot container: drive it from another container with --ns a200_0333.
+- Final results (pose ratio = achieved/commanded, all within 10%): a300/a200/j100 0.965-1.013; r100 0.988-1.015 (lin/lat/ang); a300_00036 0.96-1.04; a200_0333 0.95-1.09;
+  j100_0921 0.98-1.05; a200_0284 0.98-1.04; j100_0922 0.98-1.00 (tilt <= 1.4 deg). j100_0936 not tested (no robot_data). Sim start segfault happened once (exit 139), a second start was fine.
+- Not done / for the user: j100_0921 (and a200_0284/a300_00036?) also carry heavy massless links (not fixed, cut_stem was tuned with them); .env SIM_RATE_HZ=22 gives a
+  physical rtf of only ~0.5-0.6 (set it so 60/SIM_RATE_HZ is whole, e.g. 15 or 20); the odom twist is now pose-derived (filtered, ~1.5 frames lag).
+- Testing used the worktree's sim/ mounted over /sim via a compose override and temporary .env model swaps (.env restored afterwards). Nothing pushed.
