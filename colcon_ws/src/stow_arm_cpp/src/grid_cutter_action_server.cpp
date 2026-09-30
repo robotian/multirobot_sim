@@ -1,6 +1,9 @@
 // grid_cutter_action_server.cpp
 //
-// CutStem action server for a Kinova Gen3 Lite on a Clearpath Jackal.
+// CutStem action server for a Clearpath robot with a Kinova Gen3 / Gen3 Lite arm.
+// All patch/approach/drop positions are positions of the TOOL frame (tool_link, a static transform from the arm's
+// end-effector link, see tool_xyz/tool_rpy), not of the end-effector link itself: the gripper fingers sit at a
+// different place on each arm/gripper combination.
 // Sweeps a grid of patches: MoveIt to an approach pose, MoveIt Servo (twist
 // streaming) into the patch, close gripper, run the pruner, retract, drop.
 
@@ -27,6 +30,7 @@
 #include "visualization_msgs/msg/marker_array.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
+#include "tf2_ros/static_transform_broadcaster.h"
 #include "moveit/move_group_interface/move_group_interface.hpp"
 #include "moveit/robot_state/robot_state.hpp"
 #include <Eigen/Geometry>
@@ -114,6 +118,8 @@ public:
 
     base_frame_ = get_string("base_frame");
     ee_link_ = get_string("ee_link");
+    tool_link_ = get_string("tool_link");
+    load_tool_offset();
 
     // Dedicated sub-node for MoveIt to prevent executor deadlocks
     moveit_node_ = rclcpp::Node::make_shared(
@@ -121,6 +127,27 @@ public:
 
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this, false);
+
+    // tool_link: static transform ee_link -> tool_link (lands in the robot's tf_static via the launch remapping)
+    if (get_bool("publish_tool_tf")) {
+      tool_tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
+      geometry_msgs::msg::TransformStamped t;
+      t.header.stamp = this->get_clock()->now();
+      t.header.frame_id = ee_link_;
+      t.child_frame_id = tool_link_;
+      t.transform.translation.x = ee_T_tool_.translation().x();
+      t.transform.translation.y = ee_T_tool_.translation().y();
+      t.transform.translation.z = ee_T_tool_.translation().z();
+      const Eigen::Quaterniond q(ee_T_tool_.rotation());
+      t.transform.rotation.x = q.x();
+      t.transform.rotation.y = q.y();
+      t.transform.rotation.z = q.z();
+      t.transform.rotation.w = q.w();
+      tool_tf_broadcaster_->sendTransform(t);
+      RCLCPP_INFO(
+        this->get_logger(), "Published static TF %s -> %s (xyz %.3f %.3f %.3f).", ee_link_.c_str(),
+        tool_link_.c_str(), t.transform.translation.x, t.transform.translation.y, t.transform.translation.z);
+    }
 
     // Publishers
     twist_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>(
@@ -209,6 +236,7 @@ private:
   rclcpp::CallbackGroup::SharedPtr cb_group_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  std::shared_ptr<tf2_ros::StaticTransformBroadcaster> tool_tf_broadcaster_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr twist_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp_action::Client<GripperCommand>::SharedPtr gripper_client_;
@@ -220,6 +248,8 @@ private:
 
   std::string base_frame_;
   std::string ee_link_;
+  std::string tool_link_;
+  Eigen::Isometry3d ee_T_tool_{Eigen::Isometry3d::Identity()};  // pose of tool_link in ee_link
 
   geometry_msgs::msg::TwistStamped current_twist_;
   std::mutex twist_mutex_;
@@ -352,8 +382,8 @@ private:
     declare_if_not_declared("zone_y_max", 0.3);
     declare_if_not_declared("zone_z_height", 0.03);
     declare_if_not_declared("safe_z_height", 0.15);
-    declare_if_not_declared("cutter_length", 0.06);
-    declare_if_not_declared("cutter_width", 0.05);
+    declare_if_not_declared("grid_dx", 0.06);
+    declare_if_not_declared("grid_dy", 0.05);
     declare_if_not_declared("approach_offset", 0.10);
     declare_if_not_declared("pushing_dist", 0.01);
 
@@ -409,13 +439,20 @@ private:
 
     declare_if_not_declared("base_frame", std::string("arm_0_base_link"));
     declare_if_not_declared("ee_link", std::string("arm_0_end_effector_link"));
+    // Tool frame: where the cutting/grasping point is, as a static transform from ee_link. Every patch, approach and
+    // drop position (and grasp_orientation) refers to this frame; the end-effector target is derived from it.
+    // Identity (the default) = tool_link coincides with ee_link, i.e. the old behaviour.
+    declare_if_not_declared("tool_link", std::string("tool_link"));
+    declare_if_not_declared("tool_xyz", std::vector<double>{0.0, 0.0, 0.0});
+    declare_if_not_declared("tool_rpy", std::vector<double>{0.0, 0.0, 0.0});
+    declare_if_not_declared("publish_tool_tf", true);
     // Relative names: they resolve under this node's namespace (the robot's), so the same code works for
     // /j100_0921, /a300_00036, ... (these used to be hardcoded to /j100_0921/..., which left the gripper
     // action "not available" on every other robot).
     declare_if_not_declared("servo_twist_topic", std::string("manipulator/delta_twist_cmds"));
     declare_if_not_declared("gripper_action",
       std::string("manipulators/arm_0_gripper_controller/gripper_cmd"));
-    declare_if_not_declared("pruner_action", std::string("/pruner_action_server"));
+    declare_if_not_declared("pruner_action", std::string("pruner_action_server"));
   }
 
   double get_double(const std::string & name) const
@@ -449,6 +486,28 @@ private:
     return p.as_double_array();
   }
 
+  void load_tool_offset()
+  {
+    const auto xyz = get_double_array("tool_xyz");
+    const auto rpy = get_double_array("tool_rpy");
+    if (xyz.size() != 3 || rpy.size() != 3) {
+      RCLCPP_ERROR(this->get_logger(), "tool_xyz and tool_rpy need 3 elements each; using identity.");
+      return;
+    }
+    ee_T_tool_ = Eigen::Isometry3d::Identity();
+    ee_T_tool_.translation() = Eigen::Vector3d(xyz[0], xyz[1], xyz[2]);
+    ee_T_tool_.linear() =
+      (Eigen::AngleAxisd(rpy[2], Eigen::Vector3d::UnitZ()) *
+      Eigen::AngleAxisd(rpy[1], Eigen::Vector3d::UnitY()) *
+      Eigen::AngleAxisd(rpy[0], Eigen::Vector3d::UnitX())).toRotationMatrix();
+  }
+
+  // The end-effector pose (base frame) that puts tool_link at base_T_tool.
+  Eigen::Isometry3d ee_pose_for_tool(const Eigen::Isometry3d & base_T_tool) const
+  {
+    return base_T_tool * ee_T_tool_.inverse();
+  }
+
   static int grid_count(double lo, double hi, double step)
   {
     return static_cast<int>(std::floor((hi - lo) / step + 1e-6)) + 1;
@@ -462,8 +521,8 @@ private:
     c.y_max = get_double("zone_y_max");
     c.z_cut = get_double("zone_z_height");
     c.safe_z = get_double("safe_z_height");
-    c.dx = get_double("cutter_length");
-    c.dy = get_double("cutter_width");
+    c.dx = get_double("grid_dx");
+    c.dy = get_double("grid_dy");
     c.approach_offset = get_double("approach_offset");
     c.pushing_dist=get_double("pushing_dist");
     c.approach_from_patch_row = get_bool("approach_from_patch_row");
@@ -520,7 +579,7 @@ private:
     }
     c.stow_pose = get_string("stow_pose");
 
-    if (c.dx <= 0.0 || c.dy <= 0.0) { err = "cutter_length and cutter_width must be > 0"; return false; }
+    if (c.dx <= 0.0 || c.dy <= 0.0) { err = "grid_dx and grid_dy must be > 0"; return false; }
     if (c.x_max < c.x_min || c.y_max < c.y_min) { err = "zone max must be >= zone min"; return false; }
     if (c.approach_offset < 0.0) { err = "approach_offset must be >= 0"; return false; }
     if (c.reach_max_radius <= 0.0 || c.reach_radial_step <= 0.0 || c.reach_ik_timeout <= 0.0 ||
@@ -600,10 +659,11 @@ private:
     }
   }
 
+  // Position of the tool frame (tool_link) in base_frame_.
   bool get_ee_position(double & x, double & y, double & z)
   {
     try {
-      auto t = tf_buffer_->lookupTransform(base_frame_, ee_link_, tf2::TimePointZero);
+      auto t = tf_buffer_->lookupTransform(base_frame_, tool_link_, tf2::TimePointZero);
       x = t.transform.translation.x;
       y = t.transform.translation.y;
       z = t.transform.translation.z;
@@ -758,16 +818,24 @@ private:
     stop_servo();
     std::this_thread::sleep_for(100ms);
 
+    // (x, y, z) and grasp_orientation describe the TOOL frame; the planner is given the matching end-effector pose.
+    Eigen::Isometry3d base_T_tool = Eigen::Isometry3d::Identity();
+    base_T_tool.translation() = Eigen::Vector3d(x, y, z);
+    base_T_tool.linear() =
+      Eigen::Quaterniond(cfg_.grasp_q[3], cfg_.grasp_q[0], cfg_.grasp_q[1], cfg_.grasp_q[2]).toRotationMatrix();
+    const Eigen::Isometry3d base_T_ee = ee_pose_for_tool(base_T_tool);
+    const Eigen::Quaterniond qe(base_T_ee.rotation());
+
     geometry_msgs::msg::PoseStamped target;
     target.header.frame_id = base_frame_;
     target.header.stamp = this->get_clock()->now();
-    target.pose.position.x = x;
-    target.pose.position.y = y;
-    target.pose.position.z = z;
-    target.pose.orientation.x = cfg_.grasp_q[0];
-    target.pose.orientation.y = cfg_.grasp_q[1];
-    target.pose.orientation.z = cfg_.grasp_q[2];
-    target.pose.orientation.w = cfg_.grasp_q[3];
+    target.pose.position.x = base_T_ee.translation().x();
+    target.pose.position.y = base_T_ee.translation().y();
+    target.pose.position.z = base_T_ee.translation().z();
+    target.pose.orientation.x = qe.x();
+    target.pose.orientation.y = qe.y();
+    target.pose.orientation.z = qe.z();
+    target.pose.orientation.w = qe.w();
 
     move_group_->clearPoseTargets();
     // move_group_->setPathConstraints(constraints);
@@ -943,10 +1011,11 @@ private:
 
     const Eigen::Quaterniond q(cfg_.grasp_q[3], cfg_.grasp_q[0], cfg_.grasp_q[1], cfg_.grasp_q[2]);
     auto reachable = [&](double r, double th) {
-        Eigen::Isometry3d base_T_ee = Eigen::Isometry3d::Identity();
-        base_T_ee.translation() =
+        Eigen::Isometry3d base_T_tool = Eigen::Isometry3d::Identity();
+        base_T_tool.translation() =
           Eigen::Vector3d(center.x() + r * std::cos(th), center.y() + r * std::sin(th), cfg_.z_cut);
-        base_T_ee.linear() = q.toRotationMatrix();
+        base_T_tool.linear() = q.toRotationMatrix();
+        const Eigen::Isometry3d base_T_ee = ee_pose_for_tool(base_T_tool);
         state.setJointGroupPositions(jmg, seed);
         return state.setFromIK(jmg, model_T_base * base_T_ee, ee_link_, cfg_.reach_ik_timeout);
       };
