@@ -11,3 +11,5 @@ colcon_ws/log/
 # their `sim` branch), the rest as plain files.
 robot_data/
 sim/colcon_ws/
+# Per-robot Foxglove layouts written by scripts/foxglove_layout.sh
+foxglove/
