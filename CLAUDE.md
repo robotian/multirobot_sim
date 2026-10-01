@@ -22,6 +22,7 @@ docker exec -it a300_0000 bash            # shell in a robot (sources /etc/clear
 docker exec -it -u robot a300_0000 bash   # shell as the `robot` user, for ~/colcon_ws (shared across all robot containers)
 docker exec -it a300_0000 teleop          # keyboard control (i/j/l/,/k), publishes /a300_0000/cmd_vel
 docker exec -it a300_0001 rviz            # RViz with fixed frame odom, RobotModel, TF, camera (robot/config/robot.rviz.tmpl, model-agnostic)
+scripts/foxglove_layout.sh [ns...]        # foxglove/<ns>.json: Foxglove layout with a 3D panel showing the robot's URDF (from /<ns>/robot_description; the panel only auto-loads /robot_description)
 docker exec a300_0000 camera_view [depth] # rqt_image_view of the D435i on the host display (needs x11_auth.sh)
 docker exec a300_0000 bash -c 'python3 /scripts/drive_test.py [lin_x] [ang_z] [seconds]'   # smoke test: commanded vs. odometry
 docker exec j100_0921 bash -c 'python3 /scripts/calibrate_velocity.py [--modes lin lat ang] [--levels 0.1 .. 1.0] [--ns <other robot>]'   # velocity calibration sweep (stows the arm first, low acceleration, exit 1 if any level is >10% off)

@@ -235,6 +235,14 @@ Every robot runs a `foxglove_bridge` that exposes only its own namespace. In Fox
 
 The transforms are on `/<robot>/tf` and `/<robot>/tf_static`, not on `/tf`. If the 3D panel shows no frames, enable those topics in its settings.
 
+**Robot model in the 3D panel.** The 3D panel loads a URDF on its own only from `/robot_description`; ours is `/<robot>/robot_description`, so the panel needs a URDF layer pointing at it. Either generate a ready-made layout:
+
+```bash
+scripts/foxglove_layout.sh            # foxglove/<robot>.json for every running robot (or pass namespaces)
+```
+
+and in Foxglove use *Layouts → Import from file* with `foxglove/<robot>.json` (a 3D panel following `base_link`, a grid on `odom`, and the robot's URDF), or add it by hand: 3D panel settings → *Custom layers* → **+** → *URDF*, *Source* = *Topic*, *Topic* = `/<robot>/robot_description`, and turn on *Scene → Ignore COLLADA <up_axis>* (like RViz; `mtu32_description`'s top plate is `Y_UP` and would otherwise be rotated). The `package://` meshes are served by the robot's bridge. The Jackals' `top_assy_rev1.dae` is 41 MB, so the model takes a few seconds to appear, longer over Wi-Fi.
+
 ### ROS interface
 
 All topics live under the robot's namespace (`a300_0000`, `j100_0001`, …, whatever model each slot runs).
