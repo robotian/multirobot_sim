@@ -385,9 +385,12 @@ def compute(db):
 """
 
 WHEEL_BRAKE_SCRIPT = """
+import os
 import time
 
 import numpy as np
+
+_DEBUG = os.environ.get("FLEET_DEBUG", "0") == "1"
 
 
 def setup(db):
@@ -395,6 +398,11 @@ def setup(db):
     st.art = None
     st.latched = False
     st.idle_since = None
+    st.last_dbg = 0.0
+
+
+def _log(msg):
+    print(f"[fleet] WheelBrake {msg}", flush=True)
 
 
 def compute(db):
@@ -405,20 +413,31 @@ def compute(db):
             st.art = Articulation(str(db.inputs.chassisPath))
             names = list(st.art.dof_names)
             st.dofs = [names.index(n) for n in str(db.inputs.wheelNames).split(",") if n in names]
+            _log(f"{db.inputs.chassisPath}: wheel dofs {st.dofs}")
         except Exception as e:
             db.log_warning(f"WheelBrake: articulation not ready yet ({e}), retrying next tick")
             st.art = None
             return
     commanded = max(abs(float(db.inputs.cmd_v)), abs(float(db.inputs.cmd_w)), abs(float(db.inputs.cmd_y))) > 1e-4
+    now = time.monotonic()
+    if _DEBUG and now - st.last_dbg > 5.0:
+        st.last_dbg = now
+        stiff = st.art.get_dof_gains(dof_indices=st.dofs)[0].numpy()[0]
+        pos = st.art.get_dof_positions(dof_indices=st.dofs).numpy()[0]
+        tgt = st.art.get_dof_position_targets(dof_indices=st.dofs).numpy()[0]
+        vel = st.art.get_dof_velocities(dof_indices=st.dofs).numpy()[0]
+        _log(f"latched={st.latched} commanded={commanded} stiffness={np.round(stiff, 1)} "
+             f"pos-target={np.round(pos - tgt, 4)} vel={np.round(vel, 3)}")
     if commanded:
         st.idle_since = None
         if st.latched:
             st.art.set_dof_gains(stiffnesses=np.zeros(len(st.dofs)), dof_indices=st.dofs)
             st.latched = False
+            if _DEBUG:
+                _log("released")
         return
     if st.latched:
         return
-    now = time.monotonic()
     if st.idle_since is None:
         st.idle_since = now
     speed = np.abs(st.art.get_dof_velocities(dof_indices=st.dofs).numpy()[0]).max()
@@ -427,6 +446,8 @@ def compute(db):
         st.art.set_dof_position_targets(pos, dof_indices=st.dofs)
         st.art.set_dof_gains(stiffnesses=np.full(len(st.dofs), float(db.inputs.stiffness)), dof_indices=st.dofs)
         st.latched = True
+        if _DEBUG:
+            _log(f"latched at wheel speed {speed:.3f} rad/s")
 """
 
 # Velocity feedback between cmd_vel and the DifferentialController (see VELCTL_* below): PI on the chassis'
