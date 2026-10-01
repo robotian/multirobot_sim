@@ -538,6 +538,56 @@ def cleanup(db):
         state.pub = None
 """
 
+# cmd_vel as geometry_msgs/TwistStamped, like the real Clearpath (Jazzy) platform: isaacsim.ros2.bridge's
+# ROS2SubscribeTwist only takes plain Twist and has no stamped option, so this ScriptNode subscribes with an
+# in-process rclpy node (same mechanism and reasoning as GPS_READ_SCRIPT) and exposes the same outputs
+# (linearVelocity/angularVelocity, holding the last message like the bridge node did), so the drive graph is
+# unchanged. Pending messages are drained every tick without blocking.
+CMD_VEL_SCRIPT = """
+import rclpy
+from geometry_msgs.msg import TwistStamped
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.node import Node
+
+
+def setup(db):
+    db.per_instance_state.node = None
+
+
+def compute(db):
+    state = db.per_instance_state
+    if state.node is None:
+        if not rclpy.ok():
+            rclpy.init()
+        ns = str(db.inputs.namespace)
+        state.node = Node(f"cmd_vel_sub_{ns}", namespace=ns)
+        state.last = None
+
+        def on_cmd(msg):
+            state.last = msg
+
+        state.sub = state.node.create_subscription(TwistStamped, str(db.inputs.topicName), on_cmd, 10)
+        state.executor = SingleThreadedExecutor()
+        state.executor.add_node(state.node)
+    for _ in range(20):  # drain everything queued since the last tick
+        before = state.last
+        state.executor.spin_once(timeout_sec=0.0)
+        if state.last is before:
+            break
+    if state.last is not None:
+        t = state.last.twist
+        db.outputs.linearVelocity = [t.linear.x, t.linear.y, t.linear.z]
+        db.outputs.angularVelocity = [t.angular.x, t.angular.y, t.angular.z]
+
+
+def cleanup(db):
+    state = db.per_instance_state
+    if state.node is not None:
+        state.executor.shutdown()
+        state.node.destroy_node()
+        state.node = None
+"""
+
 # Real MTU robots' 2D lidar (a200_0333's Hokuyo UST, j100_0936's SICK LMS1xx): both declare (or, for the SICK,
 # really have -- clearpath_config's own lms1xx schema just doesn't expose it as a robot.yaml field the way
 # urg_node's does) the same ~270deg FOV -- hokuyo's is the real robot.yaml's own urg_node.angle_min/max
@@ -1216,7 +1266,7 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
         ("Tick", "omni.graph.action.OnPlaybackTick"),
         ("SysTime", "isaacsim.core.nodes.IsaacReadSystemTime"),
         # --- drive: cmd_vel -> wheel velocities (diff drive for every model; BodyDrive adds Ridgeback's sideways motion below)
-        ("CmdVel", "isaacsim.ros2.bridge.ROS2SubscribeTwist"),
+        ("CmdVel", "omni.graph.scriptnode.ScriptNode"),  # TwistStamped, see CMD_VEL_SCRIPT
         ("BreakLin", "omni.graph.nodes.BreakVector3"),
         ("BreakAng", "omni.graph.nodes.BreakVector3"),
         # --- state: odometry, tf, joint states
@@ -1226,8 +1276,9 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
         ("PubJoints", "isaacsim.ros2.bridge.ROS2PublishJointState"),
     ]
     values = [
-        ("CmdVel.inputs:nodeNamespace", ns),
+        ("CmdVel.inputs:namespace", ns),
         ("CmdVel.inputs:topicName", "cmd_vel"),
+        ("CmdVel.inputs:script", CMD_VEL_SCRIPT),
         ("Odom.inputs:chassisPrim", [usdrt_sdf.Path(chassis)]),
         ("PubOdom.inputs:nodeNamespace", ns),
         ("PubOdom.inputs:topicName", "platform/odom"),
@@ -1248,7 +1299,10 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
         ("CmdVel.outputs:linearVelocity", "BreakLin.inputs:tuple"),
         ("CmdVel.outputs:angularVelocity", "BreakAng.inputs:tuple"),
     ]
-    create_attributes = []
+    create_attributes = [
+        ("CmdVel.inputs:namespace", "token"), ("CmdVel.inputs:topicName", "token"),
+        ("CmdVel.outputs:linearVelocity", "double[3]"), ("CmdVel.outputs:angularVelocity", "double[3]"),
+    ]
 
     # Every model, including Ridgeback, drives forward/back and rotation via real diff_4wd.yaml-style wheel
     # rolling -- see MODEL_PARAMS' r100 comment for why Ridgeback's sideways motion needs a different mechanism

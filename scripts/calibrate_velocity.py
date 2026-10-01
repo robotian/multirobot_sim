@@ -23,7 +23,7 @@ import time
 import xml.etree.ElementTree as ET
 
 import rclpy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import JointState
 
@@ -44,7 +44,7 @@ frame_dt = max(1, int(args.physics_hz // args.sim_rate_hz)) / args.physics_hz
 
 rclpy.init()
 node = rclpy.create_node("calibrate_velocity")
-pub = node.create_publisher(Twist, f"/{ns}/cmd_vel", 10)
+pub = node.create_publisher(TwistStamped, f"/{ns}/cmd_vel", 10)
 poses = []  # (x, y, yaw, pitch_deg, roll_deg) per odom message
 joints = {}
 
@@ -98,14 +98,17 @@ def stow_arm():
 
 
 def twist(kind, v):
-    m = Twist()
+    """Publish a cmd_vel (geometry_msgs/TwistStamped, as on the real Clearpath platform) on one axis."""
+    m = TwistStamped()
+    m.header.stamp = node.get_clock().now().to_msg()
+    m.header.frame_id = "base_link"
     if kind == "lin":
-        m.linear.x = float(v)
+        m.twist.linear.x = float(v)
     elif kind == "lat":
-        m.linear.y = float(v)
+        m.twist.linear.y = float(v)
     else:
-        m.angular.z = float(v)
-    return m
+        m.twist.angular.z = float(v)
+    pub.publish(m)
 
 
 def run_level(kind, target):
@@ -115,7 +118,7 @@ def run_level(kind, target):
     t0 = time.time()
     while time.time() - t0 < ramp + args.hold:
         t = time.time() - t0
-        pub.publish(twist(kind, math.copysign(min(abs(target), acc * t), target)))
+        twist(kind, math.copysign(min(abs(target), acc * t), target))
         spin(0.05)
     seg = poses[n0:]
     a = int(len(seg) * (ramp + 0.4 * args.hold) / (ramp + args.hold))
@@ -137,9 +140,9 @@ def run_level(kind, target):
         v -= math.copysign(acc * 0.05, target)
         if v * target < 0:
             v = 0.0
-        pub.publish(twist(kind, v))
+        twist(kind, v)
         spin(0.05)
-    pub.publish(Twist())
+    twist("lin", 0.0)
     spin(1.0)
     return got, tilt
 

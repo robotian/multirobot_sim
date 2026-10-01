@@ -241,7 +241,7 @@ All topics live under the robot's namespace (`a300_0000`, `j100_0001`, …, what
 
 | Topic | Type | Notes |
 |---|---|---|
-| `cmd_vel` | `geometry_msgs/Twist` | input; skid-steer, limits depend on the model (`MODEL_PARAMS` in `sim/scripts/setup_scene.py`) |
+| `cmd_vel` | `geometry_msgs/TwistStamped` | input (as on the real Clearpath Jazzy platform; plain `Twist` is ignored); skid-steer, limits depend on the model (`MODEL_PARAMS` in `sim/scripts/setup_scene.py`) |
 | `platform/odom` | `nav_msgs/Odometry` | |
 | `platform/joint_states` | `sensor_msgs/JointState` | the four wheel joints |
 | `tf`, `tf_static` | `tf2_msgs/TFMessage` | `odom → base_link` from the sim, the rest from `robot_state_publisher` |

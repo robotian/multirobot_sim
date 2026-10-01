@@ -11,7 +11,7 @@ import sys
 import time
 
 import rclpy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
 
 lin = float(sys.argv[1]) if len(sys.argv) > 1 else 0.5
@@ -21,9 +21,18 @@ ns = os.environ.get("ROBOT_NAMESPACE", "a300_0000")
 
 rclpy.init()
 node = rclpy.create_node("drive_test")
-pub = node.create_publisher(Twist, f"/{ns}/cmd_vel", 10)
+pub = node.create_publisher(TwistStamped, f"/{ns}/cmd_vel", 10)
 last = {}
 node.create_subscription(Odometry, f"/{ns}/platform/odom", lambda m: last.update(msg=m, t=time.time()), 10)
+
+
+def publish_cmd(lin_x=0.0, lin_y=0.0, ang_z=0.0):
+    """cmd_vel is geometry_msgs/TwistStamped (as on the real Clearpath platform)."""
+    m = TwistStamped()
+    m.header.stamp = node.get_clock().now().to_msg()
+    m.header.frame_id = "base_link"
+    m.twist.linear.x, m.twist.linear.y, m.twist.angular.z = float(lin_x), float(lin_y), float(ang_z)
+    pub.publish(m)
 
 
 def spin(seconds):
@@ -45,15 +54,13 @@ while pub.get_subscription_count() == 0:  # wait for the sim's subscriber before
 spin(0.3)
 x0, y0, th0 = pose()
 t0 = time.time()
-msg = Twist()
-msg.linear.x, msg.angular.z = lin, ang
 while time.time() - t0 < dur:
-    pub.publish(msg)
+    publish_cmd(lin, 0.0, ang)
     spin(0.05)
 elapsed = time.time() - t0
 v = last["msg"].twist.twist
 x1, y1, th1 = pose()
-pub.publish(Twist())
+publish_cmd()
 spin(1.5)
 xs, ys, ths = pose()
 dth = math.atan2(math.sin(th1 - th0), math.cos(th1 - th0))
