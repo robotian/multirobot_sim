@@ -81,8 +81,8 @@
         <button id="spawnBtn" onclick="spawn()" disabled>Spawn</button>
       </div>
       <div class="muted" style="font-size:12px">x, y in m (world frame, the lanes run along +x), yaw in degrees (0 = facing +x).
-        Click a robot on the map to select it, click elsewhere to move it there. Spawn replaces the robots in the
-        scene and (re)starts their containers; the sim keeps running.</div>
+        Click a robot on the map to select it, click elsewhere to move it there. Spawn (re)starts the robots'
+        containers; into an empty scene it takes a few seconds, replacing robots restarts the sim (~30 s).</div>
       <div id="slots"></div>
       <canvas id="spawnMap" style="width:100%;height:260px;background:var(--bg);border:1px solid var(--line);border-radius:6px;margin-top:8px;cursor:crosshair"></canvas>
     </section>

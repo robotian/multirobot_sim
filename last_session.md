@@ -1422,3 +1422,15 @@ User: "with headed mode, and three robot spawning. the simulation crashes" (j100
   frames. Verified: crash config 0/5, user's fleet 0/5 (custom + default poses), data sane (2D a200_0333/a200_0284, 3D cloud), cost ~13 ms/frame.
 - Not done: headed-mode run of the final code (all verification in stream mode; headed was ruled out as a factor); IMU still on the plugin.
 - a200_0333's robot container exits with code 2: it has no robot_data (pre-existing, unrelated).
+
+## Addendum: headed respawn crash -> replacing robots restarts the sim (branch worktree-respawn-restart)
+User: "ok, let me know the result" (after the lidar fix was merged as PR #7). Headed test of the merged code from the user's checkout:
+first spawn of the 3-robot fleet at the custom poses alive 2 min (lidar fix holds, lidar data fine), but the respawn to the default poses
+died 15 s later: SIGABRT in libnrend.so (RTX renderer) from a Python USD change; the in-place DeletePrims of the old robots had logged
+ScriptNode.release errors. Not chased further (render products of deleted cameras are the likely leftover).
+- Fix: fleet_ctl.spawn restarts the sim when robots are present; the request carries at_start (ignored by the running sim, so it can't
+  start an in-place replacement before the restart); spawn_loop spawns the unanswered pending request at start, falls back to the applied
+  one if rejected (last_error keeps the reason), reports boot=done; wait_scene waits for it. First spawn into an empty scene unchanged.
+- Verified headed (worktree scripts mounted via a test-only override): first spawn 2 min alive; respawns default/custom ~27 s each, alive
+  120/90/60 s; a rejected respawn reports "a200_0284 and j100_0921 are less than 1 m apart; the previous robots are back"; reset brings the
+  same robots back. Not verified: the web UI page itself (it calls fleet.sh spawn -> same fleet_ctl path).

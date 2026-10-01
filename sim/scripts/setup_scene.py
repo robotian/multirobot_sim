@@ -2048,6 +2048,7 @@ _state = {
     "models": [],  # models that can be spawned (imported)
     "robots": [],  # robots in the scene: {slot, ns, model, x, y, yaw}
     "spawn": None,  # last request handled: {id, state: spawning | done | error, message}
+    "boot": "pending",  # "done" once the requests found at start (see spawn_loop) are spawned or rejected
 }
 
 
@@ -2184,25 +2185,36 @@ def _read_json(path):
         return None
 
 
-async def spawn_loop(app, stage, og, usdrt_sdf):
-    """Poll FLEET_REQUEST; a request with a new id replaces the robots. At start the sim first spawns
-    FLEET_APPLIED, the last request that worked (sim restart = same robots back at their spawn poses); the request
-    file itself is only replayed if it was never handled (no FLEET_APPLIED yet, e.g. written while the sim was down)."""
+async def spawn_loop(app, stage, og, usdrt_sdf, prev_state=None):
+    """Spawn the requests found at start, then poll FLEET_REQUEST; a request with a new id replaces the robots.
+
+    At start: FLEET_REQUEST if the previous run never answered it (scripts/fleet_ctl.py replaces robots that way: it
+    writes the request and restarts the sim, because removing robots from a running sim crashed the renderer), falling
+    back to FLEET_APPLIED, the last request that worked, if that one is rejected (and plain restarts, "Reset scene",
+    bring back the same robots). Ids answered before this start are not replayed."""
     applied, pending = _read_json(FLEET_APPLIED), _read_json(FLEET_REQUEST)
-    boot = applied or pending
-    # ids handled already: the applied one (spawned now) and a request answered before this start (e.g. rejected)
+    answered = ((prev_state or {}).get("spawn") or {}).get("id")
+    boot = []
+    if pending and pending.get("id") not in (answered, (applied or {}).get("id")):
+        boot.append(pending)
+    if applied:
+        boot.append(applied)
+    if not boot:
+        write_state(boot="done")
     handled = {r.get("id") for r in (applied, pending) if r}
     next_check = 0.0
     while True:
         await app.next_update_async()
-        if boot is not None:
-            req, boot = boot, None
+        booting = bool(boot)
+        if booting:
+            req = boot.pop(0)
         else:
             if time.time() < next_check:
                 continue
             next_check = time.time() + 0.5
             req = _read_json(FLEET_REQUEST)
-            if req is None or req.get("id") in handled:
+            # at_start: written for the restart that fleet_ctl is about to do -- the next start spawns it
+            if req is None or req.get("id") in handled or req.get("at_start"):
                 continue
         last_id = req.get("id")
         handled.add(last_id)
@@ -2227,14 +2239,20 @@ async def spawn_loop(app, stage, og, usdrt_sdf):
         except Exception as e:
             state, msg = "error", f"{type(e).__name__}: {e}"
             log(f"spawn request {last_id} failed:\n" + traceback.format_exc())
+        if state == "error":  # kept: a start-up fallback to the applied request overwrites "spawn" right after
+            write_state(last_error={"id": last_id, "message": msg})
         write_state(
             robots=[{"slot": i, "ns": ns, "model": model, "x": p[0], "y": p[1], "yaw": p[2]}
                     for i, ((ns, model), p) in enumerate(zip(ROBOTS, ROBOT_POSES))],
             spawn={"id": last_id, "state": state, "message": msg},
         )
+        if booting and (state == "done" or not boot):
+            boot.clear()  # the start-up spawn is settled (a rejected new request fell back to the applied one)
+            write_state(boot="done")
 
 
 async def main():
+    prev_state = _read_json(FLEET_STATE)  # the previous run's report: which request it answered last
     try:
         write_state()
         app = omni.kit.app.get_app()
@@ -2278,7 +2296,7 @@ async def main():
         log("FATAL error while building the scene:\n" + traceback.format_exc())
         write_state(scene="error", error=traceback.format_exc(limit=3))
         return
-    await spawn_loop(app, stage, og, usdrt_sdf)
+    await spawn_loop(app, stage, og, usdrt_sdf, prev_state)
 
 
 asyncio.ensure_future(main())
