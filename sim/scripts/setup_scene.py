@@ -1234,8 +1234,11 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
         ("PubOdom.inputs:chassisFrameId", "base_link"),
         ("PubOdom.inputs:odomFrameId", "odom"),
         ("PubTfOdom.inputs:nodeNamespace", ns),
-        ("PubTfOdom.inputs:parentFrameId", "odom"),
-        ("PubTfOdom.inputs:childFrameId", "base_link"),
+        # Exact pose as its own TF branch, ground_truth -> base_link_ground_truth: odom -> base_link belongs to the
+        # robot's platform EKF (robot/bin/ekf), and a frame can have only one parent. platform/odom (above) stays in
+        # the odom frame: it is the EKF's wheel-odometry input, like the real platform/odom.
+        ("PubTfOdom.inputs:parentFrameId", "ground_truth"),
+        ("PubTfOdom.inputs:childFrameId", "base_link_ground_truth"),
         ("PubJoints.inputs:nodeNamespace", ns),
         ("PubJoints.inputs:topicName", "platform/joint_states"),
         ("PubJoints.inputs:targetPrim", [usdrt_sdf.Path(chassis)]),

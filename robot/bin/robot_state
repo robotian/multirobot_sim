@@ -1,8 +1,9 @@
 #!/bin/bash
 # What the Clearpath robot service does on the real A300: build the robot description from
 # /etc/clearpath/robot.yaml and run robot_state_publisher, so the full TF tree (base_link -> chassis ->
-# wheels, top plate, camera_0_link, ...) is published under the robot's namespace. The sim only publishes
-# odom -> base_link and camera_0_link -> camera_0_color_optical_frame; wheel poses come from platform/joint_states.
+# wheels, top plate, camera_0_link, ...) is published under the robot's namespace. odom -> base_link comes from
+# the platform EKF (robot/bin/ekf); the sim publishes ground_truth -> base_link_ground_truth and camera_0_link ->
+# camera_0_color_optical_frame; wheel poses come from platform/joint_states.
 set -e
 ns="${ROBOT_NAMESPACE:?}"
 ros2 run clearpath_generator_common generate_description -s /etc/clearpath > /dev/null

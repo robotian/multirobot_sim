@@ -93,6 +93,8 @@ generate_srdf
 export ROS_NAMESPACE="${ROBOT_NAMESPACE}"
 # Background service, like the robot's own systemd unit; restarted if it dies.
 (while true; do robot_state || true; sleep 2; done) > /tmp/robot_state.log 2>&1 &
+# The platform EKF (robot/bin/ekf): owns odom -> base_link, as on the real robot.
+(while true; do ekf || true; sleep 2; done) > /tmp/ekf.log 2>&1 &
 (while true; do foxglove || true; sleep 2; done) > /tmp/foxglove.log 2>&1 &
 # Fake serial hardware for pruner_action_server (see robot/bin/pruner_stub) -- harmless on models that never
 # launch it; restarted like the others so /dev/ttyOpenCR survives across a stub crash.

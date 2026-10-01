@@ -1,0 +1,14 @@
+#!/bin/bash
+# What the Clearpath platform service runs on the real robot: robot_localization's ekf_node with the generated
+# /etc/clearpath/platform/config/localization.yaml (written by generate_params), fusing platform/odom (+ the IMU
+# where the robot has one) into platform/odom/filtered and publishing the odom -> base_link TF. The sim publishes
+# its exact pose only as ground_truth -> base_link_ground_truth, so base_link has exactly one parent: this EKF.
+set -e
+ns="${ROBOT_NAMESPACE:?}"
+params=/etc/clearpath/platform/config/localization.yaml
+[ -f "$params" ] || { echo "ekf: $params missing (generate_params failed?)"; exit 1; }
+exec ros2 run robot_localization ekf_node --ros-args \
+    -r __ns:=/"$ns" -r __node:=ekf_node \
+    --params-file "$params" -p publish_tf:=true \
+    -r odometry/filtered:=platform/odom/filtered \
+    -r /tf:=/"$ns"/tf -r /tf_static:=/"$ns"/tf_static -r /diagnostics:=diagnostics

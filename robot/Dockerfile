@@ -32,6 +32,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-jazzy-apriltag \
         ros-jazzy-apriltag-msgs \
         ros-jazzy-camera-ros \
+        ros-jazzy-navigation2 \
+        ros-jazzy-nav2-bringup \
         python3-serial \
         gettext-base x11-apps \
     && rm -rf /var/lib/apt/lists/*
@@ -74,7 +76,7 @@ RUN bash -c "source /opt/ros/jazzy/setup.bash && cd /opt/clearpath_robot_ws && c
 COPY config/robot.a300.yaml.tmpl config/robot.a200.yaml.tmpl config/robot.j100.yaml.tmpl config/robot.r100.yaml.tmpl config/robot.j100_0936.yaml.tmpl config/robot.rviz.tmpl /opt/clearpath/
 COPY entrypoint.sh /entrypoint.sh
 COPY bin/ /usr/local/bin/
-RUN chmod +x /entrypoint.sh /usr/local/bin/teleop /usr/local/bin/camera_view /usr/local/bin/robot_state /usr/local/bin/rviz /usr/local/bin/foxglove /usr/local/bin/generate_params /usr/local/bin/generate_srdf /usr/local/bin/pruner_stub /usr/local/bin/restart_ros /usr/local/bin/arm_goto /usr/local/bin/arm_joints
+RUN chmod +x /entrypoint.sh /usr/local/bin/teleop /usr/local/bin/camera_view /usr/local/bin/robot_state /usr/local/bin/ekf /usr/local/bin/rviz /usr/local/bin/foxglove /usr/local/bin/generate_params /usr/local/bin/generate_srdf /usr/local/bin/pruner_stub /usr/local/bin/restart_ros /usr/local/bin/arm_goto /usr/local/bin/arm_joints
 
 # ROS workspace user. Ubuntu 24.04 (this image's base) already ships a uid/gid 1000 "ubuntu" account, which is
 # renamed rather than adding a second uid 1000 user; 1000 is also the typical host user's uid, so files the

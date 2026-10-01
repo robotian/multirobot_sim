@@ -4,9 +4,9 @@
 # ~20s+ cost of a full `docker restart` (robot.yaml/setup.bash/robot.srdf regeneration, colcon_ws re-sourcing,
 # ...) and without touching any colcon_ws build state.
 #
-# entrypoint.sh starts robot_state/foxglove/pruner_stub each inside its own `while true; do X || true; sleep 2;
+# entrypoint.sh starts robot_state/ekf/foxglove/pruner_stub each inside its own `while true; do X || true; sleep 2;
 # done` loop -- killing just the current worker process (matched below) is enough; the still-running loop
-# detects the exit and respawns a fresh one within ~2s, so this script never needs to relaunch those three
+# detects the exit and respawns a fresh one within ~2s, so this script never needs to relaunch those four
 # itself. Everything else currently running (a manually `ros2 launch`'d/`ros2 run`'d stack -- e.g.
 # mtu32_bringup's sim_robot_upstart.launch.py and everything it spawned: move_group, servo_node,
 # grid_cutter_action_server, ...) has no such mechanism and is simply left stopped: this script has no way to
@@ -19,7 +19,7 @@ sleep 5  # margin for the self-healing loops' own restart (2s sleep) plus robot_
 
 echo
 echo "Self-healing services (entrypoint.sh restarts these automatically):"
-for pair in "robot_state_publisher:/tmp/robot_state.log" "foxglove_bridge:/tmp/foxglove.log" "pruner_stub:/tmp/pruner_stub.log"; do
+for pair in "robot_state_publisher:/tmp/robot_state.log" "ekf_node:/tmp/ekf.log" "foxglove_bridge:/tmp/foxglove.log" "pruner_stub:/tmp/pruner_stub.log"; do
     name="${pair%%:*}"
     log="${pair#*:}"
     if pgrep -f "$name" > /dev/null; then
