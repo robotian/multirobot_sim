@@ -980,6 +980,26 @@ def enable_wheel_ccd(stage, root):
             PhysxSchema.PhysxRigidBodyAPI.Apply(prim).CreateEnableCCDAttr(True)
 
 
+# Articulation solver iterations (PhysxArticulationAPI on each robot's articulation root). 0 = PhysX's default.
+ARTIC_POS_ITERS = int(os.environ.get("ARTIC_POS_ITERS", "0"))
+ARTIC_VEL_ITERS = int(os.environ.get("ARTIC_VEL_ITERS", "0"))
+
+
+def set_articulation_iterations(stage, root):
+    from pxr import PhysxSchema
+
+    n = 0
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root)):
+        if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+            api = PhysxSchema.PhysxArticulationAPI.Apply(prim)
+            if ARTIC_POS_ITERS:
+                api.CreateSolverPositionIterationCountAttr(ARTIC_POS_ITERS)
+            if ARTIC_VEL_ITERS:
+                api.CreateSolverVelocityIterationCountAttr(ARTIC_VEL_ITERS)
+            n += 1
+    return n
+
+
 IMPORT_SETTINGS = {
     "merge_fixed_joints": os.environ.get("FLEET_MERGE_FIXED", "0") == "1",
     "merge_mesh": False,
@@ -1925,6 +1945,9 @@ async def main():
                 await app.next_update_async()
             chassis = find_prim(stage, root, MODEL_PARAMS[model]["chassis_link"])
             enable_wheel_ccd(stage, root)
+            if ARTIC_POS_ITERS or ARTIC_VEL_ITERS:
+                log(f"{ns}: solver iterations pos={ARTIC_POS_ITERS} vel={ARTIC_VEL_ITERS} on "
+                    f"{set_articulation_iterations(stage, root)} articulation root(s)")
             if MODEL_PARAMS[model].get("massless_density"):
                 nd, nf = fix_massless_bodies(stage, root, MODEL_PARAMS[model]["massless_density"],
                                              MODEL_PARAMS[model].get("frame_mass", 0.02))
