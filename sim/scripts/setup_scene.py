@@ -422,11 +422,11 @@ def compute(db):
     now = time.monotonic()
     if _DEBUG and now - st.last_dbg > 5.0:
         st.last_dbg = now
-        stiff = st.art.get_dof_gains(dof_indices=st.dofs)[0].numpy()[0]
+        stiff, damp = (g.numpy()[0] for g in st.art.get_dof_gains(dof_indices=st.dofs))
         pos = st.art.get_dof_positions(dof_indices=st.dofs).numpy()[0]
         tgt = st.art.get_dof_position_targets(dof_indices=st.dofs).numpy()[0]
         vel = st.art.get_dof_velocities(dof_indices=st.dofs).numpy()[0]
-        _log(f"latched={st.latched} commanded={commanded} stiffness={np.round(stiff, 1)} "
+        _log(f"latched={st.latched} commanded={commanded} stiffness={np.round(stiff, 1)} damping={np.round(damp, 2)} "
              f"pos-target={np.round(pos - tgt, 4)} vel={np.round(vel, 3)}")
     if commanded:
         st.idle_since = None
