@@ -292,6 +292,18 @@ VELCTL_LATERAL = (0.3, 6.0, 1.5)  # kp, ki, integrator limit of the sideways cha
 VELCTL_ENABLED = os.environ.get("VELCTL", "1") == "1"  # VELCTL=0: open loop, for A/B comparisons
 # The feedback may command more than the robot's own limit (max_linear/max_angular clamp the *command* only).
 VELCTL_HEADROOM = 4.0
+# Wheel parking brake (WHEEL_BRAKE_SCRIPT). The wheel drives are pure velocity dampers (stiffness 0, damping 1000),
+# which resist speed but never hold a position, so at rest the robots rocked forward/back by ~2 cm (a300_00036: 69
+# direction reversals and 0.4 deg of yaw in 60 s with no cmd_vel at all; Diff's wheel targets were exactly 0): the
+# solver's small alternating contact torques integrate into wheel rotation. Real motor controllers hold position at
+# zero speed (their integral term acts as a spring). With no command, once every wheel is slower than
+# WHEEL_BRAKE_LATCH_SPEED (or after WHEEL_BRAKE_LATCH_DELAY s), the brake latches the wheels' current angles as
+# position targets with WHEEL_BRAKE_STIFFNESS; any non-zero command releases it (stiffness back to 0), so driving
+# and the velocity calibration are unchanged.
+WHEEL_BRAKE = True
+WHEEL_BRAKE_STIFFNESS = 1.0e4  # N*m/rad per wheel: a 5 N*m disturbance holds within 0.5 mrad
+WHEEL_BRAKE_LATCH_SPEED = 0.05  # rad/s
+WHEEL_BRAKE_LATCH_DELAY = 1.0  # s
 # Physics time advanced per rendered frame: Kit runs floor(PHYSICS_HZ / SIM_RATE_HZ) fixed PhysX steps per frame
 # (22 Hz frames, 60 Hz physics -> 2 steps = 1/30 s, not the 1/22 s the timeline counts). Measured: the position
 # change per published odom message is 1/30 s of commanded velocity at SIM_RATE_HZ=22, for every model.
@@ -366,6 +378,51 @@ def compute(db):
     state.articulation.set_velocities(
         linear_velocities=[[vx_w, vy_w, cur_vz_w]], angular_velocities=[[cur_wx, cur_wy, float(db.inputs.wz)]]
     )
+"""
+
+WHEEL_BRAKE_SCRIPT = """
+import time
+
+import numpy as np
+
+
+def setup(db):
+    st = db.per_instance_state
+    st.art = None
+    st.latched = False
+    st.idle_since = None
+
+
+def compute(db):
+    st = db.per_instance_state
+    if st.art is None:
+        from isaacsim.core.experimental.prims import Articulation
+        try:
+            st.art = Articulation(str(db.inputs.chassisPath))
+            names = list(st.art.dof_names)
+            st.dofs = [names.index(n) for n in str(db.inputs.wheelNames).split(",") if n in names]
+        except Exception as e:
+            db.log_warning(f"WheelBrake: articulation not ready yet ({e}), retrying next tick")
+            st.art = None
+            return
+    commanded = max(abs(float(db.inputs.cmd_v)), abs(float(db.inputs.cmd_w)), abs(float(db.inputs.cmd_y))) > 1e-4
+    if commanded:
+        st.idle_since = None
+        if st.latched:
+            st.art.set_dof_gains(stiffnesses=np.zeros(len(st.dofs)), dof_indices=st.dofs)
+            st.latched = False
+        return
+    if st.latched:
+        return
+    now = time.monotonic()
+    if st.idle_since is None:
+        st.idle_since = now
+    speed = np.abs(st.art.get_dof_velocities(dof_indices=st.dofs).numpy()[0]).max()
+    if speed < float(db.inputs.latchSpeed) or now - st.idle_since > float(db.inputs.latchDelay):
+        pos = st.art.get_dof_positions(dof_indices=st.dofs).numpy()
+        st.art.set_dof_position_targets(pos, dof_indices=st.dofs)
+        st.art.set_dof_gains(stiffnesses=np.full(len(st.dofs), float(db.inputs.stiffness)), dof_indices=st.dofs)
+        st.latched = True
 """
 
 # Velocity feedback between cmd_vel and the DifferentialController (see VELCTL_* below): PI on the chassis'
@@ -1415,6 +1472,28 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
         ("Diff.outputs:velocityCommand", "DriveFront.inputs:velocityCommand"),
         ("Diff.outputs:velocityCommand", "DriveRear.inputs:velocityCommand"),
     ]
+    if WHEEL_BRAKE:  # see WHEEL_BRAKE_SCRIPT
+        nodes += [("WheelBrake", "omni.graph.scriptnode.ScriptNode")]
+        create_attributes += [
+            ("WheelBrake.inputs:chassisPath", "token"), ("WheelBrake.inputs:wheelNames", "token"),
+            ("WheelBrake.inputs:cmd_v", "double"), ("WheelBrake.inputs:cmd_w", "double"),
+            ("WheelBrake.inputs:cmd_y", "double"), ("WheelBrake.inputs:stiffness", "double"),
+            ("WheelBrake.inputs:latchSpeed", "double"), ("WheelBrake.inputs:latchDelay", "double"),
+        ]
+        values += [
+            ("WheelBrake.inputs:script", WHEEL_BRAKE_SCRIPT),
+            ("WheelBrake.inputs:chassisPath", chassis),
+            ("WheelBrake.inputs:wheelNames", ",".join(front + rear)),
+            ("WheelBrake.inputs:stiffness", WHEEL_BRAKE_STIFFNESS),
+            ("WheelBrake.inputs:latchSpeed", WHEEL_BRAKE_LATCH_SPEED),
+            ("WheelBrake.inputs:latchDelay", WHEEL_BRAKE_LATCH_DELAY),
+        ]
+        connections += [
+            ("Tick.outputs:tick", "WheelBrake.inputs:execIn"),
+            ("BreakLin.outputs:x", "WheelBrake.inputs:cmd_v"),
+            ("BreakAng.outputs:z", "WheelBrake.inputs:cmd_w"),
+            ("BreakLin.outputs:y", "WheelBrake.inputs:cmd_y"),
+        ]
 
     if params["drive"] == "omni":
         # Ridgeback: BodyDrive patches in the one motion component real wheel rolling structurally cannot
