@@ -984,11 +984,64 @@ def import_urdf_if_needed(model):
         f.write(stamp)
 
 
+# Vegetation colliders. The lidars are PhysX raycasts (Raycast/RaycastSensor), which only hit prims with a collider,
+# and the plant/tree/rock assets come without any, so the lidars saw straight through them. collider_asset() writes a
+# small wrapper layer per asset into /sim/generated/colliders/ that references the asset and gives each of its meshes
+# a static, exact triangle-mesh collider (approximation "none"; static colliders don't need convex shapes, and a hull
+# around e.g. the oak's limb mesh would be a 20 m wall). The scene references the wrapper instead of the asset, so the
+# visuals and instancing (lavender) are unchanged and PhysX cooks each distinct mesh once. Meshes that are
+# PointInstancer prototypes (the trees' and shrubs' leaves/twigs) can't be colliders and stay invisible to the lidar.
+# They are solid for the robots too: driving into a hedge is a collision, as it would be in the field.
+VEGETATION_COLLIDERS = True
+_COLLIDER_DIR = "/sim/generated/colliders"
+
+
+def collider_asset(asset):
+    if not VEGETATION_COLLIDERS:
+        return asset
+    name = os.path.splitext(os.path.basename(asset))[0]
+    out = f"{_COLLIDER_DIR}/{name}.usda"
+    stamp = f"{asset} {os.path.getmtime(asset)} v1"
+    try:
+        if Sdf.Layer.FindOrOpen(out).customLayerData.get("collider_stamp") == stamp:
+            return out
+    except Exception:
+        pass
+    os.makedirs(_COLLIDER_DIR, exist_ok=True)
+    src = Usd.Stage.Open(asset)
+    st = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(st, UsdGeom.GetStageUpAxis(src))
+    UsdGeom.SetStageMetersPerUnit(st, UsdGeom.GetStageMetersPerUnit(src))
+    root = st.DefinePrim("/Root", "Xform")
+    root.GetReferences().AddReference(asset)
+    st.SetDefaultPrim(root)
+    # Opinions below an instanceable prim are ignored, so un-instance any inside the asset (the rocks have one).
+    while True:
+        inst = [q for q in st.Traverse() if q.IsInstanceable()]
+        if not inst:
+            break
+        for q in inst:
+            q.SetInstanceable(False)
+    n = 0
+    it = iter(Usd.PrimRange(root))
+    for q in it:
+        if q.IsA(UsdGeom.PointInstancer):
+            it.PruneChildren()
+        elif q.IsA(UsdGeom.Mesh):
+            UsdPhysics.CollisionAPI.Apply(q)
+            UsdPhysics.MeshCollisionAPI.Apply(q).CreateApproximationAttr(UsdPhysics.Tokens.none)
+            n += 1
+    st.GetRootLayer().customLayerData = {"collider_stamp": stamp}
+    st.GetRootLayer().Export(out)
+    log(f"collider wrapper {out}: {n} mesh colliders")
+    return out
+
+
 def add_lavender(stage, path, pos, rot_z=0.0):
-    """One lavender clump (~2 x 2 x 1.3 m) from LAVENDER_USD. instanceable=True shares the (heavy) mesh data
-    and BVH between the copies instead of duplicating it per prim."""
+    """One lavender clump (~1.2 m wide, ~0.75 m tall at LAVENDER_SCALE) from LAVENDER_USD, with colliders (see
+    collider_asset). instanceable=True shares the (heavy) mesh data, BVH and cooked collider between the copies."""
     prim = stage.DefinePrim(path, "Xform")
-    prim.GetReferences().AddReference(LAVENDER_USD)
+    prim.GetReferences().AddReference(collider_asset(LAVENDER_USD))
     prim.SetInstanceable(True)
     xf = UsdGeom.Xformable(prim)
     xf.AddTranslateOp().Set(Gf.Vec3d(pos[0], pos[1], pos[2] + LAVENDER_BASE_Z))
@@ -1030,7 +1083,7 @@ def add_scatter(stage, root, usds, count, dist, height, seed, arc_deg=80.0):
         k = rng.uniform(*height) / max(sizes[u], 1e-6)
         # The asset's own root may carry xform ops, so it gets its own child prim under the placement Xform.
         prim = stage.DefinePrim(f"{root}/item_{t}", "Xform")
-        stage.DefinePrim(f"{root}/item_{t}/asset", "Xform").GetReferences().AddReference(u)
+        stage.DefinePrim(f"{root}/item_{t}/asset", "Xform").GetReferences().AddReference(collider_asset(u))
         xf = UsdGeom.Xformable(prim)
         xf.AddTranslateOp().Set(Gf.Vec3d(d * math.cos(ang), d * math.sin(ang), 0.0))
         xf.AddRotateXYZOp().Set(Gf.Vec3f(0.0, 0.0, rng.uniform(0, 360)))
