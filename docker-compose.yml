@@ -118,6 +118,11 @@ services:
       FLEET_VIEWPORT_RES: ${FLEET_VIEWPORT_RES:-}
       ROBOT_LOOKS: ${ROBOT_LOOKS:-full}
       FLEET_SNAPSHOT: ${FLEET_SNAPSHOT:-}
+      # stream (default): headless + WebRTC; headed: the full Isaac Sim desktop app in a window on the host
+      # display (run scripts/x11_auth.sh once per login first). See docker/isaac-entrypoint.sh.
+      SIM_MODE: ${SIM_MODE:-stream}
+      DISPLAY: ${DISPLAY:-:0}
+      XAUTHORITY: /tmp/.docker.xauth
     ports:
       - "49100:49100/tcp"   # WebRTC signalling
       - "47998:47998/udp"   # WebRTC media
@@ -129,6 +134,9 @@ services:
       - isaac-logs:/isaac-sim/.nvidia-omniverse/logs
       - isaac-config:/isaac-sim/.nvidia-omniverse/config
       - isaac-compute:/isaac-sim/.nv/ComputeCache
+      # X11 for SIM_MODE=headed (unused when streaming)
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
     deploy:
       resources:
         reservations:

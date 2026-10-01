@@ -62,7 +62,9 @@
     <section class="card">
       <h2>Simulation</h2>
       <div class="row">
-        <button onclick="post('/api/sim/start')">Start</button>
+        <label title="Stream: headless, view it with the WebRTC streaming client. Headed: Isaac Sim's own window on this machine's display (recreates the sim when changed).">View
+          <select id="simMode"><option value="stream">Stream (WebRTC)</option><option value="headed">Headed (local window)</option></select></label>
+        <button onclick="post('/api/sim/start', { mode: document.getElementById('simMode').value })">Start</button>
         <button class="danger" onclick="confirm('Stop and remove every container?') && post('/api/sim/stop')">Stop</button>
         <button class="ghost" onclick="post('/api/sim/reset')" title="Restart the sim container: fresh scene, robots back at spawn pose; robot ROS nodes keep running">Reset scene</button>
       </div>
@@ -130,7 +132,7 @@ async function refreshStatus() {
   const health = sim ? (sim.status.match(/\((\w+)/) || [])[1] : null;
   pill.textContent = 'sim: ' + (sim ? (health || sim.state) : 'not created');
   pill.className = 'pill ' + (!sim || sim.state !== 'running' ? 'bad' : health === 'healthy' ? 'ok' : 'warn');
-  document.getElementById('simInfo').textContent = sim ? `${sim.name}: ${sim.status} · NUM_ROBOTS=${status.num_robots}` : 'no sim container -- press Start';
+  document.getElementById('simInfo').textContent = sim ? `${sim.name}: ${sim.status} · ${status.sim_mode} · NUM_ROBOTS=${status.num_robots}` : 'no sim container -- press Start';
   document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
   if (!slotsInit) initSlots();
   renderRobots();
@@ -138,6 +140,7 @@ async function refreshStatus() {
 
 function initSlots() {
   slotsInit = true;
+  document.getElementById('simMode').value = status.sim_mode;
   const sel = document.getElementById('slotCount');
   sel.innerHTML = Array.from({ length: status.max_slots + 1 }, (_, i) => `<option>${i}</option>`).join('');
   sel.value = status.num_robots;

@@ -10,6 +10,7 @@ Stdlib only. Long operations run as background jobs whose output the page polls.
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import threading
@@ -179,6 +180,7 @@ def status():
         "models": available_models(),
         "robots": robots(),
         "max_slots": MAX_SLOTS,
+        "sim_mode": env.get("SIM_MODE", "stream"),
     }
 
 
@@ -197,8 +199,40 @@ def wait_sim_healthy(job, timeout=300):
     return False
 
 
-def act_sim_start(_):
-    return start_job("start sim", lambda j: j.run(["scripts/fleet.sh"]) == 0 and wait_sim_healthy(j))
+SIM_MODES = ("stream", "headed")
+
+
+def host_display():
+    """The X display for SIM_MODE=headed: this server's $DISPLAY, else the first local X socket (:N)."""
+    if os.environ.get("DISPLAY"):
+        return os.environ["DISPLAY"]
+    sockets = sorted(Path("/tmp/.X11-unix").glob("X*"))
+    return f":{sockets[0].name[1:]}" if sockets else None
+
+
+def act_sim_start(body):
+    # mode: "stream" (headless, WebRTC client) or "headed" (Isaac Sim's own window on this machine's display).
+    # Written to .env as SIM_MODE; fleet.sh's `docker compose up -d` recreates the sim when it changes.
+    mode = (body or {}).get("mode") or read_env().get("SIM_MODE", "stream")
+    if mode not in SIM_MODES:
+        raise ValueError(f"mode must be one of {SIM_MODES}")
+
+    def fn(j):
+        write_env({"SIM_MODE": mode})
+        env = dict(os.environ)
+        if mode == "headed":
+            display = host_display()
+            if not display:
+                j.log("headed mode needs an X display: no $DISPLAY and no /tmp/.X11-unix socket")
+                return False
+            env["DISPLAY"] = display
+            j.log(f"headed: DISPLAY={display}")
+            if j.run(["scripts/x11_auth.sh"], env=env) != 0:
+                return False
+        j.log(f".env: SIM_MODE={mode}")
+        return j.run(["scripts/fleet.sh"], env=env) == 0 and wait_sim_healthy(j)
+
+    return start_job(f"start sim ({mode})", fn)
 
 
 def act_sim_stop(_):
