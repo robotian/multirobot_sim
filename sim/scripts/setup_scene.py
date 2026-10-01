@@ -707,32 +707,27 @@ LIDAR2D_NUM_RAYS = 541  # ~0.5deg resolution over the 270deg FOV
 LIDAR2D_RANGE_MIN = 0.1
 LIDAR2D_RANGE_MAX = 10.0
 
-# isaacsim.sensors.experimental.physics.Raycast/RaycastSensor: a real per-physics-step PhysX raycast sensor
-# (its own C++ IRaycastSensor interface, acquired the same way IMU_READ_SCRIPT's IMU/IMUSensor is) -- entirely
-# separate from isaacsim.sensors.rtx, the broken extension add_lidar2d's own docstring (see its history) had
-# concluded blocked 2D lidar outright. Confirmed via this install's own benchmark_physx_lidar.py standalone
-# example and the extension's test suite, not assumed: ray_origins/ray_directions are per-ray vectors in the
-# sensor prim's own local frame (so nesting the sensor as a plain child of the real lidar link, no extra
-# translation/orientation, makes it inherit that link's own mount pose automatically, same as add_camera's
-# child-Xform pattern).
-#
-# Real bug found live in this "experimental"-namespace API, worked around here: get_data()['depths'] does NOT
-# report a genuine per-ray distance -- tested a 3-ray sensor (down/forward/up) and depths came back [0.1, 0.1,
-# 0.1] (exactly min_range) for all three regardless of what each ray actually hit, while get_data()
-# ['hit_positions'] for the SAME reading was correct per-ray (down: [0,0,-0.1], a real 0.1m hit; forward:
-# [3.77,0,0], a real ~3.77m hit on scene geometry; up: [0,0,0], genuinely no hit) -- confirmed depths is broken
-# specifically, not the sensor itself, since hit_positions independently gives the right per-ray answer.
-# Workaround: compute each ray's range as the Euclidean norm of its own hit_positions entry instead of trusting
-# depths at all. output_frame="SENSOR" (Raycast's own default) keeps hit_positions in the sensor's own local
-# frame, same frame ray_origins/ray_directions are already in, so this norm is directly the range in metres --
-# no extra transform needed. A hit_positions entry of exactly [0,0,0] means no hit (confirmed: the "up" ray
-# above, a genuine miss, reported exactly that), remapped to +Inf per REP-117 ("no return") rather than 0.0.
-# Publishes via a plain rclpy publisher, same reasoning as GPS_READ_SCRIPT: this is a per-tick computed reading,
-# not a literal, and no RTX-specific OGN LaserScan publisher node applies to non-RTX raycast data anyway.
+# The 2D/3D lidars cast their rays themselves, from their script nodes, with PhysX's scene-query API
+# (omni.physx get_physx_scene_query_interface().raycast_closest), once per frame (the 3D one spread over
+# LIDAR3D_TICKS_PER_SCAN frames). They used to be isaacsim.sensors.experimental.physics Raycast/RaycastSensor prims,
+# but that plugin segfaults the whole sim (exit 139) inside its own per-physics-step update, a second or two after
+# play: a200_0333 (its only sensors are the two lidars) as the first spawn at (0.4, -0.5) crashed 6/6 with the scene/
+# spawn split and 2/4 with the older one-shot startup, 0/5 with both lidars left out and 0/5 with these raycasts;
+# the user's 3-robot fleet crashed the same way at the default poses in headed mode. The minidump's faulting frame is
+# in libisaacsim.sensors.experimental.physics.plugin.so under omni.physx's step, dereferencing a garbage pointer --
+# not fixable from here. (That plugin also reported every ray's 'depths' as min_range; ranges came from
+# 'hit_positions'.) Rays start at range_min along their direction, like the plugin's min_range, and a miss is +Inf
+# (REP-117). Like the plugin, they also hit the robot's own colliders (Nav2's laser_filters box removes those).
+# Cost, a200_0333 alone (FLEET_DEBUG=1): render_fps ~29 without lidars, ~21 with both (~13 ms per frame for 541 +
+# 1440 rays), about what the plugin's 3D lidar alone cost (12.1 -> 10.4 fps in a 4-robot fleet).
 LIDAR2D_READ_SCRIPT = """
 import math
 
+import carb
+import numpy as np
+import omni.usd
 import rclpy
+from pxr import UsdGeom
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 
@@ -752,18 +747,11 @@ def compute(db):
     range_max = float(db.inputs.rangeMax)
 
     if state.sensor is None:
-        from isaacsim.sensors.experimental.physics import Raycast, RaycastSensor
-        path = str(db.inputs.sensorPath)
-        angles = [angle_min + (angle_max - angle_min) * i / max(num_rays - 1, 1) for i in range(num_rays)]
-        ray_dirs = [[math.cos(a), math.sin(a), 0.0] for a in angles]
-        ray_origins = [[0.0, 0.0, 0.0] for _ in angles]
-        try:
-            Raycast.create(path, ray_origins=ray_origins, ray_directions=ray_dirs,
-                            min_range=range_min, max_range=range_max)
-            state.sensor = RaycastSensor(path)
-        except Exception as e:
-            db.log_warning(f"Lidar2dRead: sensor not ready yet ({e}), retrying next tick")
-            return
+        from omni.physx import get_physx_scene_query_interface
+        state.sqi = get_physx_scene_query_interface()
+        state.sensor = str(db.inputs.sensorPath)  # the lidar link prim; rays fan out in its x-y plane
+        angles = np.linspace(angle_min, angle_max, num_rays)
+        state.dirs = np.stack([np.cos(angles), np.sin(angles), np.zeros(num_rays)], axis=1)
 
     if state.node is None:
         if not rclpy.ok():
@@ -774,16 +762,18 @@ def compute(db):
         import fleet_nodes  # destroyed by a respawn (cleanup() doesn't run when the graph is deleted)
         fleet_nodes.track(db.inputs.namespace, state)
 
-    frame = state.sensor.get_data()
-    hits = frame["hit_positions"]
-    if len(hits) == 0:
+    prim = omni.usd.get_context().get_stage().GetPrimAtPath(state.sensor)
+    if not prim.IsValid():
         return
-
-    n = len(hits)
-    ranges = []
-    for x, y, z in hits:
-        d = math.sqrt(float(x) * float(x) + float(y) * float(y) + float(z) * float(z))
-        ranges.append(float("inf") if d < 1e-6 else d)
+    m = np.array(UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0))  # lidar link -> world (row vectors)
+    w = state.dirs @ m[:3, :3]
+    w /= np.linalg.norm(w, axis=1, keepdims=True)
+    s = m[3, :3] + w * range_min  # each ray starts at range_min, like the plugin's min_range
+    cast, span, ranges = state.sqi.raycast_closest, range_max - range_min, []
+    for (sx, sy, sz), (wx, wy, wz) in zip(s.tolist(), w.tolist()):
+        hit = cast(carb.Float3(sx, sy, sz), carb.Float3(wx, wy, wz), span)
+        ranges.append(hit["distance"] + range_min if hit["hit"] else float("inf"))  # a miss is +Inf (REP-117)
+    n = len(ranges)
 
     msg = LaserScan()
     msg.header.stamp = state.node.get_clock().now().to_msg()
@@ -808,21 +798,14 @@ def cleanup(db):
 # a200_0333's real Velodyne VLP16: 16 channels over a real ±15deg vertical FOV (VLP16's actual, evenly-2deg-
 # spaced channel angles -- real hardware fires them in an interleaved, non-sequential order for timing reasons,
 # irrelevant here since this is a per-tick snapshot, not a simulated scan sweep), full 360deg horizontal.
-# H_COUNT (1deg horizontal resolution, 5760 rays total, matching VLP16's real ~10Hz/0.2deg ballpark closely
-# enough) genuinely crashed the whole sim (segfault, container exit 139) on the very first attempt -- root
-# cause turned out to be unrelated to ray count at all (see the instance-proxy explanation on the
-# Lidar3dRead wiring in build_ros_graph): once that real bug was fixed, 5760 rays was retested and is safe,
-# confirmed live (no crash, real point data, fps cost measured below) -- ray count itself was never the
-# problem, so this is the real target value, not a cautious reduction.
+# H_COUNT: 1deg horizontal resolution, 5760 rays per scan.
 # RANGE_MIN/MAX are real-hardware-representative (VLP16's real minimum is close to this; its real 100m max is
 # cut down to something sane for this scene's own scale). Z_OFFSET nudges every ray's own origin up by 4cm in
 # the sensor's local frame before casting -- found live that the flattened URDF's own lidar3d_0_link collision
 # (a cylinder representing the VLP16's base housing) has its top surface only ~3.4cm above lidar3d_0_laser's
 # own frame origin, so an unmoved horizontal ray would immediately self-intersect that housing; this offset
 # clears it (re-verified live: horizontal rays now correctly reach real scene geometry, not an immediate ~5cm
-# self-hit). Measured cost (FLEET_DEBUG=1, 4-robot fleet, only a200_0333 has this sensor): render_fps 12.1 -> 10.4
-# (2D lidar alone -> +3D lidar at full resolution), a real but modest ~14% additional cost on top of the
-# already camera-rendering-bound baseline.
+# self-hit).
 LIDAR3D_V_ANGLE_MIN = -0.2618  # -15deg
 LIDAR3D_V_ANGLE_MAX = 0.2618  # +15deg
 LIDAR3D_V_COUNT = 16
@@ -830,22 +813,22 @@ LIDAR3D_H_COUNT = 360  # 1deg horizontal resolution, 5760 rays total -- see comm
 LIDAR3D_RANGE_MIN = 0.4
 LIDAR3D_RANGE_MAX = 30.0
 LIDAR3D_Z_OFFSET = 0.04
+LIDAR3D_TICKS_PER_SCAN = 4  # a full cloud every 4 frames (~5 Hz at SIM_RATE_HZ 22); 4 of the 16 channels per frame
 
-# Same isaacsim.sensors.experimental.physics.Raycast/RaycastSensor mechanism as LIDAR2D_READ_SCRIPT, including
-# its own workaround for the same real depths-field bug (see that script's own comment for the full
-# explanation and how it was isolated) -- range/position both come from hit_positions, never from depths.
-# Publishes sensor_msgs/PointCloud2 (unorganized: height=1, width=point count) instead of LaserScan, since this
-# is a 3D point set, not a single-plane range array; misses (hit_positions exactly [0,0,0], confirmed live to be
-# this API's own "no hit" sentinel) are dropped from the cloud entirely rather than encoded as a sentinel point,
-# matching how a real point cloud publisher only emits actual returns. output_frame="SENSOR" (Raycast's own
-# default) reports each ray's hit as ray_origins[i] + depth*ray_directions[i] in the sensor prim's own frame, so
-# a per-ray ray_origins offset (Z_OFFSET) is already baked into hit_positions with no extra math needed when
-# packing points -- re-verify this live rather than assuming, same as everywhere else in this project.
+# Same scene-query raycasts as LIDAR2D_READ_SCRIPT (see the comment above it). Publishes sensor_msgs/PointCloud2
+# (unorganized: height=1, width=point count) in the lidar's own frame; a ray starts at (0, 0, Z_OFFSET) + range_min
+# along its direction and misses are dropped, as a real point cloud only carries returns. A full cloud is published
+# every ticksPerScan frames (v_count/ticksPerScan channels per frame), each channel cast from the pose of its frame,
+# so a moving robot's cloud is slightly skewed, like a real spinning lidar's.
 LIDAR3D_READ_SCRIPT = """
 import math
 import struct
 
+import carb
+import numpy as np
+import omni.usd
 import rclpy
+from pxr import Gf, UsdGeom
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2, PointField
 
@@ -867,26 +850,18 @@ def compute(db):
     z_offset = float(db.inputs.zOffset)
 
     if state.sensor is None:
-        from isaacsim.sensors.experimental.physics import Raycast, RaycastSensor
-        path = str(db.inputs.sensorPath)
-        local_pos = [float(v) for v in db.inputs.localPos]
-        local_quat = [float(v) for v in db.inputs.localQuat]
-        ray_dirs = []
-        for vi in range(v_count):
-            v_angle = v_min + (v_max - v_min) * vi / max(v_count - 1, 1)
-            cv, sv = math.cos(v_angle), math.sin(v_angle)
-            for hi in range(h_count):
-                h_angle = 2.0 * math.pi * hi / h_count
-                ray_dirs.append([cv * math.cos(h_angle), cv * math.sin(h_angle), sv])
-        ray_origins = [[0.0, 0.0, z_offset] for _ in ray_dirs]
-        try:
-            Raycast.create(path, translations=[local_pos], orientations=[local_quat],
-                            ray_origins=ray_origins, ray_directions=ray_dirs,
-                            min_range=range_min, max_range=range_max)
-            state.sensor = RaycastSensor(path)
-        except Exception as e:
-            db.log_warning(f"Lidar3dRead: sensor not ready yet ({e}), retrying next tick")
-            return
+        from omni.physx import get_physx_scene_query_interface
+        state.sqi = get_physx_scene_query_interface()
+        state.sensor = str(db.inputs.sensorPath)  # the chassis body; the lidar sits at localPos/localQuat on it
+        p, q = [float(v) for v in db.inputs.localPos], [float(v) for v in db.inputs.localQuat]
+        state.local = np.array(Gf.Matrix4d().SetTransform(Gf.Rotation(Gf.Quatd(q[0], q[1], q[2], q[3])), Gf.Vec3d(*p)))
+        h = 2.0 * math.pi * np.arange(h_count) / h_count
+        state.rows = []  # one (h_count, 3) array of unit directions (lidar frame) per vertical channel
+        for v in np.linspace(v_min, v_max, v_count):
+            state.rows.append(np.stack([math.cos(v) * np.cos(h), math.cos(v) * np.sin(h), np.full(h_count, math.sin(v))], axis=1))
+        state.next_row = 0
+        state.buf = bytearray()
+        state.n = 0
 
     if state.node is None:
         if not rclpy.ok():
@@ -897,19 +872,30 @@ def compute(db):
         import fleet_nodes  # destroyed by a respawn (cleanup() doesn't run when the graph is deleted)
         fleet_nodes.track(db.inputs.namespace, state)
 
-    frame = state.sensor.get_data()
-    hits = frame["hit_positions"]
-    if len(hits) == 0:
+    # A scan is spread over ticksPerScan ticks (a few channels per tick): 5760 Python raycasts in one tick would cost
+    # tens of ms. Points are in the lidar frame, measured from each ray's origin (0, 0, zOffset); misses are dropped.
+    prim = omni.usd.get_context().get_stage().GetPrimAtPath(state.sensor)
+    if not prim.IsValid():
         return
-
-    buf = bytearray()
-    n = 0
-    for x, y, z in hits:
-        x, y, z = float(x), float(y), float(z)
-        if x == 0.0 and y == 0.0 and z == 0.0:
-            continue
-        buf += struct.pack("<fff", x, y, z)
-        n += 1
+    m = state.local @ np.array(UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0))  # lidar -> world (row vectors)
+    o = np.array([0.0, 0.0, z_offset, 1.0]) @ m  # ray origin, world
+    cast, span = state.sqi.raycast_closest, range_max - range_min
+    per_tick = max(1, -(-len(state.rows) // max(1, int(db.inputs.ticksPerScan))))
+    for row in state.rows[state.next_row:state.next_row + per_tick]:
+        w = row @ m[:3, :3]
+        w /= np.linalg.norm(w, axis=1, keepdims=True)
+        s = o[:3] + w * range_min
+        for (sx, sy, sz), (wx, wy, wz), (dx, dy, dz) in zip(s.tolist(), w.tolist(), row.tolist()):
+            hit = cast(carb.Float3(sx, sy, sz), carb.Float3(wx, wy, wz), span)
+            if hit["hit"]:
+                r = hit["distance"] + range_min
+                state.buf += struct.pack("<fff", dx * r, dy * r, z_offset + dz * r)
+                state.n += 1
+    state.next_row += per_tick
+    if state.next_row < len(state.rows):
+        return
+    buf, n = state.buf, state.n
+    state.next_row, state.buf, state.n = 0, bytearray(), 0
 
     msg = PointCloud2()
     msg.header.stamp = state.node.get_clock().now().to_msg()
@@ -1133,7 +1119,7 @@ def import_urdf_if_needed(model):
         f.write(stamp)
 
 
-# Vegetation colliders. The lidars are PhysX raycasts (Raycast/RaycastSensor), which only hit prims with a collider,
+# Vegetation colliders. The lidars are PhysX scene-query raycasts, which only hit prims with a collider,
 # and the plant/tree/rock assets come without any, so the lidars saw straight through them. collider_asset() writes a
 # small wrapper layer per asset into /sim/generated/colliders/ that references the asset and gives each of its meshes
 # a static, exact triangle-mesh collider (approximation "none"; static colliders don't need convex shapes, and a hull
@@ -1762,7 +1748,7 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
     if params.get("lidar2d_link"):
         lidar_link = params["lidar2d_link"]
         lidar_body = find_prim(stage, root, lidar_link)
-        lidar_sensor_path = f"{lidar_body}/{lidar_link}_raycast"
+        lidar_sensor_path = lidar_body  # Lidar2dRead casts from this link's pose; no sensor prim is authored
         # "lidar2d_0" from the link's own "lidar2d_0_laser" name -- Clearpath's own sensor-index convention,
         # same reasoning as GPS's gps_<n> derivation.
         lidar_topic_stem = "_".join(lidar_link.split("_")[:2])
@@ -1792,18 +1778,10 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
         ]
         connections += [("Tick.outputs:tick", "Lidar2dRead.inputs:execIn")]
 
-    # --- 3D lidar (real robots with lidar3d_link only): see LIDAR3D_READ_SCRIPT's own comment for the sensor
-    # API, its shared depths-field workaround with 2D lidar, and the Z_OFFSET self-collision fix. lidar3d_link
-    # (e.g. "lidar3d_0_laser") survives flattening as its own real link, same as lidar2d_link, so its real TF
-    # frame name is just that string directly -- BUT unlike lidar2d_link, it can't be used as the raycast
-    # sensor's own *parent* prim: a200_0333's sensor_arch subtree (lidar3d_0_laser's own ancestor chain) is
-    # USD-instanceable, and authoring a new child prim under an instance proxy is rejected outright ("authoring
-    # to an instance proxy is not allowed", confirmed live -- the sensor silently never got created, retrying
-    # every tick). Worked around by parenting the raycast sensor under `chassis` instead (never instanced --
-    # it's the articulation root every drive/odometry node already targets) and computing lidar3d_link's real
-    # pose *relative to chassis* once here (both are static, real rigid links -- this offset never changes at
-    # runtime regardless of where the robot drives), passed to Raycast.create() as an explicit local
-    # translation/orientation instead of relying on parent-child nesting for the pose.
+    # --- 3D lidar (real robots with lidar3d_link only): see LIDAR3D_READ_SCRIPT. Its rays are cast from the chassis
+    # body's pose composed with lidar3d_link's pose relative to it (computed once here; both are rigid parts of one
+    # body), not from lidar3d_link itself: a200_0333's sensor_arch subtree is USD-instanceable, which once made
+    # authoring a sensor prim under it fail ("authoring to an instance proxy is not allowed"); the chassis is not.
     if params.get("lidar3d_link"):
         lidar3d_link = params["lidar3d_link"]
         laser_prim = stage.GetPrimAtPath(find_prim(stage, root, lidar3d_link))
@@ -1814,7 +1792,7 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
         rel_t = rel.ExtractTranslation()
         rel_q = rel.ExtractRotationQuat()
         rel_im = rel_q.GetImaginary()
-        lidar3d_sensor_path = f"{chassis}/{lidar3d_link}_raycast"
+        lidar3d_sensor_path = chassis  # Lidar3dRead casts from chassis * (rel_t, rel_q); no sensor prim is authored
         lidar3d_topic_stem = "_".join(lidar3d_link.split("_")[:2])
         nodes += [("Lidar3dRead", "omni.graph.scriptnode.ScriptNode")]
         create_attributes += [
@@ -1831,6 +1809,7 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
             ("Lidar3dRead.inputs:rangeMin", "double"),
             ("Lidar3dRead.inputs:rangeMax", "double"),
             ("Lidar3dRead.inputs:zOffset", "double"),
+            ("Lidar3dRead.inputs:ticksPerScan", "int"),
         ]
         values += [
             ("Lidar3dRead.inputs:sensorPath", lidar3d_sensor_path),
@@ -1846,6 +1825,7 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
             ("Lidar3dRead.inputs:rangeMin", LIDAR3D_RANGE_MIN),
             ("Lidar3dRead.inputs:rangeMax", LIDAR3D_RANGE_MAX),
             ("Lidar3dRead.inputs:zOffset", LIDAR3D_Z_OFFSET),
+            ("Lidar3dRead.inputs:ticksPerScan", LIDAR3D_TICKS_PER_SCAN),
             ("Lidar3dRead.inputs:script", LIDAR3D_READ_SCRIPT),
         ]
         connections += [("Tick.outputs:tick", "Lidar3dRead.inputs:execIn")]

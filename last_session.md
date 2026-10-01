@@ -1409,3 +1409,16 @@ robot, you can generate their default poses ... 'spawn' button load the robots t
   stale script nodes; overlap request rejected with robots untouched; Reset scene respawns the last good robots and does not replay the
   rejected one. NOT done: clicking through the page in a browser (JS only `node --check`ed, status API checked), headed mode, 3+ robots.
 - Side observation: ps/pgrep/pkill on the host hung (some /proc entry blocks); used `ss -ltnp` + kill instead.
+
+## Addendum: sim crash with 3 robots (headed) -> lidars no longer use Isaac's raycast plugin (branch worktree-raycast-crash)
+User: "with headed mode, and three robot spawning. the simulation crashes" (j100_0921, a200_0284, a200_0333), then "it is not fixed".
+- Segfault (exit 139) 1-2 s after play. Minidump (parsed with a stdlib script): faulting frame in
+  libisaacsim.sensors.experimental.physics.plugin.so under omni.physx's step = the Raycast/RaycastSensor lidars.
+- Isolation, a200_0333 alone (its only sensors are the 2 lidars; it has NO IMU) first-spawned at (0.4,-0.5): new code 6/6 crash, pre-split
+  code 2/4 (not a regression), both lidars off 0/5. Dead ends (each tested live): headed mode, vegetation colliders, wheel brake, robot looks,
+  pre-authoring sensor prims at spawn, no scene-only play before the first spawn, 3 s delayed first reading. Single-trial ablations misled
+  me twice (the crash is probabilistic) -- use >= 4 trials per variant.
+- Fix: LIDAR2D/LIDAR3D scripts cast rays with omni.physx scene queries (raycast_closest), numpy-vectorised directions, 3D scan over 4
+  frames. Verified: crash config 0/5, user's fleet 0/5 (custom + default poses), data sane (2D a200_0333/a200_0284, 3D cloud), cost ~13 ms/frame.
+- Not done: headed-mode run of the final code (all verification in stream mode; headed was ruled out as a factor); IMU still on the plugin.
+- a200_0333's robot container exits with code 2: it has no robot_data (pre-existing, unrelated).
