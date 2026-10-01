@@ -77,14 +77,17 @@ def read_request(applied=False):
         return None
 
 
-def write_request(robots):
-    """Write a spawn request ({model, x?, y?, yaw?} per slot); returns its id."""
+def write_request(robots, at_start=False):
+    """Write a spawn request ({model, x?, y?, yaw?} per slot); returns its id. at_start: only for the sim's next start
+    (the running sim ignores it), for replacing robots by restarting the sim."""
     FLEET_DIR.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(FLEET_DIR, 0o777)  # the sim (uid 1234) writes state.json here
     except OSError:
         pass
     req = {"id": uuid.uuid4().hex[:12], "written": time.time(), "robots": robots}
+    if at_start:
+        req["at_start"] = True
     tmp = FLEET_DIR / f".spawn_request.{os.getpid()}.tmp"
     tmp.write_text(json.dumps(req, indent=1))
     os.chmod(tmp, 0o666)
@@ -147,15 +150,25 @@ def scene_ready(state):
     return True if state["scene"] == "ready" else None
 
 
+def log_robots(state, log=print):
+    for r in state["robots"]:
+        log(f"  slot {r['slot']}: {r['ns']:<12} x={r['x']:g} y={r['y']:g} yaw={r['yaw']:g} deg")
+
+
 def wait_scene(timeout=900, log=print):
+    """Wait for the (re)started sim's scene and for the robots it spawns at start (a pending request it never
+    answered, else the last applied one -- see setup_scene.spawn_loop)."""
     t0 = time.time()
     if not wait(scene_ready, timeout, "the scene", log):
         return False
     state = read_state()
     log(f"scene ready ({state['lanes']} lanes) after {time.time() - t0:.0f} s; models: {', '.join(state['models'])}")
-    req = read_request(applied=True) or read_request()
-    if req:  # a restarted sim spawns the last applied request again (or a pending one if none was applied)
-        return wait_spawn(req["id"], timeout, log)
+    if not wait(lambda s: True if s.get("boot") == "done" else None, timeout, "the start-up spawn", log):
+        return False
+    state = read_state()
+    if state.get("spawn"):
+        log(f"spawned: {state['spawn']['message']}")
+        log_robots(state, log)
     return True
 
 
@@ -170,17 +183,35 @@ def wait_spawn(req_id, timeout=600, log=print):
         return False
     state = read_state()
     log(f"spawned: {state['spawn']['message']}")
-    for r in state["robots"]:
-        log(f"  slot {r['slot']}: {r['ns']:<12} x={r['x']:g} y={r['y']:g} yaw={r['yaw']:g} deg")
+    log_robots(state, log)
     return True
 
 
-def spawn(robots, timeout=600, log=print):
+def spawn(robots, timeout=900, log=print):
+    """Spawn `robots`. Into an empty scene the running sim adds them in place; robots already in the scene are
+    replaced by restarting the sim, which spawns the new request at start: removing robots from a running sim (their
+    graphs, cameras and render products) made the RTX renderer abort a few seconds later (headed mode, a 3-robot
+    respawn). If the sim rejects the request, it falls back to the previous robots."""
     if not wait(scene_ready, 900, "the scene", log):
         return False
-    req_id = write_request(robots)
+    state = read_state()
+    replace = bool(state["robots"])
+    req_id = write_request(robots, at_start=replace)
     log(f"spawn request {req_id}: " + (", ".join(r["model"] for r in robots) or "no robots"))
-    return wait_spawn(req_id, timeout, log)
+    if not replace:
+        return wait_spawn(req_id, timeout, log)
+    log(f"replacing {', '.join(r['ns'] for r in state['robots'])}: restarting the sim (~1 min)")
+    subprocess.run(["docker", "restart", SIM], check=True, capture_output=True)
+    if not wait_scene(timeout, log):
+        return False
+    state = read_state()
+    sp = state.get("spawn") or {}
+    if sp.get("id") == req_id and sp.get("state") == "done":
+        return True
+    err = state.get("last_error") or {}
+    msg = err.get("message") if err.get("id") == req_id else "not spawned"
+    log(f"spawn failed: {msg}" + ("; the previous robots are back" if state["robots"] else ""))
+    return False
 
 
 def main():
