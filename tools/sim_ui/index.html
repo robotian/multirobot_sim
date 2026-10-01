@@ -64,20 +64,27 @@
       <div class="row">
         <label title="Stream: headless, view it with the WebRTC streaming client. Headed: Isaac Sim's own window on this machine's display (recreates the sim when changed).">View
           <select id="simMode"><option value="stream">Stream (WebRTC)</option><option value="headed">Headed (local window)</option></select></label>
-        <button onclick="post('/api/sim/start', { mode: document.getElementById('simMode').value })">Start</button>
+        <button onclick="post('/api/sim/start', { mode: document.getElementById('simMode').value })"
+          title="Start Isaac Sim and load the scene (no robots; spawn them below once the scene is ready)">Start</button>
         <button class="danger" onclick="confirm('Stop and remove every container?') && post('/api/sim/stop')">Stop</button>
-        <button class="ghost" onclick="post('/api/sim/reset')" title="Restart the sim container: fresh scene, robots back at spawn pose; robot ROS nodes keep running">Reset scene</button>
+        <button class="ghost" onclick="post('/api/sim/reset')" title="Restart the sim container: fresh scene, the same robots spawned again at their spawn poses; robot ROS nodes keep running">Reset scene</button>
       </div>
       <div class="muted" id="simInfo"></div>
+      <div id="sceneInfo"></div>
     </section>
 
     <section class="card">
       <h2>Spawn robots</h2>
       <div class="row">
-        <label>Robots <select id="slotCount" onchange="renderSlots()"></select></label>
-        <button onclick="spawn()">Spawn (restarts sim)</button>
+        <label>Robots <select id="slotCount" onchange="renderSlots(); setDefaultPoses(true)"></select></label>
+        <button class="ghost" onclick="setDefaultPoses()" title="The sim's default layout for this many robots">Default poses</button>
+        <button id="spawnBtn" onclick="spawn()" disabled>Spawn</button>
       </div>
+      <div class="muted" style="font-size:12px">x, y in m (world frame, the lanes run along +x), yaw in degrees (0 = facing +x).
+        Click a robot on the map to select it, click elsewhere to move it there. Spawn replaces the robots in the
+        scene and (re)starts their containers; the sim keeps running.</div>
       <div id="slots"></div>
+      <canvas id="spawnMap" style="width:100%;height:260px;background:var(--bg);border:1px solid var(--line);border-radius:6px;margin-top:8px;cursor:crosshair"></canvas>
     </section>
 
     <section class="card">
@@ -127,36 +134,141 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;'
 // ------------------------------------------------------------ status
 async function refreshStatus() {
   try { status = await api('/api/status'); } catch (e) { return; }
-  const sim = status.sim;
+  const sim = status.sim, scene = status.scene;
   const pill = document.getElementById('simPill');
-  const health = sim ? (sim.status.match(/\((\w+)/) || [])[1] : null;
-  pill.textContent = 'sim: ' + (sim ? (health || sim.state) : 'not created');
-  pill.className = 'pill ' + (!sim || sim.state !== 'running' ? 'bad' : health === 'healthy' ? 'ok' : 'warn');
-  document.getElementById('simInfo').textContent = sim ? `${sim.name}: ${sim.status} · ${status.sim_mode} · NUM_ROBOTS=${status.num_robots}` : 'no sim container -- press Start';
+  const up = sim && sim.state === 'running';
+  const sp = scene && scene.spawn;
+  const spawning = sp && sp.state === 'spawning';
+  pill.textContent = 'sim: ' + (!sim ? 'not created' : !up ? sim.state : !scene ? 'starting'
+    : scene.scene !== 'ready' ? `scene ${scene.scene}` : spawning ? 'spawning robots'
+    : `scene ready, ${scene.robots.length} robot(s)`);
+  pill.className = 'pill ' + (!up || (scene && scene.scene === 'error') ? 'bad' : scene && scene.scene === 'ready' && !spawning ? 'ok' : 'warn');
+  document.getElementById('simInfo').textContent = sim ? `${sim.name}: ${sim.status} · ${status.sim_mode}` : 'no sim container -- press Start';
+  document.getElementById('sceneInfo').innerHTML = !scene ? '' :
+    (scene.robots.length ? `<table><tr><th>in the scene</th><th>model</th><th>x</th><th>y</th><th>yaw</th></tr>${scene.robots.map(r =>
+      `<tr><td>${esc(r.ns)}</td><td>${esc(r.model)}</td><td>${r.x.toFixed(2)}</td><td>${r.y.toFixed(2)}</td><td>${r.yaw.toFixed(0)}</td></tr>`).join('')}</table>`
+      : '<span class="muted">no robots in the scene</span>')
+    + (sp && sp.state === 'error' ? `<div style="color:var(--bad)">last spawn failed: ${esc(sp.message)}</div>` : '');
+  document.getElementById('spawnBtn').disabled = !(scene && scene.scene === 'ready') || spawning;
+  document.getElementById('spawnBtn').title = !(scene && scene.scene === 'ready') ? 'Start the sim and wait for the scene' : spawning ? 'spawning...' : '';
   document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
   if (!slotsInit) initSlots();
+  else if (scene && scene.scene === 'ready' && !defaultsKnown) { defaultsKnown = true; fillBlankPoses(); }
+  drawMap();
   renderRobots();
 }
 
+// ------------------------------------------------------------ spawn form
+let defaultsKnown = false, selSlot = 0;
 function initSlots() {
   slotsInit = true;
   document.getElementById('simMode').value = status.sim_mode;
   const sel = document.getElementById('slotCount');
   sel.innerHTML = Array.from({ length: status.max_slots + 1 }, (_, i) => `<option>${i}</option>`).join('');
-  sel.value = status.num_robots;
-  renderSlots(status.slots);
+  // prefill: what's in the scene now, else the last request, else .env's slots with default poses
+  const scene = status.scene, req = status.request;
+  const preset = scene && scene.robots.length ? scene.robots
+    : req && req.robots && req.robots.length ? req.robots
+    : status.slots.slice(0, status.num_robots).map(model => ({ model }));
+  sel.value = preset.length;
+  renderSlots(preset);
+  defaultsKnown = !!(scene && scene.scene === 'ready');
+  fillBlankPoses();
+  document.getElementById('spawnMap').addEventListener('click', mapClick);
+}
+function slotRows() { return [...document.querySelectorAll('#slots .slot')]; }
+function readSlots() {
+  return slotRows().map(r => ({ model: r.querySelector('select').value,
+    x: r.querySelector('.px').value, y: r.querySelector('.py').value, yaw: r.querySelector('.pyaw').value }));
 }
 function renderSlots(preset) {
   const n = +document.getElementById('slotCount').value;
-  const cur = preset || [...document.querySelectorAll('#slots select')].map(s => s.value);
-  document.getElementById('slots').innerHTML = Array.from({ length: n }, (_, i) =>
-    `<div class="row"><span class="muted" style="width:52px">slot ${i}</span><select>${status.models.map(m =>
-      `<option ${m === (cur[i] || status.slots[i]) ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>`).join('');
+  const cur = preset || readSlots();
+  const num = (v, cls, w) => `<input type="number" step="0.1" class="${cls}" style="width:${w}px" value="${v === undefined || v === null || v === '' ? '' : +(+v).toFixed(3)}" oninput="drawMap()">`;
+  document.getElementById('slots').innerHTML = Array.from({ length: n }, (_, i) => {
+    const c = cur[i] || {}, model = c.model || status.slots[i];
+    return `<div class="row slot"><span class="muted" style="width:46px">slot ${i}</span><select onchange="drawMap()">${status.models.map(m =>
+      `<option ${m === model ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select>
+      <label>x ${num(c.x, 'px', 70)}</label><label>y ${num(c.y, 'py', 70)}</label><label>yaw ${num(c.yaw, 'pyaw', 64)}</label></div>`;
+  }).join('');
+  drawMap();
+}
+function defaults(n) {
+  const d = status.scene && status.scene.default_poses && status.scene.default_poses[n];
+  return d || null;
+}
+function setDefaultPoses(quiet) {
+  const d = defaults(slotRows().length);
+  if (!d) return quiet || toast('the default poses come from the sim -- start it first');
+  slotRows().forEach((r, i) => { r.querySelector('.px').value = d[i][0]; r.querySelector('.py').value = d[i][1]; r.querySelector('.pyaw').value = d[i][2]; });
+  drawMap();
+}
+function fillBlankPoses() {
+  const d = defaults(slotRows().length);
+  if (!d) return;
+  slotRows().forEach((r, i) => ['.px', '.py', '.pyaw'].forEach((c, k) => { if (r.querySelector(c).value === '') r.querySelector(c).value = d[i][k]; }));
+  drawMap();
 }
 function spawn() {
-  const models = [...document.querySelectorAll('#slots select')].map(s => s.value);
-  if (confirm(`Restart the sim with ${models.length} robot(s): ${models.join(', ') || '(none)'}?`)) post('/api/spawn', { models });
+  const robots = readSlots();
+  if (robots.some(r => [r.x, r.y, r.yaw].some(v => v === '' || isNaN(+v)))) return toast('every slot needs x, y and yaw');
+  const inScene = status.scene ? status.scene.robots.length : 0;
+  const text = robots.map((r, i) => `slot ${i}: ${r.model} (${(+r.x).toFixed(2)}, ${(+r.y).toFixed(2)}, ${(+r.yaw).toFixed(0)}°)`).join('\n') || '(no robots)';
+  if (confirm(`${inScene ? `Replace the ${inScene} robot(s) in the scene with` : 'Spawn'}:\n${text}`))
+    post('/api/spawn', { robots: robots.map(r => ({ model: r.model, x: +r.x, y: +r.y, yaw: +r.yaw })) });
 }
+
+// top-down map: lavender rows, robots in the scene (grey), the form's poses (numbered arrows)
+let mapView = null;
+function drawMap() {
+  const cv = document.getElementById('spawnMap'), dpr = devicePixelRatio || 1;
+  if (!cv || !status) return;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d'); g.scale(dpr, dpr);
+  const css = getComputedStyle(document.documentElement), col = v => css.getPropertyValue(v);
+  const scene = status.scene || {}, rows = scene.lavender_rows || [];
+  const form = readSlots().map(r => [+r.x, +r.y, +r.yaw]).filter(p => p.every(v => !isNaN(v)));
+  const pts = [...form, ...(scene.robots || []).map(r => [r.x, r.y]), ...rows.flatMap(r => [[r[0], r[2]], [r[1], r[2]]]), [-3, -4], [12, 4]];
+  const x0 = Math.min(...pts.map(p => p[0])) - 1.5, x1 = Math.max(...pts.map(p => p[0])) + 1.5;
+  const y0 = Math.min(...pts.map(p => p[1])) - 1.5, y1 = Math.max(...pts.map(p => p[1])) + 1.5;
+  // world +x points right, +y points up on screen
+  const s = Math.min(W / (x1 - x0), H / (y1 - y0)), ox = (W - s * (x1 - x0)) / 2, oy = (H - s * (y1 - y0)) / 2;
+  const X = x => ox + (x - x0) * s, Y = y => H - oy - (y - y0) * s;
+  mapView = { s, inv: (px, py) => [x0 + (px - ox) / s, y0 + (H - oy - py) / s], X, Y };
+  g.strokeStyle = col('--line'); g.lineWidth = 1; g.fillStyle = col('--muted'); g.font = '10px system-ui';
+  for (let gx = Math.ceil(x0); gx <= x1; gx++) { g.globalAlpha = gx % 5 ? 0.25 : 0.7; g.beginPath(); g.moveTo(X(gx), 0); g.lineTo(X(gx), H); g.stroke(); }
+  for (let gy = Math.ceil(y0); gy <= y1; gy++) { g.globalAlpha = gy % 5 ? 0.25 : 0.7; g.beginPath(); g.moveTo(0, Y(gy)); g.lineTo(W, Y(gy)); g.stroke(); }
+  g.globalAlpha = 1; g.fillText('x →', W - 26, Y(0) - 3); g.fillText('y ↑', X(0) + 3, 10);
+  g.fillStyle = '#9b7fd0';
+  rows.forEach(([a, b, y]) => g.fillRect(X(a), Y(y) - 0.6 * s, (b - a) * s, 1.2 * s));
+  const robot = (x, y, yaw, color, label, sel) => {
+    const r = 0.45 * s, t = yaw * Math.PI / 180;
+    g.save(); g.translate(X(x), Y(y)); g.rotate(-t);
+    g.fillStyle = color; g.globalAlpha = sel ? 1 : 0.85;
+    g.fillRect(-r, -r * 0.75, 2 * r, 1.5 * r);
+    g.beginPath(); g.moveTo(r * 1.5, 0); g.lineTo(r * 0.6, -r * 0.5); g.lineTo(r * 0.6, r * 0.5); g.fill();
+    if (sel) { g.strokeStyle = col('--fg'); g.lineWidth = 2; g.strokeRect(-r - 3, -r * 0.75 - 3, 2 * r + 6, 1.5 * r + 6); }
+    g.restore();
+    if (label !== null) { g.fillStyle = col('--fg'); g.font = 'bold 11px system-ui'; g.fillText(label, X(x) - 3, Y(y) + 4); }
+  };
+  (scene.robots || []).forEach(r => robot(r.x, r.y, r.yaw, col('--muted'), null, false));
+  form.forEach((p, i) => robot(p[0], p[1], p[2], col('--accent'), String(i), i === selSlot));
+}
+function mapClick(ev) {
+  if (!mapView) return;
+  const rect = ev.target.getBoundingClientRect(), px = ev.clientX - rect.left, py = ev.clientY - rect.top;
+  const rows = slotRows();
+  const hit = rows.findIndex(r => Math.hypot(mapView.X(+r.querySelector('.px').value) - px, mapView.Y(+r.querySelector('.py').value) - py) < Math.max(10, 0.5 * mapView.s));
+  if (hit >= 0) selSlot = hit;
+  else if (rows[selSlot]) {
+    const [x, y] = mapView.inv(px, py);
+    rows[selSlot].querySelector('.px').value = (Math.round(x * 10) / 10).toFixed(1);
+    rows[selSlot].querySelector('.py').value = (Math.round(y * 10) / 10).toFixed(1);
+  }
+  drawMap();
+}
+window.addEventListener('resize', drawMap);
 
 // ------------------------------------------------------------ robots
 function renderRobots() {

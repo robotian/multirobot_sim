@@ -1,22 +1,28 @@
-"""Isaac Sim fleet scene: N Clearpath robots, each with a RealSense D435i, bridged to ROS 2.
+"""Isaac Sim fleet scene: the lavender-farm world, plus Clearpath robots spawned into it on request, bridged to ROS 2.
 
-Runs inside the streaming Kit app (isaac-sim.streaming.sh --exec /sim/scripts/setup_scene.py).
+Runs inside the streaming Kit app (isaac-sim.streaming.sh --exec /sim/scripts/setup_scene.py), in two parts:
+  1. scene: import (or reuse the cached import of) every robot model, build the world and start the timeline --
+     no robots. Reported in FLEET_STATE as scene "ready".
+  2. spawn: FLEET_REQUEST (written by scripts/fleet_ctl.py, i.e. `scripts/fleet.sh spawn` or the web UI) lists one
+     {model, x, y, yaw} per slot. The sim stops the timeline, removes the robots it has, spawns the requested ones
+     at their poses and plays again (spawn_fleet). Slot i is namespaced "<its model>_%04d" % i, e.g. a Jackal
+     (j100) in slot 1 is j100_0001 -- matches docker-compose.yml's container naming -- except a real robot id,
+     used directly as its own namespace with no slot suffix (j100_0921, not j100_0921_0000): it's one specific
+     physical robot, not a generic model needing a slot index to stay unique. The request file stays until
+     `scripts/fleet.sh down`/a fresh `fleet.sh scene`, so a restarted sim (web UI "Reset scene") spawns the same
+     robots again as soon as its scene is up.
 Configuration comes from environment variables (see docker-compose.yml):
-  NUM_ROBOTS         how many robots to spawn
-  ROBOT_MODELS       comma-separated model per slot (a300/a200/j100/r100/a real robot id like j100_0921, one of
-                     MODEL_PARAMS below); only the first NUM_ROBOTS entries are used. Robot i is namespaced
-                     "<its model>_%04d" % i, e.g. a Jackal (j100) in slot 1 is j100_0001 -- matches docker-
-                     compose.yml's container naming -- except a real robot id, used directly as its own
-                     namespace with no slot suffix (j100_0921, not j100_0921_0000): it's one specific physical
-                     robot, not a generic model needing a slot index to stay unique.
-  CAMERA_WIDTH/HEIGHT, CAMERA_FRAME_SKIP, FORCE_REIMPORT
+  SCENE_LANES        robot lanes between the two lavender rows (default 3); the default spawn poses fill them
+  CAMERA_WIDTH/HEIGHT, CAMERA_FRAME_SKIP, FORCE_REIMPORT, ...
 """
 import asyncio
+import json
 import math
 import os
 import random
 import re
 import sys
+import time
 import traceback
 
 import carb
@@ -26,16 +32,30 @@ import omni.usd
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade
 
 sys.path.insert(0, "/sim/scripts")
+import fleet_nodes  # noqa: E402  (ScriptNodes' rclpy nodes, destroyed on respawn)
 import robot_looks  # noqa: E402  (ROBOT_LOOKS: photo-realistic robot materials)
 
-_num_robots = int(os.environ.get("NUM_ROBOTS", "3"))
-_models = [m.strip() for m in os.environ.get("ROBOT_MODELS", "a300").split(",") if m.strip()][:_num_robots]
-# ROBOTS: one (namespace, model) pair per robot, in slot order -- must match docker-compose.yml's container/
-# ROBOT_NAMESPACE naming (and its own real-robot special case, see robot/entrypoint.sh's own copy of this same
-# logic): a real robot's own id (contains "_", e.g. j100_0921) already *is* its correct namespace -- it's one
-# specific physical robot with one fixed real identity, not a generic model that needs a slot index to stay
-# unique -- so it's used directly; only generic catalog models (a300, ...) get the slot-indexed "<model>_%04d".
-ROBOTS = [(model if "_" in model else f"{model}_{i:04d}", model) for i, model in enumerate(_models)]
+# ROBOTS: one (namespace, model) pair per robot currently in the scene, in slot order (empty until a spawn
+# request arrives); ROBOT_POSES: their spawn poses as (x, y, yaw in degrees), same order.
+ROBOTS = []
+ROBOT_POSES = []
+# Host <-> sim spawn protocol (./sim is mounted at /sim; scripts/fleet_ctl.py is the host side). The directory is
+# shared by the host user and the sim's uid 1234, hence world-writable.
+FLEET_DIR = "/sim/generated/fleet"
+FLEET_REQUEST = f"{FLEET_DIR}/spawn_request.json"
+FLEET_STATE = f"{FLEET_DIR}/state.json"
+# the last request that was spawned successfully: what a restarted sim spawns again (a rejected request is not)
+FLEET_APPLIED = f"{FLEET_DIR}/applied_request.json"
+
+
+def robot_namespace(slot, model):
+    """Must match docker-compose.yml's container/ROBOT_NAMESPACE naming (and its own real-robot special case, see
+    robot/entrypoint.sh's own copy of this same logic): a real robot's own id (contains "_", e.g. j100_0921)
+    already *is* its correct namespace -- one specific physical robot with one fixed real identity, not a generic
+    model that needs a slot index to stay unique -- so it's used directly; only generic catalog models (a300, ...)
+    get the slot-indexed "<model>_%04d"."""
+    return model if "_" in model else f"{model}_{slot:04d}"
+
 CAM_W = int(os.environ.get("CAMERA_WIDTH", "640"))
 CAM_H = int(os.environ.get("CAMERA_HEIGHT", "360"))
 CAM_FRAME_SKIP = int(os.environ.get("CAMERA_FRAME_SKIP", "0"))  # 0 = publish every simulation frame
@@ -594,6 +614,8 @@ def compute(db):
         safe_name = str(db.inputs.topicName).strip("/").replace("/", "_")
         state.node = Node(f"gps_read_{safe_name}", namespace=str(db.inputs.namespace))
         state.pub = state.node.create_publisher(NavSatFix, str(db.inputs.topicName), 10)
+        import fleet_nodes  # destroyed by a respawn (cleanup() doesn't run when the graph is deleted)
+        fleet_nodes.track(db.inputs.namespace, state)
 
     stage = omni.usd.get_context().get_stage()
     prim = stage.GetPrimAtPath(str(db.inputs.gpsPath))
@@ -651,6 +673,8 @@ def compute(db):
         state.sub = state.node.create_subscription(TwistStamped, str(db.inputs.topicName), on_cmd, 10)
         state.executor = SingleThreadedExecutor()
         state.executor.add_node(state.node)
+        import fleet_nodes  # destroyed by a respawn (cleanup() doesn't run when the graph is deleted)
+        fleet_nodes.track(ns, state)
     for _ in range(20):  # drain everything queued since the last tick
         before = state.last
         state.executor.spin_once(timeout_sec=0.0)
@@ -747,6 +771,8 @@ def compute(db):
         safe_name = str(db.inputs.topicName).strip("/").replace("/", "_")
         state.node = Node(f"lidar2d_read_{safe_name}", namespace=str(db.inputs.namespace))
         state.pub = state.node.create_publisher(LaserScan, str(db.inputs.topicName), 10)
+        import fleet_nodes  # destroyed by a respawn (cleanup() doesn't run when the graph is deleted)
+        fleet_nodes.track(db.inputs.namespace, state)
 
     frame = state.sensor.get_data()
     hits = frame["hit_positions"]
@@ -868,6 +894,8 @@ def compute(db):
         safe_name = str(db.inputs.topicName).strip("/").replace("/", "_")
         state.node = Node(f"lidar3d_read_{safe_name}", namespace=str(db.inputs.namespace))
         state.pub = state.node.create_publisher(PointCloud2, str(db.inputs.topicName), 10)
+        import fleet_nodes  # destroyed by a respawn (cleanup() doesn't run when the graph is deleted)
+        fleet_nodes.track(db.inputs.namespace, state)
 
     frame = state.sensor.get_data()
     hits = frame["hit_positions"]
@@ -909,8 +937,24 @@ def cleanup(db):
         state.pub = None
 """
 
-ROBOT_SPACING = 1.6  # m between robots along Y
+ROBOT_SPACING = 1.6  # m between robot lanes along Y
+SCENE_LANES = max(1, int(os.environ.get("SCENE_LANES", "3")))  # lanes between the lavender rows (scene layout)
+RANK_SPACING = 2.5  # m between ranks along X, when there are more robots than lanes
 SPAWN_Z = 0.15  # base_link height: wheel bottoms end up ~1.4 cm above the ground, then it settles
+SPAWN_LIMIT = 38.0  # |x|, |y| of a spawn pose: inside the 80 x 80 m ground box
+SPAWN_MIN_DIST = 1.0  # m between two robots' spawn points (they would start inside each other)
+
+
+def default_poses(n):
+    """Default spawn poses (x, y, yaw deg) for n robots: SCENE_LANES robots side by side at x=0, facing +X (the
+    lanes between the lavender rows), the next ones in further ranks behind them; each rank centred on y=0.
+    Up to SCENE_LANES robots this is the layout the sim always used."""
+    poses = []
+    for i in range(n):
+        rank, lane = divmod(i, SCENE_LANES)
+        in_rank = min(SCENE_LANES, n - rank * SCENE_LANES)
+        poses.append((-rank * RANK_SPACING, (lane - (in_rank - 1) / 2) * ROBOT_SPACING, 0.0))
+    return poses
 
 
 # D435i RGB sensor: 69.4 deg horizontal FOV
@@ -1047,18 +1091,25 @@ IMPORT_SETTINGS = {
 }
 
 
-def import_urdf_if_needed(model):
-    import json
-
+def import_stamp(model):
+    """(stamp the cached import should have, stamp it has or None): import settings + URDF mtime/size."""
     assets = MODEL_ASSETS[model]
-    urdf_path, usd_dir, usd_path = assets["urdf"], assets["usd_dir"], assets["usd_path"]
-    st = os.stat(urdf_path)
+    st = os.stat(assets["urdf"])
     stamp = json.dumps({"settings": IMPORT_SETTINGS, "urdf": [st.st_mtime_ns, st.st_size]}, sort_keys=True)
-    stamp_path = f"{usd_dir}/.import_stamp"
     try:
-        cached = open(stamp_path).read()
+        cached = open(f"{assets['usd_dir']}/.import_stamp").read()
     except OSError:
         cached = None
+    return stamp, cached
+
+
+def import_urdf_if_needed(model):
+    """Convert the model's URDF to USD unless the cached import is current. Only before the scene is built: the
+    importer opens its result in the USD context (stage_utils.open_stage), which would replace an open scene."""
+    assets = MODEL_ASSETS[model]
+    urdf_path, usd_dir, usd_path = assets["urdf"], assets["usd_dir"], assets["usd_path"]
+    stamp, cached = import_stamp(model)
+    stamp_path = f"{usd_dir}/.import_stamp"
     if os.path.exists(usd_path) and cached == stamp and not FORCE_REIMPORT:
         log(f"using cached USD {usd_path}")
         return
@@ -1259,25 +1310,31 @@ def build_world(stage):
     sun.CreateIntensityAttr(10000)
     UsdGeom.Xformable(sun).AddRotateXYZOp().Set(Gf.Vec3f(-60, 33, -30))
 
-    n = len(ROBOTS)
-
     # Lavender farm: a hedge row of overlapping plants on each side of the fleet's driving lanes (robots drive
     # along +X), like the real field's rows. Each plant is ~1.26M triangles, so the row length is what costs fps.
-    half = ((n - 1) / 2) * ROBOT_SPACING
+    # The scene is built before any robot exists, so the rows are placed for SCENE_LANES lanes, not a robot count.
+    half = ((SCENE_LANES - 1) / 2) * ROBOT_SPACING
     k = 0
+    rows = []
     for side in (-1, 1):
         y = side * (half + LAVENDER_ROW_OFFSET)
-        for x in [LAVENDER_ROW_X0 + LAVENDER_PLANT_PITCH * j for j in range(LAVENDER_ROW_PLANTS)]:
+        xs = [LAVENDER_ROW_X0 + LAVENDER_PLANT_PITCH * j for j in range(LAVENDER_ROW_PLANTS)]
+        for x in xs:
             add_lavender(stage, f"/World/lavender/plant_{k}", (x, y, 0.0), rot_z=(k * 47.0) % 360)
             k += 1
+        rows.append([xs[0] - 0.6, xs[-1] + 0.6, y])  # plants are ~1.2 m wide
+    return {"lavender_rows": rows}  # for the web UI's spawn map
 
 
-def spawn_robot(stage, ns, model, index, count):
+def spawn_robot(stage, ns, model, pose):
+    """Reference the model's USD at /World/<ns>, at pose = (x, y, yaw in degrees) on the ground."""
+    x, y, yaw = pose
     root = f"/World/{ns}"
     prim = stage.DefinePrim(root, "Xform")
     prim.GetReferences().AddReference(MODEL_ASSETS[model]["usd_path"])
-    y = (index - (count - 1) / 2) * ROBOT_SPACING
-    UsdGeom.Xformable(prim).AddTranslateOp().Set(Gf.Vec3d(0.0, y, SPAWN_Z))
+    xf = UsdGeom.Xformable(prim)
+    xf.AddTranslateOp().Set(Gf.Vec3d(x, y, SPAWN_Z))
+    xf.AddRotateZOp().Set(float(yaw))
     return root
 
 
@@ -1860,14 +1917,19 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
     )
 
 
-def aim_viewport():
+def aim_viewport(points=None):
+    """Look over the robots at `points` ((x, y, ...) each) from behind and to the right; without points, over
+    the scene's empty lanes. For robots in one rank at x=0 this is the view the sim always had."""
     try:
         from omni.kit.viewport.utility.camera_state import ViewportCameraState
 
-        n = len(ROBOTS)
+        points = points or [(0.0, y, 0.0) for _, y, _ in default_poses(SCENE_LANES)]
+        xs, ys = [p[0] for p in points], [p[1] for p in points]
+        cy = (min(ys) + max(ys)) / 2
+        n = (max(ys) - min(ys)) / ROBOT_SPACING + 1  # lanes covered
         state = ViewportCameraState("/OmniverseKit_Persp")
-        state.set_position_world(Gf.Vec3d(-5.0, -ROBOT_SPACING * n * 0.9, 3.2), True)
-        state.set_target_world(Gf.Vec3d(3.0, 0.0, 0.3), True)
+        state.set_position_world(Gf.Vec3d(min(xs) - 5.0, cy - ROBOT_SPACING * n * 0.9, 3.2), True)
+        state.set_target_world(Gf.Vec3d(max(xs) + 3.0, cy, 0.3), True)
     except Exception as e:  # cosmetic only
         log(f"could not aim viewport camera: {e}")
 
@@ -1893,17 +1955,23 @@ def set_viewport_resolution():
         log(f"could not set viewport resolution: {e}")
 
 
-def apply_robot_looks():
+_looks = {"lib": None, "applied": set()}
+
+
+def apply_robot_looks(models):
     """ROBOT_LOOKS=full|basic|0: rebind the robots' visuals to realistic materials (sim/scripts/robot_looks.py).
-    Visual only, and best effort: on any error the robots keep the importer's materials."""
+    Visual only, and best effort: on any error the robots keep the importer's materials. Runs at spawn time, once
+    per model (the edits stay in the held in-memory layers, so a respawn reuses them); it only opens the model's
+    own layers, never the scene's stage."""
     if not robot_looks.enabled():
-        log(f"robot looks off (ROBOT_LOOKS={robot_looks.MODE})")
         return
     try:
-        lib = robot_looks.build_library()
-        for model in dict.fromkeys(model for _, model in ROBOTS):
-            robot_looks.apply(model, MODEL_ASSETS[model]["usd_path"], lib)
-        log(f"robot looks: {robot_looks.MODE}")
+        if _looks["lib"] is None:
+            _looks["lib"] = robot_looks.build_library()
+        for model in dict.fromkeys(models):
+            if model not in _looks["applied"]:
+                robot_looks.apply(model, MODEL_ASSETS[model]["usd_path"], _looks["lib"])
+                _looks["applied"].add(model)
     except Exception:
         log("robot looks failed, keeping the importer's materials:\n" + traceback.format_exc())
 
@@ -1943,7 +2011,7 @@ async def snapshot_loop():
             for _ in range(5):
                 await app.next_update_async()
             log(f"snapshot {path}")
-    aim_viewport()
+    aim_viewport(ROBOT_POSES)
 
 
 async def debug_loop(og):
@@ -1981,12 +2049,214 @@ async def debug_loop(og):
                 "CmdVel.outputs:linearVelocity", "CmdVel.outputs:angularVelocity", "Diff.outputs:velocityCommand")}
         except Exception as e:
             vals = f"attr read failed: {e}"
+        if not chassis.IsValid():  # robots were respawned
+            log("debug: first robot gone (respawned), debug pose logging stopped")
+            return
         pos = _G.Xformable(chassis).ComputeLocalToWorldTransform(0).ExtractTranslation()
         log(f"debug {ns}: chassis_pos={tuple(round(v, 3) for v in pos)} {vals}")
 
 
+# ---------------------------------------------------------------- spawn protocol (see FLEET_REQUEST/FLEET_STATE)
+
+MAX_ROBOTS = 8  # docker-compose.yml's robot0..robot7 slots
+_state = {
+    "started": time.time(),  # the host compares this with the container's start time to ignore a stale file
+    "scene": "loading",  # loading | ready | error
+    "error": "",
+    "lanes": SCENE_LANES,
+    "default_poses": {str(n): default_poses(n) for n in range(MAX_ROBOTS + 1)},
+    "models": [],  # models that can be spawned (imported)
+    "robots": [],  # robots in the scene: {slot, ns, model, x, y, yaw}
+    "spawn": None,  # last request handled: {id, state: spawning | done | error, message}
+}
+
+
+def _write_json(path, data):
+    """Atomic write into FLEET_DIR, readable/deletable by the host user."""
+    try:
+        os.makedirs(FLEET_DIR, exist_ok=True)
+        try:
+            os.chmod(FLEET_DIR, 0o777)  # the host user writes requests here
+        except OSError:
+            pass
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=1)
+        os.chmod(tmp, 0o666)
+        os.replace(tmp, path)
+    except OSError as e:
+        log(f"could not write {path}: {e}")
+
+
+def write_state(**updates):
+    """Rewrite FLEET_STATE (read by scripts/fleet_ctl.py and the web UI)."""
+    _state.update(updates, updated=time.time())
+    _write_json(FLEET_STATE, _state)
+
+
+def parse_request(req):
+    """FLEET_REQUEST -> [(ns, model, (x, y, yaw_deg))]. Raises ValueError with a message for the user."""
+    entries = req.get("robots")
+    if not isinstance(entries, list) or len(entries) > MAX_ROBOTS:
+        raise ValueError(f"'robots' must be a list of at most {MAX_ROBOTS} entries")
+    defaults = default_poses(len(entries))
+    robots = []
+    for slot, e in enumerate(entries):
+        model = e.get("model") if isinstance(e, dict) else None
+        if model not in _state["models"]:
+            raise ValueError(f"slot {slot}: model {model!r} is not available (have: {', '.join(_state['models'])})")
+        stamp, cached = import_stamp(model)
+        if stamp != cached:
+            raise ValueError(f"slot {slot}: {model}'s URDF changed after the sim started (scripts/gen_urdf.sh?); "
+                             "the importer can't run with the scene open -- restart the sim (Reset scene) to re-import it")
+        pose = []
+        for k, d in zip(("x", "y", "yaw"), defaults[slot]):
+            v = e.get(k)
+            try:
+                v = d if v is None or v == "" else float(v)
+            except (TypeError, ValueError):
+                raise ValueError(f"slot {slot}: {k} must be a number, got {v!r}")
+            if not math.isfinite(v):
+                raise ValueError(f"slot {slot}: {k} must be finite")
+            pose.append(v)
+        if abs(pose[0]) > SPAWN_LIMIT or abs(pose[1]) > SPAWN_LIMIT:
+            raise ValueError(f"slot {slot}: x and y must be within +-{SPAWN_LIMIT:g} m (the ground)")
+        robots.append((robot_namespace(slot, model), model, tuple(pose)))
+    names = [ns for ns, _, _ in robots]
+    for ns in set(names):
+        if names.count(ns) > 1:
+            raise ValueError(f"{ns} is requested twice (a real robot id can only be in one slot)")
+    for i in range(len(robots)):
+        for j in range(i):
+            (a, _, pa), (b, _, pb) = robots[i], robots[j]
+            if math.hypot(pa[0] - pb[0], pa[1] - pb[1]) < SPAWN_MIN_DIST:
+                raise ValueError(f"{a} and {b} are less than {SPAWN_MIN_DIST:g} m apart")
+    return robots
+
+
+async def spawn_one(app, stage, og, usdrt_sdf, ns, model, pose):
+    params = MODEL_PARAMS[model]
+    root = spawn_robot(stage, ns, model, pose)
+    cam_path = None
+    if params.get("has_camera", True):
+        optical_link = params.get("camera_optical_link")
+        hfov = ZED_HFOV_DEG if optical_link else HFOV_DEG
+        cam_path = add_camera(stage, root, optical_link=optical_link, hfov_deg=hfov)
+
+    log(f"spawned {ns} ({model}) at {root}, x={pose[0]:g} y={pose[1]:g} yaw={pose[2]:g} deg")
+    for _ in range(3):
+        await app.next_update_async()
+    chassis = find_prim(stage, root, params["chassis_link"])
+    enable_wheel_ccd(stage, root)
+    if ARTIC_POS_ITERS or ARTIC_VEL_ITERS:
+        log(f"{ns}: solver iterations pos={ARTIC_POS_ITERS} vel={ARTIC_VEL_ITERS} on "
+            f"{set_articulation_iterations(stage, root)} articulation root(s)")
+    if params.get("massless_density"):
+        nd, nf = fix_massless_bodies(stage, root, params["massless_density"], params.get("frame_mass", 0.02))
+        log(f"{ns}: massless bodies: {nd} at {params['massless_density']} kg/m^3, {nf} frames")
+    cam1_path = None
+    if params.get("wrist_camera"):
+        cam1_path = add_camera(stage, root, hfov_deg=D405_HFOV_DEG, index=1)
+    build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, cam1_path)
+    if params.get("has_arm"):
+        configure_arm_drives(stage, root, params.get("drop_mimic_constraints", True))
+
+
+async def spawn_fleet(app, stage, og, usdrt_sdf, robots):
+    """Replace the robots in the scene with `robots` ([(ns, model, pose)]). The timeline is stopped meanwhile:
+    PhysX only takes masses (fix_massless_bodies) and new articulations cleanly when the simulation (re)starts."""
+    import omni.kit.commands
+
+    tl = omni.timeline.get_timeline_interface()
+    tl.stop()
+    for _ in range(3):
+        await app.next_update_async()
+    try:
+        old = [p for ns, _ in ROBOTS for p in (f"/Graphs/{ns}", f"/World/{ns}") if stage.GetPrimAtPath(p)]
+        if old:
+            # DeletePrims also tears down the OmniGraphs and their C++ ROS publishers, but not the rclpy nodes the
+            # ScriptNodes made (their cleanup() isn't called): those are destroyed through fleet_nodes.
+            omni.kit.commands.execute("DeletePrims", paths=old)
+            n_nodes = sum(fleet_nodes.destroy(ns) for ns, _ in ROBOTS)
+            log(f"removed {', '.join(ns for ns, _ in ROBOTS)} ({n_nodes} script rclpy node(s) destroyed)")
+        ROBOTS.clear()
+        ROBOT_POSES.clear()
+        for _ in range(3):
+            await app.next_update_async()
+        apply_robot_looks(model for _, model, _ in robots)
+        for ns, model, pose in robots:
+            await spawn_one(app, stage, og, usdrt_sdf, ns, model, pose)
+            ROBOTS.append((ns, model))
+            ROBOT_POSES.append(pose)
+        aim_viewport(ROBOT_POSES)
+        for _ in range(10):
+            await app.next_update_async()
+    finally:
+        tl.play()
+
+
+def _read_json(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):  # none (or being replaced)
+        return None
+
+
+async def spawn_loop(app, stage, og, usdrt_sdf):
+    """Poll FLEET_REQUEST; a request with a new id replaces the robots. At start the sim first spawns
+    FLEET_APPLIED, the last request that worked (sim restart = same robots back at their spawn poses); the request
+    file itself is only replayed if it was never handled (no FLEET_APPLIED yet, e.g. written while the sim was down)."""
+    applied, pending = _read_json(FLEET_APPLIED), _read_json(FLEET_REQUEST)
+    boot = applied or pending
+    # ids handled already: the applied one (spawned now) and a request answered before this start (e.g. rejected)
+    handled = {r.get("id") for r in (applied, pending) if r}
+    next_check = 0.0
+    while True:
+        await app.next_update_async()
+        if boot is not None:
+            req, boot = boot, None
+        else:
+            if time.time() < next_check:
+                continue
+            next_check = time.time() + 0.5
+            req = _read_json(FLEET_REQUEST)
+            if req is None or req.get("id") in handled:
+                continue
+        last_id = req.get("id")
+        handled.add(last_id)
+        write_state(spawn={"id": last_id, "state": "spawning", "message": ""})
+        t0 = time.time()
+        try:
+            robots = parse_request(req)
+            log(f"spawn request {last_id}: {len(robots)} robot(s)")
+            await spawn_fleet(app, stage, og, usdrt_sdf, robots)
+            msg = (f"{len(ROBOTS)} robot(s) in {time.time() - t0:.0f} s: {', '.join(ns for ns, _ in ROBOTS)}"
+                   if ROBOTS else "no robots")
+            state = "done"
+            _write_json(FLEET_APPLIED, req)
+            log(f"simulation running with {msg}")
+            if os.environ.get("FLEET_DEBUG") == "1" and ROBOTS:
+                asyncio.ensure_future(debug_loop(og))
+            if os.environ.get("FLEET_SNAPSHOT") and ROBOTS:
+                asyncio.ensure_future(snapshot_loop())
+        except ValueError as e:
+            state, msg = "error", str(e)
+            log(f"spawn request {last_id} rejected: {msg}")
+        except Exception as e:
+            state, msg = "error", f"{type(e).__name__}: {e}"
+            log(f"spawn request {last_id} failed:\n" + traceback.format_exc())
+        write_state(
+            robots=[{"slot": i, "ns": ns, "model": model, "x": p[0], "y": p[1], "yaw": p[2]}
+                    for i, ((ns, model), p) in enumerate(zip(ROBOTS, ROBOT_POSES))],
+            spawn={"id": last_id, "state": state, "message": msg},
+        )
+
+
 async def main():
     try:
+        write_state()
         app = omni.kit.app.get_app()
         for _ in range(5):
             await app.next_update_async()
@@ -1997,54 +2267,38 @@ async def main():
             # isaacsim.sensors.experimental.rtx (j100_0936's 2D lidar) deliberately NOT enabled -- broken in
             # this Isaac Sim 6.0 install, see add_lidar2d's docstring.
         ])
-        for model in dict.fromkeys(model for _, model in ROBOTS):  # each distinct model once, first-seen order
-            import_urdf_if_needed(model)
-        apply_robot_looks()
+        # Every model that could be spawned later is imported now: the importer can't run once the scene is open.
+        # A cached, current import only costs a stat.
+        models = []
+        for model in MODEL_ASSETS:
+            if model not in MODEL_PARAMS or not os.path.isfile(MODEL_ASSETS[model]["urdf"]):
+                continue
+            try:
+                import_urdf_if_needed(model)
+                models.append(model)
+            except Exception:
+                log(f"import of {model} failed, it can't be spawned:\n" + traceback.format_exc())
+        write_state(models=models)
 
         import omni.graph.core as og
         import usdrt.Sdf as usdrt_sdf
 
         await omni.usd.get_context().new_stage_async()
         stage = omni.usd.get_context().get_stage()
-        build_world(stage)
-        for i, (ns, model) in enumerate(ROBOTS):
-            root = spawn_robot(stage, ns, model, i, len(ROBOTS))
-            cam_path = None
-            if MODEL_PARAMS[model].get("has_camera", True):
-                optical_link = MODEL_PARAMS[model].get("camera_optical_link")
-                hfov = ZED_HFOV_DEG if optical_link else HFOV_DEG
-                cam_path = add_camera(stage, root, optical_link=optical_link, hfov_deg=hfov)
-
-            log(f"spawned {ns} ({model}) at {root}")
-            for _ in range(3):
-                await app.next_update_async()
-            chassis = find_prim(stage, root, MODEL_PARAMS[model]["chassis_link"])
-            enable_wheel_ccd(stage, root)
-            if ARTIC_POS_ITERS or ARTIC_VEL_ITERS:
-                log(f"{ns}: solver iterations pos={ARTIC_POS_ITERS} vel={ARTIC_VEL_ITERS} on "
-                    f"{set_articulation_iterations(stage, root)} articulation root(s)")
-            if MODEL_PARAMS[model].get("massless_density"):
-                nd, nf = fix_massless_bodies(stage, root, MODEL_PARAMS[model]["massless_density"],
-                                             MODEL_PARAMS[model].get("frame_mass", 0.02))
-                log(f"{ns}: massless bodies: {nd} at {MODEL_PARAMS[model]['massless_density']} kg/m^3, {nf} frames")
-            cam1_path = None
-            if MODEL_PARAMS[model].get("wrist_camera"):
-                cam1_path = add_camera(stage, root, hfov_deg=D405_HFOV_DEG, index=1)
-            build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, MODEL_PARAMS[model], cam1_path)
-            if MODEL_PARAMS[model].get("has_arm"):
-                configure_arm_drives(stage, root, MODEL_PARAMS[model].get("drop_mimic_constraints", True))
+        layout = build_world(stage)
         aim_viewport()
         set_viewport_resolution()
         for _ in range(10):
             await app.next_update_async()
         omni.timeline.get_timeline_interface().play()
-        log(f"simulation running with {len(ROBOTS)} robots: {', '.join(ns for ns, _ in ROBOTS)}")
-        if os.environ.get("FLEET_DEBUG") == "1":
-            asyncio.ensure_future(debug_loop(og))
-        if os.environ.get("FLEET_SNAPSHOT"):
-            asyncio.ensure_future(snapshot_loop())
+        log(f"scene ready ({SCENE_LANES} lanes), waiting for a spawn request in {FLEET_REQUEST}; "
+            f"models: {', '.join(models)}")
+        write_state(scene="ready", ground=SPAWN_LIMIT, **layout)
     except Exception:
         log("FATAL error while building the scene:\n" + traceback.format_exc())
+        write_state(scene="error", error=traceback.format_exc(limit=3))
+        return
+    await spawn_loop(app, stage, og, usdrt_sdf)
 
 
 asyncio.ensure_future(main())

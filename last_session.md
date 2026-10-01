@@ -1390,3 +1390,22 @@ then "put the arm to stow before it starts" and "search for contact property of 
 - Not done / for the user: j100_0921 (and a200_0284/a300_00036?) also carry heavy massless links (not fixed, cut_stem was tuned with them); .env SIM_RATE_HZ=22 gives a
   physical rtf of only ~0.5-0.6 (set it so 60/SIM_RATE_HZ is whole, e.g. 15 or 20); the odom twist is now pose-derived (filtered, ~1.5 frames lag).
 - Testing used the worktree's sim/ mounted over /sim via a compose override and temporary .env model swaps (.env restored afterwards). Nothing pushed.
+
+## Addendum: scene first, robots spawned on request (branch worktree-scene-then-spawn)
+User: "separate the scene generation ... Start ... loads the scene. Then select the number of robots ... choose spawning pose of each
+robot, you can generate their default poses ... 'spawn' button load the robots to the world and start the robot containers."
+- Sim: main() imports every model, builds the scene (lavender rows for SCENE_LANES=3, no longer for a robot count), plays, then spawn_loop
+  polls sim/generated/fleet/spawn_request.json; spawn_fleet stops the timeline, DeletePrims the old robots/graphs, spawns at x/y/yaw, plays.
+  Reports in state.json (scene state, models, default_poses, lavender_rows, robots, last spawn). applied_request.json = last good request,
+  respawned when the sim restarts (Reset scene). Sim no longer gets NUM_ROBOTS/ROBOT_MODELS from compose.
+- Host: scripts/fleet_ctl.py (request/state), fleet.sh scene | spawn [N] [--poses] | [N] | down; robots start with --no-deps --force-recreate.
+- UI: Start = fleet.sh scene; Spawn card = model + x/y/yaw per slot, Default poses, clickable top-down map; Spawn disabled until scene ready.
+- Found live: ScriptNode cleanup() is NOT called when a graph is deleted -> the removed robot's cmd_vel_sub node stayed in the ROS graph;
+  fixed with sim/scripts/fleet_nodes.py (scripts register their rclpy nodes; spawn_fleet destroys them; "4 script rclpy node(s) destroyed").
+  Found live: a rejected request stayed in spawn_request.json and a restart replayed it (no robots) -> applied_request.json.
+- Verified (stream mode, test compose override mounting main's assets/generated/colcon_ws/robot_data): scene ready in 33-41 s with all 10
+  models; spawn j100_0921 + a300_0001 (x=-3,y=1.6,yaw=90) in 1 s, containers up, both drive 0.4 m/s; respawn to j100_0921 (yaw 90) + a200_0001
+  in 2 s, GPS shows yaw 90 (forward -> latitude +1.0 m); UI API spawn j100_0921 + a300_00036 (yaw 180), a300_00036 drives; no duplicate or
+  stale script nodes; overlap request rejected with robots untouched; Reset scene respawns the last good robots and does not replay the
+  rejected one. NOT done: clicking through the page in a browser (JS only `node --check`ed, status API checked), headed mode, 3+ robots.
+- Side observation: ps/pgrep/pkill on the host hung (some /proc entry blocks); used `ss -ltnp` + kill instead.

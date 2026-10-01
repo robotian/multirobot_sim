@@ -100,9 +100,10 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: all
       ISAACSIM_HOST: ${ISAACSIM_HOST:-127.0.0.1}
       <<: *rmw-env
-      NUM_ROBOTS: ${NUM_ROBOTS:-3}
-      # One entry per slot (see the robotN services below); the sim only uses the first NUM_ROBOTS of them.
-      ROBOT_MODELS: ${ROBOT_MODEL_0:-a300},${ROBOT_MODEL_1:-a300},${ROBOT_MODEL_2:-a300},${ROBOT_MODEL_3:-a300},${ROBOT_MODEL_4:-a300},${ROBOT_MODEL_5:-a300},${ROBOT_MODEL_6:-a300},${ROBOT_MODEL_7:-a300}
+      # The sim starts with the scene only; robots (models, poses) arrive later as a spawn request written by
+      # scripts/fleet_ctl.py (scripts/fleet.sh spawn / the web UI), so nothing robot-related is passed here and
+      # changing the robots never recreates this container. SCENE_LANES: lanes between the lavender rows.
+      SCENE_LANES: ${SCENE_LANES:-3}
       CAMERA_WIDTH: ${CAMERA_WIDTH:-640}
       CAMERA_HEIGHT: ${CAMERA_HEIGHT:-360}
       CAMERA_FRAME_SKIP: ${CAMERA_FRAME_SKIP:-0}
@@ -158,7 +159,7 @@ services:
   # giving e.g. `j100_0921` instead of `j100_0921_0000`, and removes it again if that slot's model later changes
   # back to a generic one. Do not hand-edit ROBOT_SUFFIX_<i> in .env; run `scripts/fleet.sh` to keep it in sync
   # with ROBOT_MODEL_<i> instead. ROS namespace (robot/entrypoint.sh's ROBOT_NAMESPACE, sim/scripts/
-  # setup_scene.py's ROBOTS) is computed the same way but independently at runtime (this file can't reuse one
+  # setup_scene.py's robot_namespace()) is computed the same way but independently at runtime (this file can't reuse one
   # computed value across container_name *and* environment: block entries -- both already special-case a real
   # robot id on their own).
   # hostname: this is the container's real OS hostname (`hostname` inside the container, socket.gethostname()),
