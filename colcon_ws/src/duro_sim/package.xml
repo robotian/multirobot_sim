@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>duro_sim</name>
+  <version>0.0.1</version>
+  <description>
+    Stands in for the attitude SwiftNav Duro of a dual-antenna RTK heading setup in the simulator: publishes the
+    moving-baseline swiftnav_ros2_driver/Baseline (attitude antenna relative to the reference antenna) computed from
+    the two antennas' simulated NavSatFix, as the real sbp-to-ros driver would with a fixed RTK solution.
+  </description>
+  <maintainer email="noreply@example.com">isaac_sim_project</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>swiftnav_ros2_driver</depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
