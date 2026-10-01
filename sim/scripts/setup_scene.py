@@ -980,9 +980,13 @@ def enable_wheel_ccd(stage, root):
             PhysxSchema.PhysxRigidBodyAPI.Apply(prim).CreateEnableCCDAttr(True)
 
 
-# Articulation solver iterations (PhysxArticulationAPI on each robot's articulation root). 0 = PhysX's default.
+# Articulation solver iterations (PhysxArticulationAPI on each robot's articulation root; 0 = PhysX's default,
+# 32 position / 1 velocity). With 1 velocity iteration the resting robots jittered (a300_00036, wheels braked: IMU z
+# std 0.44 m/s^2, gripper fingertips at 0.2 rad/s RMS, 0.38 deg/min of yaw creep from contact micro-slip); 8 velocity
+# iterations: 0.31 m/s^2, 0.01 rad/s, 0.06 deg/min, at the same frame rate. 64 position iterations added nothing
+# measurable and cost ~15% fps. Override with the env vars (pass them to the isaac-sim service).
 ARTIC_POS_ITERS = int(os.environ.get("ARTIC_POS_ITERS", "0"))
-ARTIC_VEL_ITERS = int(os.environ.get("ARTIC_VEL_ITERS", "0"))
+ARTIC_VEL_ITERS = int(os.environ.get("ARTIC_VEL_ITERS", "8"))
 
 
 def set_articulation_iterations(stage, root):
@@ -1008,17 +1012,9 @@ IMPORT_SETTINGS = {
     "joint_drive_type": "force",
     "override_joint_stiffness": 0.0,
     "override_joint_damping": 1000.0,
-    # All models creep forward very slowly at rest (Diff.outputs:velocityCommand genuinely [0, 0], confirmed live
-    # via FLEET_DEBUG=1) -- worse on j100_0921/j100_0936 (heavier, full arm + sensor loadout) than plain j100
-    # (~0.012m vs ~0.005m over 8s), but present even on the light, arm-less model, so it scales with mass/
-    # complexity rather than being specific to those two. Tried raising this damping (a force-drive, velocity-
-    # target, zero-stiffness joint's holding torque against a disturbance is damping * (targetVelocity -
-    # currentVelocity), which is also what should resist creep at targetVelocity=0) to 10x and 100x -- zero
-    # measurable effect at either, ruling out "insufficient holding torque" as the mechanism. Left at the
-    # original value; the creep looks like a small, universal contact/substep convergence characteristic of this
-    # sim rather than something this parameter controls -- not chased further without a next concrete lever to
-    # try (a PHYSICS_HZ/substep change, or PhysX solver iteration counts, are the more likely next places to
-    # look if this needs solving).
+    # The resting creep once noted here (wheels slowly rolling with Diff's targets at exactly 0; damping 10x/100x
+    # made no difference) is handled by the wheel parking brake (WHEEL_BRAKE_SCRIPT: a velocity damper never holds a
+    # position) plus 8 articulation velocity iterations (ARTIC_VEL_ITERS) against the contact jitter.
 
     # The URDF root (base_link) has no inertia, so the generated chassis joint would pin the chassis to the
     # world. Floating base = the robot is free to drive.
