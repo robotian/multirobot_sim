@@ -43,9 +43,11 @@ scripts/gen_urdf.sh
 # 4. Allow the containers to open windows on your display (once per login)
 scripts/x11_auth.sh
 
-# 5. Choose the robots in .env (NUM_ROBOTS, ROBOT_MODEL_<i>; see "Number of robots"), then start everything
-scripts/fleet.sh            # or: scripts/fleet.sh 2  to also set NUM_ROBOTS
-docker compose logs -f isaac-sim     # wait for "[fleet] simulation running with N robots"
+# 5. Start the sim with the scene (no robots yet), then spawn the robots chosen in .env (NUM_ROBOTS,
+#    ROBOT_MODEL_<i>; see "Number of robots") into it and start their containers -- or do both with `scripts/fleet.sh`
+scripts/fleet.sh scene      # waits until the scene is ready (~40 s streaming, ~3 min headed)
+scripts/fleet.sh spawn 2    # 2 robots at the default poses; --poses '[{"x":0,"y":0,"yaw":90}, ...]' to choose them
+docker compose logs -f isaac-sim     # the sim's own lines start with [fleet]
 
 # 6. Build the shared ROS workspace colcon_ws/src in the running robot containers (first time, and after editing packages)
 scripts/colcon_build.sh
@@ -53,11 +55,11 @@ scripts/colcon_build.sh
 
 Notes:
 
-- **Use `scripts/fleet.sh`, not a bare `docker compose up -d`, to start and to change the robot count or models:** it keeps the per-slot container names and hostnames in `.env` in sync and removes robot containers you no longer want. A bare `docker compose up -d` is fine for restarting an unchanged setup.
+- **Use `scripts/fleet.sh`, not a bare `docker compose up -d`, to start and to change the robots:** the sim only spawns robots when it gets a spawn request (which `fleet.sh spawn` and the web UI write), and the script keeps the per-slot container names and hostnames in `.env` in sync and removes robot containers you no longer want. A bare `docker compose up -d` starts the sim and robot containers but spawns no robots unless a request from before is still there.
 - `robot_data/` (the real MTU robots' own `robot.yaml` files) and `sim/colcon_ws/` are not in git. Without them `gen_urdf.sh` still generates the four generic models (`a300`, `a200`, `j100`, `r100`); real-robot ids such as `j100_0921` only work once their `robot_data/<id>/robot.yaml` is present (see *Adding a real robot configuration file*).
 - The first start is slow: Isaac Sim compiles shaders and imports the URDF to USD. Later starts reuse the caches. `sim/assets/` and `sim/generated/` are not in git; `scripts/gen_urdf.sh` and the first start create them, so run the script after every fresh clone.
 - Then open the WebRTC Streaming Client and connect to `ISAACSIM_HOST` (from `.env`; use `127.0.0.1` when it runs on the same machine).
-- Optional: `python3 tools/sim_ui/server.py` serves a local web UI on <http://127.0.0.1:8090> to start/stop/reset the sim, spawn robots, run `sim_robot_upstart`, move the arm and start/stop `cut_stem`.
+- Optional: `python3 tools/sim_ui/server.py` serves a local web UI on <http://127.0.0.1:8090> to start/stop/reset the sim, spawn robots at poses you choose (number fields or a click on its top-down map), run `sim_robot_upstart`, move the arm and start/stop `cut_stem`. **Start** loads the scene only; pick the robots and their poses, then **Spawn**.
 
 Stop everything with `scripts/stop_sim.sh` (plain `docker compose down` misses robot services outside the active `NUM_ROBOTS` profile).
 
@@ -87,17 +89,23 @@ A running container keeps the image it was created from, so after `docker compos
 
 ## Number of robots
 
-`NUM_ROBOTS` in `.env` (0–8, default 3) sets how many robots are simulated: the sim spawns robots for slots `0 … N-1` and compose starts the matching robot containers. To change it use the helper, which also restarts the sim (it has to spawn a different number of robots) and removes robot containers that are no longer wanted:
+The sim starts in two parts: the **scene** (the farm, lights, physics; every robot model is imported or its cached import checked, but nothing is spawned) and then the **robots**, spawned into the running scene on request. `NUM_ROBOTS` in `.env` (0–8) is how many robots a spawn places, in slots `0 … N-1`; compose starts the matching robot containers. Spawning again replaces the robots in the scene without restarting the sim (the robot containers are recreated, since their odometry/arm state belonged to the old robots):
 
 ```bash
-scripts/fleet.sh 5        # set NUM_ROBOTS=5 in .env and (re)start the sim and 5 robots
-scripts/fleet.sh          # (re)start with the current NUM_ROBOTS
-scripts/fleet.sh down     # stop and remove everything (same as scripts/stop_sim.sh)
+scripts/fleet.sh scene               # start the sim with the scene only, wait until it is ready
+scripts/fleet.sh spawn 5             # set NUM_ROBOTS=5 in .env, spawn 5 robots, start their containers
+scripts/fleet.sh spawn --poses '[{"x":0,"y":0,"yaw":0},{"x":-3,"y":1.6,"yaw":90}]'   # choose the poses
+scripts/fleet.sh 5                   # both: scene, then spawn 5
+scripts/fleet.sh down                # stop and remove everything (same as scripts/stop_sim.sh)
 ```
+
+**Spawn poses** are `x`, `y` in metres in the world frame and `yaw` in degrees (0 = facing +x, the direction the lavender lanes run). Without `--poses` a slot uses `ROBOT_POSE_<i>="x,y,yaw"` from `.env` if set, else the default layout: up to `SCENE_LANES` (default 3) robots side by side 1.6 m apart at x = 0 between the two lavender rows, further robots in ranks 2.5 m behind (the web UI's *Default poses*). The sim rejects poses outside the 80 × 80 m ground, robots closer than 1 m to each other, and the same real robot in two slots. Poses are where the robot is placed; `platform/odom` (and the `ground_truth` TF) start at zero there.
+
+How it works: `scripts/fleet_ctl.py` writes `sim/generated/fleet/spawn_request.json`; the sim (`spawn_loop` in `sim/scripts/setup_scene.py`) stops the timeline, removes its robots, spawns the requested ones, plays again and reports in `sim/generated/fleet/state.json` (`scripts/fleet_ctl.py state` prints it). The last request that spawned successfully is kept (`applied_request.json`), so a sim that restarts (`docker restart a300-isaac-sim`, the web UI's *Reset scene*) spawns the same robots again -- a rejected request never replaces it; `scripts/fleet.sh down` / `stop_sim.sh`, and `fleet.sh scene` on a stopped sim, delete both files, so the next start is an empty scene. Robot models are only imported at sim start (the URDF importer replaces the open stage), so after `scripts/gen_urdf.sh` restart the sim before spawning a changed model -- the spawn says so if you forget.
 
 Each of the 8 possible slots gets a fixed Foxglove port (`8765 + slot index`), whatever the total. A slot's container name, hostname and ROS namespace are its **real Clearpath model name** plus its slot index — see below — not a generic label.
 
-You can also edit `NUM_ROBOTS` by hand and run `docker compose up -d`, which works for increasing the count. After lowering it, `docker compose up` leaves the surplus robot containers running (compose does not stop services of inactive profiles), so use `scripts/fleet.sh`.
+Lowering `NUM_ROBOTS` by hand and running `docker compose up -d` leaves the surplus robot containers running (compose does not stop services of inactive profiles), so use `scripts/fleet.sh`.
 
 More robots cost frame rate, roughly linearly (RTX 4080 SUPER, FastDDS, async rendering): about 40 fps with 1 robot, 23 with 2, 11 with 5. Set `SIM_RATE_HZ` to about the frame rate you get (`FLEET_DEBUG=1` prints it), or the sim does not run in real time; see *Faster streaming*. How a count above 8 could be added is described under *Changing the robots*.
 
@@ -310,7 +318,9 @@ Edit `.env` and restart with `docker compose up -d`.
 | `FLEET_RMW` | `rmw_zenoh_cpp` | ROS 2 middleware, see *Middleware* |
 | `ZENOH_ROUTER` | `tcp/zenoh-router:7447` | router the zenoh sessions connect to |
 | `ISAACSIM_HOST` | `127.0.0.1` | address the WebRTC client uses to reach the sim (the machine's LAN IP for remote clients; the `.env` in this repo holds this machine's LAN IP, change it for yours) |
-| `NUM_ROBOTS` | `3` | number of robots (0–8), see *Number of robots*; `.env` also derives `COMPOSE_PROFILES=n${NUM_ROBOTS}` from it, which selects the robot containers |
+| `NUM_ROBOTS` | `0` (`fleet.sh`) | number of robots a spawn places (0–8), see *Number of robots*; read by `scripts/fleet.sh`/`fleet_ctl.py`, not by the sim; `.env` also derives `COMPOSE_PROFILES=n${NUM_ROBOTS}` from it, which selects the robot containers |
+| `ROBOT_POSE_<i>` | unset | `"x,y,yaw"` (m, m, degrees) spawn pose of slot *i* for `fleet.sh spawn` without `--poses`; unset = the default layout |
+| `SCENE_LANES` | `3` | robot lanes between the two lavender rows; places the rows and the default spawn poses |
 | `ROS_DOMAIN_ID` | `0` | written into each robot's `robot.yaml` (`system.ros2.domain_id`) and from there into the generated `/etc/clearpath/setup.bash` |
 | `CAMERA_WIDTH` / `CAMERA_HEIGHT` | `640` / `360` | D435i image size |
 | `CAMERA_FRAME_SKIP` | `0` | publish every (N+1)th sim frame |

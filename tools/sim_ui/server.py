@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Local web UI for the simulated fleet: start/stop/reset the sim, spawn robots, start/stop
+"""Local web UI for the simulated fleet: start/stop/reset the sim (the scene only), spawn robots at chosen poses
+into the running scene (and start their containers), start/stop
 mtu32_bringup's sim_robot_upstart.launch.py per robot, and move the arm to named SRDF states
 (optionally recording commanded vs. observed joint positions while it moves).
 
@@ -10,9 +11,11 @@ Stdlib only. Long operations run as background jobs whose output the page polls.
 """
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -21,6 +24,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+import fleet_ctl  # noqa: E402  (the sim's spawn protocol: request/state files)
+
 PAGE = Path(__file__).with_name("index.html")
 PROJECT = "clearpath-fleet"
 SIM = "a300-isaac-sim"
@@ -124,6 +130,10 @@ def write_env(updates):
 
 
 def available_models():
+    # what the running sim imported and can spawn; without a sim, every generated URDF (scripts/gen_urdf.sh)
+    state = fleet_ctl.read_state()
+    if state and state.get("models"):
+        return sorted(state["models"])
     return sorted(d.name for d in (ROOT / "sim/assets").iterdir() if (d / f"{d.name}.urdf").exists())
 
 
@@ -175,6 +185,10 @@ def status():
     n = int(env.get("NUM_ROBOTS", "0") or 0)
     return {
         "sim": sim,
+        # the running sim's own report (scene loading/ready, robots in it, last spawn); None if not running
+        "scene": fleet_ctl.read_state() if sim and sim["state"] == "running" else None,
+        # last spawn request that worked, else the last one written (prefills the spawn form)
+        "request": fleet_ctl.read_request(applied=True) or fleet_ctl.read_request(),
         "num_robots": n,
         "slots": [env.get(f"ROBOT_MODEL_{i}", "a300") for i in range(MAX_SLOTS)],
         "models": available_models(),
@@ -185,19 +199,6 @@ def status():
 
 
 # ---------------------------------------------------------------- actions
-
-def wait_sim_healthy(job, timeout=300):
-    job.log("waiting for the sim to report healthy ...")
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        _, out = sh(["docker", "inspect", "-f", "{{.State.Health.Status}}", SIM])
-        if out.strip() == "healthy":
-            job.log(f"sim healthy after {time.time() - t0:.0f}s")
-            return True
-        time.sleep(3)
-    job.log("sim did not become healthy in time")
-    return False
-
 
 SIM_MODES = ("stream", "headed")
 
@@ -230,7 +231,8 @@ def act_sim_start(body):
             if j.run(["scripts/x11_auth.sh"], env=env) != 0:
                 return False
         j.log(f".env: SIM_MODE={mode}")
-        return j.run(["scripts/fleet.sh"], env=env) == 0 and wait_sim_healthy(j)
+        # scene only: the robots are spawned afterwards (act_spawn); waits until the scene is ready
+        return j.run(["scripts/fleet.sh", "scene"], env=env) == 0
 
     return start_job(f"start sim ({mode})", fn)
 
@@ -240,23 +242,46 @@ def act_sim_stop(_):
 
 
 def act_sim_reset(_):
-    # Restarting the sim container re-runs setup_scene.py: fresh scene, every robot back at its spawn pose.
-    # Robot containers (and their ROS nodes) keep running.
-    return start_job("reset scene", lambda j: j.run(["docker", "restart", SIM]) == 0 and wait_sim_healthy(j))
+    # Restarting the sim container re-runs setup_scene.py: fresh scene, then the last spawn request is spawned
+    # again, i.e. every robot back at its spawn pose. Robot containers (and their ROS nodes) keep running.
+    return start_job("reset scene", lambda j: j.run(["docker", "restart", SIM]) == 0
+                     and fleet_ctl.wait_scene(log=j.log))
 
 
 def act_spawn(body):
-    models = body.get("models")
+    # body: {robots: [{model, x, y, yaw}, ...]}, one per slot; x/y in m (world frame), yaw in degrees.
+    # The sim checks the rest (ground limits, spacing, duplicate real robots) and the job log shows its answer.
+    entries = body.get("robots")
     allowed = set(available_models())
-    if not isinstance(models, list) or len(models) > MAX_SLOTS or any(m not in allowed for m in models):
-        raise ValueError(f"models must be a list of up to {MAX_SLOTS} of {sorted(allowed)}")
+    if not isinstance(entries, list) or len(entries) > MAX_SLOTS:
+        raise ValueError(f"robots must be a list of up to {MAX_SLOTS} entries")
+    poses = []
+    for i, e in enumerate(entries):
+        if not isinstance(e, dict) or e.get("model") not in allowed:
+            raise ValueError(f"slot {i}: model must be one of {sorted(allowed)}")
+        pose = {}
+        for k in ("x", "y", "yaw"):
+            try:
+                pose[k] = float(e.get(k))
+            except (TypeError, ValueError):
+                raise ValueError(f"slot {i}: {k} must be a number")
+            if not math.isfinite(pose[k]):
+                raise ValueError(f"slot {i}: {k} must be finite")
+        poses.append(pose)
+    state = fleet_ctl.read_state()
+    if not state or state.get("scene") != "ready":
+        raise ValueError("the scene is not ready -- press Start and wait for it")
+    if (state.get("spawn") or {}).get("state") == "spawning":
+        raise ValueError("a spawn is already in progress")
+    models = [e["model"] for e in entries]
     updates = {"NUM_ROBOTS": str(len(models))}
     updates.update({f"ROBOT_MODEL_{i}": m for i, m in enumerate(models)})
 
     def fn(j):
         write_env(updates)
         j.log(f".env: {updates}")
-        return j.run(["scripts/fleet.sh", str(len(models))]) == 0 and wait_sim_healthy(j)
+        # the sim replaces its robots (the scene keeps running), then the robot containers are (re)created
+        return j.run(["scripts/fleet.sh", "spawn", "--poses", json.dumps(poses)]) == 0
 
     return start_job(f"spawn {len(models)} robot(s)", fn)
 
