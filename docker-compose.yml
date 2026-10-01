@@ -116,6 +116,8 @@ services:
       VELCTL: ${VELCTL:-1}
       FLEET_SETTINGS: ${FLEET_SETTINGS:-}
       FLEET_VIEWPORT_RES: ${FLEET_VIEWPORT_RES:-}
+      ROBOT_LOOKS: ${ROBOT_LOOKS:-full}
+      FLEET_SNAPSHOT: ${FLEET_SNAPSHOT:-}
     ports:
       - "49100:49100/tcp"   # WebRTC signalling
       - "47998:47998/udp"   # WebRTC media

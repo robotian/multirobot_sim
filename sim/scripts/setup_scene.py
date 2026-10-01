@@ -16,6 +16,7 @@ import math
 import os
 import random
 import re
+import sys
 import traceback
 
 import carb
@@ -23,6 +24,9 @@ import omni.kit.app
 import omni.timeline
 import omni.usd
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade
+
+sys.path.insert(0, "/sim/scripts")
+import robot_looks  # noqa: E402  (ROBOT_LOOKS: photo-realistic robot materials)
 
 _num_robots = int(os.environ.get("NUM_ROBOTS", "3"))
 _models = [m.strip() for m in os.environ.get("ROBOT_MODELS", "a300").split(",") if m.strip()][:_num_robots]
@@ -1868,6 +1872,59 @@ def set_viewport_resolution():
         log(f"could not set viewport resolution: {e}")
 
 
+def apply_robot_looks():
+    """ROBOT_LOOKS=full|basic|0: rebind the robots' visuals to realistic materials (sim/scripts/robot_looks.py).
+    Visual only, and best effort: on any error the robots keep the importer's materials."""
+    if not robot_looks.enabled():
+        log(f"robot looks off (ROBOT_LOOKS={robot_looks.MODE})")
+        return
+    try:
+        lib = robot_looks.build_library()
+        for model in dict.fromkeys(model for _, model in ROBOTS):
+            robot_looks.apply(model, MODEL_ASSETS[model]["usd_path"], lib)
+        log(f"robot looks: {robot_looks.MODE}")
+    except Exception:
+        log("robot looks failed, keeping the importer's materials:\n" + traceback.format_exc())
+
+
+SNAPSHOT_VIEWS = {  # name: (camera offset from the robot, in m, robot frame; look-at height)
+    "front": ((2.0, -1.3, 1.1), 0.35),
+    "rear": ((-1.8, 1.4, 1.2), 0.35),
+    "close": ((0.9, -0.7, 0.55), 0.25),
+}
+
+
+async def snapshot_loop():
+    """FLEET_SNAPSHOT=<dir>: once the sim runs, aim the viewport at each robot from a few angles and save PNGs to
+    <dir> (e.g. /sim/generated/snapshots), then put the viewport back. For comparing looks with photos."""
+    out = os.environ.get("FLEET_SNAPSHOT", "")
+    from omni.kit.viewport.utility import capture_viewport_to_file, get_active_viewport
+    from omni.kit.viewport.utility.camera_state import ViewportCameraState
+
+    app = omni.kit.app.get_app()
+    os.makedirs(out, exist_ok=True)
+    stage = omni.usd.get_context().get_stage()
+    for _ in range(int(SIM_RATE_HZ * 8)):  # let the robots settle
+        await app.next_update_async()
+    vp = get_active_viewport()
+    state = ViewportCameraState("/OmniverseKit_Persp")
+    tag = robot_looks.MODE
+    for ns, model in ROBOTS:
+        chassis = stage.GetPrimAtPath(find_prim(stage, f"/World/{ns}", MODEL_PARAMS[model]["chassis_link"]))
+        p = UsdGeom.Xformable(chassis).ComputeLocalToWorldTransform(0).ExtractTranslation()
+        for view, ((dx, dy, dz), tz) in SNAPSHOT_VIEWS.items():
+            state.set_position_world(Gf.Vec3d(p[0] + dx, p[1] + dy, dz), True)
+            state.set_target_world(Gf.Vec3d(p[0], p[1], tz), True)
+            for _ in range(40):  # path-tracing accumulation
+                await app.next_update_async()
+            path = f"{out}/{ns}_{view}_{tag}.png"
+            capture_viewport_to_file(vp, path)
+            for _ in range(5):
+                await app.next_update_async()
+            log(f"snapshot {path}")
+    aim_viewport()
+
+
 async def debug_loop(og):
     """FLEET_DEBUG=1: log the command chain and chassis pose of the first robot every 2 s."""
     from pxr import UsdGeom as _G
@@ -1921,6 +1978,7 @@ async def main():
         ])
         for model in dict.fromkeys(model for _, model in ROBOTS):  # each distinct model once, first-seen order
             import_urdf_if_needed(model)
+        apply_robot_looks()
 
         import omni.graph.core as og
         import usdrt.Sdf as usdrt_sdf
@@ -1962,6 +2020,8 @@ async def main():
         log(f"simulation running with {len(ROBOTS)} robots: {', '.join(ns for ns, _ in ROBOTS)}")
         if os.environ.get("FLEET_DEBUG") == "1":
             asyncio.ensure_future(debug_loop(og))
+        if os.environ.get("FLEET_SNAPSHOT"):
+            asyncio.ensure_future(snapshot_loop())
     except Exception:
         log("FATAL error while building the scene:\n" + traceback.format_exc())
 
