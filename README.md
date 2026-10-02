@@ -1,8 +1,8 @@
 # Clearpath fleet in Isaac Sim
 
-A configurable number (0–8, three if `.env` doesn't say otherwise) of Clearpath robots, each with a RealSense D435i facing forward, simulated in NVIDIA Isaac Sim 6.0 and driven over ROS 2 Jazzy. Each robot slot independently runs one of four real Clearpath models — A300, A200, Jackal (`j100`) or Ridgeback (`r100`) — so the fleet can be a single model or a mix; see *Number of robots*.
+A configurable number (0–8, three if `.env` doesn't say otherwise) of Clearpath robots simulated in NVIDIA Isaac Sim 6.0 and driven over ROS 2 Jazzy. Each robot slot independently runs one of four generic Clearpath models — A300, A200, Jackal (`j100`) or Ridgeback (`r100`), each with a RealSense D435i facing forward — or one of MTU's real robots with its own sensors and Kinova arm (`j100_0921`, `a200_0284`, `a300_00036`, ...), so the fleet can be a single model or a mix; see *Number of robots*.
 
-- **Isaac Sim** runs in one container and is streamed to you over WebRTC (no local GUI).
+- **Isaac Sim** runs in one container and is streamed to you over WebRTC, or shows its own desktop window with `SIM_MODE=headed` (needs `scripts/x11_auth.sh`; the headed app takes ~3 min to start).
 - **Each robot** has its own ROS 2 container, standing in for the robot's onboard computer. It talks to the sim over a private Docker network, as a real robot would over a LAN. The middleware is `rmw_zenoh_cpp` (as on the real robots, through a `zenoh-router` container) or Fast DDS; see *Middleware*.
 - Inside a robot container you can view the camera, drive with the keyboard, open RViz and run a Foxglove bridge.
 
@@ -11,7 +11,7 @@ A configurable number (0–8, three if `.env` doesn't say otherwise) of Clearpat
  WebRTC client ──┤ isaac-sim  (N robots, each A300/A200/Jackal/Ridgeback + D435i, ROS 2 bridge)                │
  49100/tcp       │    ▲ cmd_vel        │ odom, joint_states, tf, camera images                                │
  47998/udp       │    │                ▼                                                                      │
-                 │ a300_0000   j100_0001   ...        ← robot_state_publisher, teleop, RViz, foxglove_bridge  │
+                 │ a300_0000   j100_0921   ...        ← robot_state_publisher, EKF, teleop, RViz, foxglove    │
                  └────────────────────────────────────────────────────────────────────────────────────────────┘
                                 8765         8766       (N = NUM_ROBOTS, Foxglove WebSocket on 8765 + slot index)
 ```
@@ -120,7 +120,7 @@ Each slot's model comes from `ROBOT_MODEL_<i>` in `.env` (`i` = 0–7, matching 
 | `j100` | Clearpath Jackal | skid-steer, native |
 | `r100` | Clearpath Ridgeback | omnidirectional — see below |
 | `j100_0921` / `j100_0936` / `j100_0922` | MTU's own real Jackals, from their actual `robot_data/<serial>/robot.yaml` | skid-steer, native |
-| `a200_0333` | MTU's own real A200, from `robot_data/a200_0333/robot.yaml` | skid-steer, native |
+| `a200_0333` / `a200_0284` | MTU's own real A200s, from `robot_data/<serial>/robot.yaml` | skid-steer, native |
 | `a300_00036` | MTU's own real A300, from `robot_data/a300_00036/robot.yaml` | skid-steer, native |
 
 Leaving `ROBOT_MODEL_<i>` unset defaults that slot to `a300` (matches every earlier version of this project). To mix models:
@@ -133,7 +133,7 @@ ROBOT_MODEL_2=r100   # slot 2 becomes a Ridgeback, r100_0002
 # slot 0 stays a300 (unset)
 ```
 
-then `scripts/fleet.sh` (or `docker compose up -d --force-recreate`) to apply it. `scripts/gen_urdf.sh` generates every model's URDF unconditionally (the four generic ones plus one per `robot_data/<id>/` folder that has a `robot.yaml`), so nothing needs regenerating when you change `ROBOT_MODEL_<i>`.
+then `scripts/fleet.sh` to apply it (not a plain `docker compose up -d`: it keeps the slot's container name and hostname in `.env` in sync). `scripts/gen_urdf.sh` generates every model's URDF unconditionally (the four generic ones plus one per `robot_data/<id>/` folder that has a `robot.yaml`), so nothing needs regenerating when you change `ROBOT_MODEL_<i>`.
 
 Two things worth knowing:
 - **A slot's numeric suffix is its slot index, not a per-model count.** Two Jackals in slots 1 and 4 show up as `j100_0001` and `j100_0004`, not `j100_0000`/`j100_0001`.
@@ -142,8 +142,10 @@ Two things worth knowing:
 - Robots also keep a fixed spacing regardless of model size (fine for A300/A200/Jackal; Ridgeback is larger and might feel tight next to another robot).
 - **A `ROBOT_MODEL_<i>` for a slot `NUM_ROBOTS` doesn't reach is silently ignored** — that slot just never starts, so e.g. `NUM_ROBOTS=2` with `ROBOT_MODEL_2` set gives you slots 0/1 (defaulting to a300 if unset) and no slot 2 at all, not the model you configured. `scripts/fleet.sh` now warns about this (`ROBOT_MODEL_<i> ... is not running`) instead of leaving it to be found by getting the wrong robot.
 - **Jackal's fenders looked attached at spawn but drifted away once it drove or turned.** They're purely decorative (no collision, no mass) in Clearpath's own mesh, and Isaac's importer still makes them a separate physics body with a fixed-joint constraint to the chassis — one too light relative to the rest of the robot to stay perfectly rigid under motion. Fixed by folding them directly into the chassis at URDF-generation time (`merge_visual_only_links` in `scripts/flatten_urdf.py`) instead of relying on that constraint; see *Changing the robots* if you add a model with similar decorative parts.
-- **`j100_0921`/`j100_0936` are MTU's own physical robots**, spawned from their real `robot_data/<serial>/robot.yaml` files, not a generic Clearpath sample (`j100_0921`'s is used completely unmodified, including its `platform.extras` — MTU's own `mtu32_description` package is colcon-built and included; `j100_0936`'s own `robot_data` folder isn't currently available, so it still goes through a stripped-down template with `platform.extras` dropped), and — unlike every other model, which is `<model>_%04d` per slot — both their ROS namespace *and* their docker container name are their own id directly (`j100_0921`, not `j100_0921_0000`): they're one specific real robot each, not a generic model needing a slot index to stay unique. Run `scripts/fleet.sh`, not `docker compose up -d` directly, after changing a slot's model for this to take effect (it keeps `ROBOT_SUFFIX_<i>` in `.env` in sync with `ROBOT_MODEL_<i>`, working around `docker-compose.yml`'s own inability to compute this conditionally). See CLAUDE.md's *Real robots* section for exactly what's kept/dropped/fixed versus the real config. Their full real sensor/arm loadout is simulated: a Stereolabs ZED2i camera, a Microstrain IMU, dual SwiftNav Duro GPS (a flat-earth projection around Michigan Tech's Houghton campus — not real satellite geometry), and a Kinova Gen3 Lite arm + 2F Lite gripper (drive a pose with `ros2 topic pub .../arm_0/joint_command sensor_msgs/msg/JointState "{name: [...], position: [...]}"`). `j100_0936` additionally carries a real SICK LMS1xx 2D lidar — 2D lidar itself is now simulated (see `a200_0333` below and *2D lidar* below), but `j100_0936` isn't wired up to it yet since its own `robot_data` folder isn't currently available.
-- **`a200_0333`/`a300_00036` are two more MTU real robots**, same "real `robot_data/<serial>/robot.yaml` used directly" pipeline as `j100_0921` — neither references any private package, so `generate_description` succeeded first try with no workarounds needed. `a200_0333` carries a real D435 camera, a Hokuyo UST 2D lidar, and a Velodyne VLP16 3D lidar — all three simulated; see *2D lidar* and *3D lidar* below. `a300_00036` carries only a real Phidgets Spatial IMU (simulated) and no camera at all.
+- **`j100_0921`/`j100_0936` are MTU's own physical robots**, spawned from their real `robot_data/<serial>/robot.yaml` files, not a generic Clearpath sample (`j100_0921`'s is used completely unmodified, including its `platform.extras` — MTU's own `mtu32_description` package is colcon-built and included; `j100_0936`'s own `robot_data` folder isn't currently available, so it still goes through a stripped-down template with `platform.extras` dropped), and — unlike every other model, which is `<model>_%04d` per slot — both their ROS namespace *and* their docker container name are their own id directly (`j100_0921`, not `j100_0921_0000`): they're one specific real robot each, not a generic model needing a slot index to stay unique. Run `scripts/fleet.sh`, not `docker compose up -d` directly, after changing a slot's model for this to take effect (it keeps `ROBOT_SUFFIX_<i>` in `.env` in sync with `ROBOT_MODEL_<i>`, working around `docker-compose.yml`'s own inability to compute this conditionally). See the `add-real-robot` skill (`.claude/skills/add-real-robot/SKILL.md`) for exactly what's kept/dropped/fixed versus the real config. Their full real sensor/arm loadout is simulated: a Stereolabs ZED2i camera, a Microstrain IMU, dual SwiftNav Duro GPS (a flat-earth projection around Michigan Tech's Houghton campus — not real satellite geometry), and a Kinova Gen3 Lite arm + 2F Lite gripper (drive a pose with `ros2 topic pub .../arm_0/joint_command sensor_msgs/msg/JointState "{name: [...], position: [...]}"`). `j100_0936` additionally carries a real SICK LMS1xx 2D lidar — 2D lidar itself is now simulated (see `a200_0333` below and *2D lidar* below), but `j100_0936` isn't wired up to it yet since its own `robot_data` folder isn't currently available.
+- **`a200_0333`, `a200_0284` and `a300_00036` are more MTU real robots**, same "real `robot_data/<serial>/robot.yaml` used directly" pipeline as `j100_0921`. `a200_0333` carries a D435 camera, a Hokuyo UST 2D lidar and a Velodyne VLP16 3D lidar (see *2D lidar* and *3D lidar* below). `a200_0284` carries the MTU field loadout: Microstrain IMU, dual SwiftNav Duro GPS, a SICK LMS1xx 2D lidar and a Kinova Gen3 **7-DOF** arm with a Robotiq 2F-85 gripper. `a300_00036` carries a D435, a Hokuyo UST 2D lidar, dual Duro GPS, a Microstrain IMU and a Kinova Gen3 Lite arm + 2F Lite gripper. `a200_0284` and `a300_00036` run `cut_stem` (per-robot settings in `colcon_ws/src/stow_arm_cpp/config/robots/<id>.yaml`).
+- **`j100_0922` is `j100_0921`'s twin minus the arm** — same camera/IMU/GPS loadout, but its `robot.yaml` has no `manipulators:` section. It used to tip over while driving because links without `<inertial>` got far too much mass from their colliders (75 kg instead of 18 kg); `MODEL_PARAMS["j100_0922"]` now sets `massless_density`/`frame_mass`, and it drives and passes the velocity calibration. The other real robots keep the default masses (their `cut_stem` runs were tuned with them).
+- **Velocity tracking:** every model runs a closed velocity loop in the sim (feed-forward + PI on the measured chassis speed and yaw rate) and holds its wheels with a brake at zero command, so commanded and achieved speeds match within ~5% over 0–1 m/s and 0–1 rad/s. Check a robot with `docker exec <robot> bash -c 'python3 /scripts/calibrate_velocity.py'` (stows the arm first; exits 1 if any level is >10% off). Details in `sim/CLAUDE.md`.
 
 ### 2D lidar
 
@@ -153,13 +155,11 @@ Each 2D lidar casts a ray fan matching the real sensor's FOV (541 rays over ±13
 
 `a200_0333`'s Velodyne VLP16 (16 channels × 360 horizontal steps, real ±15° vertical FOV) uses the same raycasts and publishes `sensor_msgs/PointCloud2` on `sensors/lidar3d_0/points`, in the lidar's frame. A scan is spread over 4 frames (4 channels per frame), so a full cloud comes every 4 frames (~5 Hz at `SIM_RATE_HZ=22`).
 
-**Why not Isaac's raycast sensor:** both lidars used to be `isaacsim.sensors.experimental.physics` `Raycast`/`RaycastSensor` prims, but that plugin segfaults the whole sim (exit 139) inside its own per-physics-step update, a second or two after play -- `a200_0333` crashed 6 of 6 times as the first spawn at (0.4, -0.5), and three robots including it crashed at the default poses. With the raycasts above: 0 crashes. They cost about 13 ms per frame with both of `a200_0333`'s lidars (render fps ~29 → ~21 with that robot alone), similar to what the plugin's 3D lidar alone cost. See CLAUDE.md (*Lidars now cast their own rays*) and the comment above `LIDAR2D_READ_SCRIPT` in `sim/scripts/setup_scene.py`.
-
-- **`j100_0922` is `j100_0921`'s twin minus the arm** — same camera/IMU/GPS loadout, but its `robot.yaml` has no `manipulators:` section at all. **It visibly wheelies (pitches up on its rear wheels) under even a gentle drive command** — reproducible from a fresh, level spawn every time, not random settling noise. Likely cause: genuinely lighter than the arm-equipped Jackals, so the same wheel-drive torque that's gentle on every other real robot here produces a much larger pitching moment on this one. Not fixed yet — documented as a known characteristic; see *Known limitations*.
+**Why not Isaac's raycast sensor:** both lidars used to be `isaacsim.sensors.experimental.physics` `Raycast`/`RaycastSensor` prims, but that plugin segfaults the whole sim (exit 139) inside its own per-physics-step update, a second or two after play -- `a200_0333` crashed 6 of 6 times as the first spawn at (0.4, -0.5), and three robots including it crashed at the default poses. With the raycasts above: 0 crashes. They cost about 13 ms per frame with both of `a200_0333`'s lidars (render fps ~29 → ~21 with that robot alone), similar to what the plugin's 3D lidar alone cost. See `sim/CLAUDE.md` (*Lidars now cast their own rays*) and the comment above `LIDAR2D_READ_SCRIPT` in `sim/scripts/setup_scene.py`.
 
 ## Adding a real robot configuration file
 
-A real Clearpath robot's own `robot.yaml` can be simulated directly, unmodified — no template, no placeholder substitution — as long as any private/custom packages it depends on are made available. `j100_0921`, `a200_0333` and `a300_00036` already work this way; use one of them as a worked example.
+A real Clearpath robot's own `robot.yaml` can be simulated directly, unmodified — no template, no placeholder substitution — as long as any private/custom packages it depends on are made available. `j100_0921`, `a200_0284` and `a300_00036` already work this way; use one of them as a worked example.
 
 1. **Drop the robot's own config into `robot_data/<id>/robot.yaml`**, where `<id>` is the model code you'll use everywhere else (e.g. `robot_data/j100_0955/robot.yaml`, giving the code `j100_0955`). This directory is gitignored — it holds real, potentially private robot data, not project source.
    - Check `serial_number:` uses a **hyphen** (`j100-0955`), not an underscore — `clearpath_config`'s schema requires the hyphenated form, and it's an easy typo to copy in from elsewhere. This would also break the real robot booting with the same file, so it's worth fixing at the source.
@@ -174,7 +174,7 @@ A real Clearpath robot's own `robot.yaml` can be simulated directly, unmodified 
 3. **Wire it into the sim**: add an entry to `MODEL_PARAMS` in `sim/scripts/setup_scene.py`, copying an existing real robot's entry as a starting point (`MODEL_ASSETS` needs nothing: it lists every `sim/assets/<id>/<id>.urdf` that `gen_urdf.sh` produced). The robot's own `domain_id` is ignored: the robot container is put on the fleet's `ROS_DOMAIN_ID` (see `robot/entrypoint.sh`).
    - Drivetrain (`wheel_radius`, `wheel_separation`, `separation_multiplier`, `max_linear`, `max_angular`): use the matching generic model's own values, unless the robot's `robot.yaml` has a `platform.extras.ros_parameters.platform_velocity_controller` override (real calibrated numbers, common on the Jackals) — use those instead.
    - `chassis_link` (the link the drive/odometry graph targets) **must be confirmed against the actual imported USD, not guessed** — it has to be a prim the importer gave `UsdPhysics.ArticulationRootAPI`, and it isn't always the obviously chassis-looking link (A200's own case is the standing example). Guessing wrong fails silently at import time; it only shows up the first time you try to drive it, as `OmniGraph Error: Articulation controller failed`.
-   - Sensors, as present: `camera_optical_link` (leave unset if the camera produces a plain `camera_0_link`, like every generic model — `add_camera`'s default path handles that; set it only if the camera's own xacro already emits a correctly-oriented optical frame under a different name, like the ZED2i's), `imu_link`, `gps_links`, `has_arm`, `has_camera=False` (only if there's no camera at all), `lidar2d_link`/`lidar3d_link` (both simulated via a real per-physics-step raycast sensor, not RTX; see *2D lidar*/*3D lidar*). **Check every sensor's link name against the flattened URDF, not the raw `robot.yaml`** — a purely-visual sensor mount can get folded into a different, higher-up link during flattening (`merge_visual_only_links`); an existing real robot's own comment in `MODEL_PARAMS` shows a worked example.
+   - Sensors, as present: `camera_optical_link` (leave unset if the camera produces a plain `camera_0_link`, like every generic model — `add_camera`'s default path handles that; set it only if the camera's own xacro already emits a correctly-oriented optical frame under a different name, like the ZED2i's), `imu_link`, `gps_links`, `has_arm`, `has_camera=False` (only if there's no camera at all), `lidar2d_link`/`lidar3d_link` (simulated with PhysX scene-query raycasts, not RTX; see *2D lidar*/*3D lidar*), `massless_density`/`frame_mass` if the robot tips over (see `j100_0922`). **Check every sensor's link name against the flattened URDF, not the raw `robot.yaml`** — a purely-visual sensor mount can get folded into a different, higher-up link during flattening (`merge_visual_only_links`); an existing real robot's own comment in `MODEL_PARAMS` shows a worked example.
 
 4. **Start it** like any other model:
    ```bash
@@ -187,7 +187,7 @@ A real Clearpath robot's own `robot.yaml` can be simulated directly, unmodified 
    ```
    Use `scripts/fleet.sh`, not a plain `docker compose up -d`: a real robot's container name and hostname are `<model>-<serial>`-style values computed in bash from `ROBOT_MODEL_<i>`'s content, since `docker-compose.yml`'s own interpolation can't inspect a variable to decide this — only `fleet.sh` keeps them in sync when you change a slot's model.
 
-5. **Verify it the same way every model here is verified — live, not just "it imported cleanly"**: a gentle drive test first (`docker exec j100_0955 bash -c 'python3 /scripts/drive_test.py 0.15 0 1.5'` — small commands especially for anything lighter than a fully-loaded robot, which can wheelie under too aggressive a command), then check each sensor's actual topic delivers real data, not just that it's listed (`ros2 topic echo`, not only `ros2 topic list`).
+5. **Verify it the same way every model here is verified — live, not just "it imported cleanly"**: a gentle drive test first (`docker exec j100_0955 bash -c 'python3 /scripts/drive_test.py 0.15 0 1.5'` — small commands especially for anything lighter than a fully-loaded robot, which can wheelie under too aggressive a command), then check each sensor's actual topic delivers real data, not just that it's listed (`ros2 topic echo`, not only `ros2 topic list`), and run `calibrate_velocity.py`.
 
 ## Using the robots
 
@@ -201,6 +201,10 @@ Run these on the host. `a300_0000` can be replaced by any other robot, whatever 
 | Shell in the robot | `docker exec -it a300_0000 bash` |
 | Shell as the `robot` user (for the ROS workspace) | `docker exec -it -u robot a300_0000 bash` |
 | Drive test (commanded vs. measured motion) | `docker exec a300_0000 bash -c 'python3 /scripts/drive_test.py 0.5 0 4'` |
+| Velocity calibration sweep | `docker exec a300_0000 bash -c 'python3 /scripts/calibrate_velocity.py'` |
+| Restart every ROS node in the robot (background services come back on their own) | `docker exec a300_0000 restart_ros` |
+| Arm to a named SRDF pose / list them (robots with an arm) | `docker exec j100_0921 bash -c 'arm_goto cut_init'` / `arm_goto --list` |
+| Commanded vs. observed arm joints | `docker exec j100_0921 bash -c 'arm_joints --record 12'` |
 
 Plain `docker exec <container> <ros command>` has no ROS environment. Use one of the commands above, `bash -c '…'`, or open a shell first.
 
@@ -225,7 +229,7 @@ scripts/colcon_build.sh --symlink-install  # extra arguments are passed straight
 
 Because `colcon_ws` is the same host folder in every container, the first container's build already produces the `build/`/`install/` that all the others see; the script still runs `colcon build` in each running robot container in turn (cheap and incremental after the first) so none of them can be left stale, and reports which ones (if any) failed.
 
-The container's main process still runs as root (the entrypoint needs it to write `/etc/clearpath/robot.yaml` and to run `robot_state`/`foxglove`); `robot` is only for workspace work via `docker exec -u robot`. `colcon_ws/build/`, `install/` and `log/` are gitignored; put packages under `colcon_ws/src/`.
+The container's main process still runs as root (the entrypoint needs it to write `/etc/clearpath/robot.yaml` and to run the background services `robot_state`, `ekf`, `foxglove` and `pruner_stub`); `robot` is only for workspace work via `docker exec -u robot`. `colcon_ws/build/`, `install/` and `log/` are gitignored; put packages under `colcon_ws/src/`.
 
 `colcon_ws` is sourced the same way it would be on a real Clearpath robot: `robot.yaml`'s `system.ros2.workspaces` names it, and the entrypoint runs Clearpath's own `generate_bash` generator against that `robot.yaml` to produce `/etc/clearpath/setup.bash`, which sources ROS, then `colcon_ws/install/setup.bash`, then applies `ROS_DOMAIN_ID`/`RMW_IMPLEMENTATION`. Every shell in the container — the main process and any `docker exec` — sources that same generated file, so a package built once is available everywhere without hand-rolled sourcing logic. On a workspace nobody has built yet, the entrypoint creates a one-line placeholder `install/setup.bash` so this never fails on a fresh clone; `colcon build` overwrites it with the real thing.
 
@@ -257,12 +261,17 @@ All topics live under the robot's namespace (`a300_0000`, `j100_0001`, …, what
 | Topic | Type | Notes |
 |---|---|---|
 | `cmd_vel` | `geometry_msgs/TwistStamped` | input (as on the real Clearpath Jazzy platform; plain `Twist` is ignored); skid-steer, limits depend on the model (`MODEL_PARAMS` in `sim/scripts/setup_scene.py`) |
-| `platform/odom` | `nav_msgs/Odometry` | |
-| `platform/joint_states` | `sensor_msgs/JointState` | the four wheel joints |
-| `tf`, `tf_static` | `tf2_msgs/TFMessage` | `odom → base_link` from the sim, the rest from `robot_state_publisher` |
+| `platform/odom` | `nav_msgs/Odometry` | from the sim: exact pose relative to the spawn point (stands in for wheel odometry) |
+| `platform/odom/filtered` | `nav_msgs/Odometry` | the robot's EKF (`robot/bin/ekf`), fusing `platform/odom` and the IMU |
+| `platform/joint_states` | `sensor_msgs/JointState` | wheel joints, plus arm and gripper joints on robots with an arm |
+| `tf`, `tf_static` | `tf2_msgs/TFMessage` | `odom → base_link` from the EKF; `ground_truth → base_link_ground_truth` (exact pose) from the sim; the rest from `robot_state_publisher` |
 | `robot_description` | `std_msgs/String` | latched (transient local) |
 | `sensors/camera_0/color/image`, `…/color/camera_info` | `sensor_msgs/Image`, `CameraInfo` | `rgb8`, frame `camera_0_color_optical_frame` |
-| `sensors/camera_0/depth/image`, `…/depth/camera_info` | `sensor_msgs/Image`, `CameraInfo` | |
+| `sensors/camera_0/depth/image`, `…/depth/camera_info` | `sensor_msgs/Image`, `CameraInfo` | (`camera_1/…` too on robots with a second camera) |
+| `sensors/imu_<n>/data` | `sensor_msgs/Imu` | robots with an IMU |
+| `sensors/gps_<n>/fix` | `sensor_msgs/NavSatFix` | robots with GPS (flat-earth projection around a fixed origin) |
+| `sensors/lidar2d_0/scan`, `sensors/lidar3d_0/points` | `LaserScan`, `PointCloud2` | robots with a lidar, see *2D lidar* / *3D lidar* |
+| `arm_0/joint_command` | `sensor_msgs/JointState` | input: arm/gripper position targets (normally from `moveit_sim_bridge`) |
 
 `ros2 run` ignores `ROS_NAMESPACE`, so custom tools must set the namespace with `--ros-args -r __ns:=/$ROBOT_NAMESPACE`, as the `teleop` and `camera_view` wrappers do.
 
@@ -308,9 +317,9 @@ What follows from the switch:
 
 ## Configuration
 
-Edit `.env` and restart with `docker compose up -d`.
+Edit `.env`, then `docker restart a300-isaac-sim` for sim variables, or `scripts/fleet.sh` for anything about the robots (count, models, middleware).
 
-"Default" below is the fallback in `docker-compose.yml`, used only if a variable is missing from `.env` entirely. This repo's checked-in `.env` sets most of them explicitly, currently: `NUM_ROBOTS=2`, `FLEET_RMW=rmw_fastrtps_cpp`, `SIM_RATE_HZ=22`, `FLEET_SETTINGS` = async rendering (see below) — a state tuned in earlier testing on this machine, not a recommendation for yours.
+"Default" below is the fallback in `docker-compose.yml`, used only if a variable is missing from `.env` entirely. This repo's checked-in `.env` sets most of them explicitly, currently: `NUM_ROBOTS=3`, real robots in `ROBOT_MODEL_0..3`, `FLEET_RMW=rmw_fastrtps_cpp`, `SIM_RATE_HZ=22`, `SIM_MODE=headed`, `FLEET_SETTINGS` = async rendering (see below) — a state tuned in earlier testing on this machine, not a recommendation for yours.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -324,8 +333,9 @@ Edit `.env` and restart with `docker compose up -d`.
 | `CAMERA_WIDTH` / `CAMERA_HEIGHT` | `640` / `360` | D435i image size |
 | `CAMERA_FRAME_SKIP` | `0` | publish every (N+1)th sim frame |
 | `CAMERA_STREAMS` | `color,depth` | streams to publish; `none` turns the cameras off completely |
-| `SIM_RATE_HZ` | `20` | frames per second of simulated time; keep it close to the frame rate the sim reaches (see *Faster streaming*) |
+| `SIM_RATE_HZ` | `20` | frames per second of simulated time; keep it close to the frame rate the sim reaches (see *Faster streaming*). Prefer a value that divides `PHYSICS_HZ` (20, 15, 12, 10, 30): Kit runs `floor(PHYSICS_HZ / SIM_RATE_HZ)` physics steps per frame, so otherwise simulated time and physics drift apart |
 | `PHYSICS_HZ` | `60` | physics steps per second of simulated time |
+| `SIM_MODE` | `stream` | `stream` (WebRTC) or `headed` (Isaac's desktop window on this machine's X display; needs `scripts/x11_auth.sh`) |
 | `FLEET_DEBUG` | `0` | `1` logs real-time factor, render fps and robot pose every few seconds |
 | `FORCE_REIMPORT` | `0` | `1` re-imports the URDF into USD |
 | `FLEET_SETTINGS` | (none) | extra Kit settings, `"/path/a=1;/path/b=text"`; this repo's `.env` sets `/app/asyncRendering=true` and `/app/asyncRenderingLowLatency=true`, see *Faster streaming* |
@@ -367,7 +377,7 @@ The URDF importer gives every robot part one flat colour with the same plastic-l
 - **Looks:** each visual part is matched by name, material name and colour (rules `RULES`, per-robot overrides `MODEL_RULES`) to one of a dozen NVIDIA OmniPBR materials: glossy Clearpath-yellow paint (clear coat, orange peel), black powder coat with scuffs, semi-gloss black bumpers, knobby rubber tyres with mud, brushed aluminium (the A300's arch posts, the Jackal's top assembly), anodised sensor housings, glossy white Kinova links, matte white GNSS domes, black plastic, red e-stops, glass. Unmatched coloured parts keep their colour with a plastic surface; emissive status lights are left alone.
 - **Detail:** colour, roughness and normal textures are generated procedurally (numpy, seamless) on the first start into `sim/generated/looks/` (~25 s, cached afterwards; delete the folder or bump `VERSION` to regenerate). Parts have no UVs, so OmniPBR projects the textures in object space; a texture tile is 0.5 m on every part. Parts low on the robot (< 0.18 m, plus tyres and bumpers) get the heavier dust variant. Edges get OmniPBR's shading-only rounded edges (3 mm).
 - **Visual only:** only the visual material bindings change, in memory (the import cache in `sim/generated/<model>/` stays as imported). Colliders, physics materials and masses are untouched, so driving and the lidars behave the same.
-- **Cost:** measured with 3 camera-equipped robots (RTX 4080 SUPER, 22 Hz, async rendering): render fps 8.8-9.3 with the flat materials, 9.2-9.7 with `full`, 9.6-9.8 with `basic`, i.e. no measurable difference; `full` adds ~25 s to the first start only. If it costs too much on another GPU, set `ROBOT_LOOKS=basic` (no textures) or `ROBOT_LOOKS=0` (original materials) in `.env` and restart the sim (`docker compose up -d isaac-sim`).
+- **Cost:** measured with 3 camera-equipped robots (RTX 4080 SUPER, 22 Hz, async rendering): render fps 8.8-9.3 with the flat materials, 9.2-9.7 with `full`, 9.6-9.8 with `basic`, i.e. no measurable difference; `full` adds ~25 s to the first start only. If it costs too much on another GPU, set `ROBOT_LOOKS=basic` (no textures) or `ROBOT_LOOKS=0` (original materials) in `.env` (or the web UI's *Robot look* selector) and restart the sim (`docker restart a300-isaac-sim`).
 
 | Before (`ROBOT_LOOKS=0`) | After (`ROBOT_LOOKS=full`) |
 |---|---|
@@ -385,18 +395,18 @@ The plant is a Nanite mesh exported from Unreal, shipped with its own real MDL s
 
 | Close-up | In the scene |
 |---|---|
-| ![lavender close-up, stems and flower spikes visible](docs/images/lavender_closeup.png) | ![lavender row alongside a target box](docs/images/lavender_in_scene.png) |
+| ![lavender close-up, stems and flower spikes visible](docs/images/lavender_closeup.png) | ![lavender in the scene](docs/images/lavender_in_scene.png) |
 
 *(Both grabbed from `j100_0921`'s own camera feed over ROS — `sensor_msgs/Image` on `sensors/camera_0/color/image`, rotated 180° for display — not the Isaac Sim client's own viewport, which renders noticeably cleaner: its RTX-Real-Time mode converges better than this path-traced ROS camera stream, especially on thin geometry like the stems. The rotation isn't a sim quirk: `j100_0921`'s (and `a200_0333`'s) real camera is physically mounted rolled 180° — see `robot_data/j100_0921/robot.yaml`'s `zed_mount` link (`rpy: [3.14159, 0, 0]`) — so the raw topic is genuinely upside-down on both the real robot and here, matching hardware faithfully.)*
 
 **Tuning it live, in the Isaac Sim client, no file editing required:**
 
-1. **File → Open Stage**, and open `/sim/assets/lavender/SM_Lavender_Nanite_01.usd` directly — standalone, not through the fleet scene. The three plants in the fleet are `instanceable=True` copies of this file, which makes their materials read-only when selected there.
+1. **File → Open Stage**, and open `/sim/assets/lavender/SM_Lavender_Nanite_01.usd` directly — standalone, not through the fleet scene. The plants in the fleet are `instanceable=True` copies of this file, which makes their materials read-only when selected there.
 2. In the **Stage** panel, expand `Root → Looks` and click the material to edit (`MI_Stem_01`, `MI_Leaf_high_01`, `MI_Lavender_Flower_Branch_01`, or `MI_Leaf_01`).
 3. In the **Property** panel, its inputs show up grouped and labelled — straight from the `.mdl` file's own `anno::display_name`/`anno::in_group` annotations, e.g. "01 - Albedo" → **Tint Color**, "07 - Subsurface" → **Subsurface Color**/**Subsurface Opacity**. Edit them and the viewport updates live, no restart needed.
 4. **Ctrl+S** to save back to the file, then restart the sim (`docker restart a300-isaac-sim`, or `docker compose up -d`) to see it in the full fleet scene.
 
-To edit live *inside* the running fleet scene instead of the standalone file: select a plant (`/World/lavender/plant_0` in the Stage tree), uncheck **Instanceable** in the Property panel for that session, then drill into `Looks` the same way. That only edits the fleet's own in-memory session layer, though — to make it stick, set your edit target (Window → Layers) to the `SM_Lavender_Nanite_01.usd` sublayer first, or just use the standalone-file route above, which is simpler for anything you want to keep.
+To edit live *inside* the running fleet scene instead of the standalone file: select a plant (under `/World/lavender` in the Stage tree), uncheck **Instanceable** in the Property panel for that session, then drill into `Looks` the same way. That only edits the fleet's own in-memory session layer, though — to make it stick, set your edit target (Window → Layers) to the `SM_Lavender_Nanite_01.usd` sublayer first, or just use the standalone-file route above, which is simpler for anything you want to keep.
 
 Current tuned values, as a reference starting point:
 
@@ -411,22 +421,24 @@ Current tuned values, as a reference starting point:
 
 ## Known limitations
 
-- **Frame rate:** the sim renders the robots' cameras and the scene (including the lavender plants) through a path tracer, so the real-time factor is the limit. Zenoh adds about 3–4 fps of cost over FastDDS; the three lavender plants cost a similar amount.
+- **Frame rate:** the sim renders the robots' cameras and the scene (including the lavender plants) through a path tracer, so the real-time factor is the limit. Zenoh adds about 3–4 fps of cost over FastDDS; the lavender rows (~1.26M triangles per plant) cost a similar amount.
 - **One router:** all zenoh sessions share a single `zenoh-router`. A real fleet would have a router per robot; that topology is not simulated.
 - **Raw images:** colour and depth are published uncompressed (about 30 MB/s per robot at 20 Hz), which is fine on the local machine but heavy for Wi-Fi Foxglove clients.
 - **Not tested against real robots:** interoperability with the real robots' zenoh router (`ZENOH_ROUTER`) has not been tried.
 - **Ridgeback's and the real MTU robots' in-place rotation is weak from a standstill** for small commands (static friction absorbs most of it; a larger command or one combined with translation works fine) — see *Robot models*. Running all four distinct catalog models at once can also crash the sim — see *Robot models*.
 - **Robot spacing** is a fixed constant regardless of model size — see *Robot models*.
 - **`j100_0936`'s 2D lidar isn't wired up yet** (its own `robot_data` folder isn't currently available) — 2D lidar itself is simulated (see *2D lidar*), this is just a missing wiring step, not a blocker.
+- **Real-robot masses:** only `j100_0922` gets corrected masses; the other real robots still weigh more in the sim than in their URDF (e.g. `j100_0921` ~95 kg), see *Robot models*.
+- **Arm torque:** each arm joint gets 3× its URDF effort limit (`ARM_EFFORT_SCALE`); the sim needs ~1.5–2× the torque static gravity predicts, not root-caused.
+- **3 robots with `ROBOT_LOOKS=full`** crashed the sim or froze the PC in earlier tests; not seen since the scene loads stopped, but see *Troubleshooting*.
 - **GPS on the real MTU robots is a flat-earth projection, not real satellite geometry** — same simplification Gazebo's own GPS plugins make; see *Robot models*.
-- **`j100_0922` wheelies under even a gentle drive command** — see *Robot models*. Not caused by a config error; a real (if likely exaggerated) mass/inertia effect of it having no arm.
 
 ## Changing the robots
 
 - **Generic model configuration:** each generic model has its own template, `robot/config/robot.<model>.yaml.tmpl` (`a300`/`a200`/`j100`/`r100`, plus `j100_0936`, whose own `robot_data` isn't available). Edit the one you want to change, rebuild the robot image (`docker compose build robot0`), run `scripts/gen_urdf.sh`, then `docker restart a300-isaac-sim`; the sim re-imports that model's USD when its URDF changes. Each template's `system.ros2.middleware.implementation` follows `FLEET_RMW`, so `/etc/clearpath/robot.yaml` in each robot names the same middleware the container runs. See *Rebuilding after a change*.
 - **Real robots** (`j100_0921`, `j100_0922`, `a200_0284`, `a300_00036`, ...): no template. Put the robot's own file in `robot_data/<id>/robot.yaml`; `scripts/gen_urdf.sh` and the robot container pick it up by folder name, with nothing to register in either script. The sim still needs a `MODEL_PARAMS` entry for it in `sim/scripts/setup_scene.py` (drivetrain, `chassis_link`, sensor links, arm settings). Step by step: *Adding a real robot configuration file*. Per-robot behaviour of the arm cutter (zone, IK seed, gripper range, drop pose, planning speed) goes in `colcon_ws/src/stow_arm_cpp/config/robots/<id>.yaml`, which overrides the shared `grid_cutter_params.yaml` (the stow node reads the same files).
-- **Adding another generic model:** it needs (a) a new `robot.<code>.yaml.tmpl` in `robot/config/`, following the existing four as examples, and a matching `COPY` line in `robot/Dockerfile`, (b) an entry in `MODEL_PARAMS` in `sim/scripts/setup_scene.py` (`MODEL_ASSETS` is derived from `sim/assets/`) — including its correct `chassis_link` name, the one URDF link the drive/odometry graph targets; check this against the imported USD (`UsdPhysics.ArticulationRootAPI`), it isn't always literally called `chassis_link`, see A200's case there — and re-check it again after any URDF-shape change, even one that looks unrelated (adding the Jackal fender fix changed *which* link the importer chose as the root), (c) adding it to the `MODELS` list in `scripts/gen_urdf.sh`. If the new model has decorative parts with no collision/mass (check each `<link>` in its generated URDF), `scripts/flatten_urdf.py`'s `merge_visual_only_links` already folds those into their parent automatically — no per-model work needed unless the part also needs a mesh-orientation fix like the Jackal fender's.
-- **MoveIt collision matrix (robots with an arm):** `robot/bin/generate_srdf` writes `/etc/clearpath/robot.srdf` at every container start. It uses `moveit_collision_updater` with `--trials 10000` and retries, because Clearpath's own default (100000 trials) crashes in this container, and too few trials wrongly mark arm-vs-body link pairs as never colliding, so MoveIt plans through the robot. Details in `CLAUDE.md`. Editing that script needs a robot image rebuild.
+- **Adding another generic model:** it needs (a) a new `robot.<code>.yaml.tmpl` in `robot/config/`, following the existing four as examples, and a matching `COPY` line in `robot/Dockerfile`, (b) an entry in `MODEL_PARAMS` in `sim/scripts/setup_scene.py` (`MODEL_ASSETS` is derived from `sim/assets/`) — including its correct `chassis_link` name, the one URDF link the drive/odometry graph targets; check this against the imported USD (`UsdPhysics.ArticulationRootAPI`), it isn't always literally called `chassis_link`, see A200's case there — and re-check it again after any URDF-shape change, even one that looks unrelated (adding the Jackal fender fix changed *which* link the importer chose as the root), (c) adding it to the `MODELS` list in `scripts/gen_urdf.sh`. If the new model has decorative parts with no collision/mass (check each `<link>` in its generated URDF), `scripts/flatten_urdf.py`'s `merge_visual_only_links` already folds those into their parent automatically — no per-model work needed.
+- **MoveIt collision matrix (robots with an arm):** `robot/bin/generate_srdf` writes `/etc/clearpath/robot.srdf` at every container start. It uses `moveit_collision_updater` with `--trials 10000` and retries, because Clearpath's own default (100000 trials) crashes in this container, and too few trials wrongly mark arm-vs-body link pairs as never colliding, so MoveIt plans through the robot. Details in `robot/CLAUDE.md`. Editing that script needs a robot image rebuild.
 - **More than 8 robots:** `docker-compose.yml` defines eight robot services (`robot0` … `robot7`, container-named from `ROBOT_MODEL_<i>` + the slot index), each active for the profiles `n<k>` with `k` above its index. Copy the last block for `robot8`, give it the next Foxglove port and a profile list extended by `n9`, raise `MAX` in `scripts/fleet.sh`, and use `NUM_ROBOTS=9`. The sim needs no change.
 
 ## Layout
@@ -440,7 +452,7 @@ Current tuned values, as a reference starting point:
 | `sim/scripts/setup_scene.py` | builds the Isaac Sim scene and ROS 2 graphs (`./sim` is mounted into the sim container: edit, then `docker restart a300-isaac-sim`) |
 | `sim/assets/<model>/`, `sim/generated/<model>/` | generated URDF and meshes, cached USD, one set per model. Not in git; `gen_urdf.sh` and the first start create them |
 | `sim/colcon_ws/` | private ROS packages that `gen_urdf.sh` builds for URDF generation on the host (e.g. `mtu32_description`). Not in git |
-| `scripts/` | `fleet.sh` (choose robots, restart), `stop_sim.sh`, `colcon_build.sh`, `gen_urdf.sh` + `flatten_urdf.py` (URDF generation), `x11_auth.sh`, `drive_test.py`. Mounted read-only into the robots, so edits need no rebuild |
+| `scripts/` | `fleet.sh` (scene, spawn, stop) + `fleet_ctl.py` (spawn/reset protocol), `stop_sim.sh`, `colcon_build.sh`, `gen_urdf.sh` + `flatten_urdf.py` (URDF generation), `x11_auth.sh`, `foxglove_layout.sh`, `drive_test.py`, `calibrate_velocity.py`. Mounted read-only into the robots, so edits need no rebuild |
 | `colcon_ws/src/` | ROS workspace shared by every robot container (see *ROS workspace*): 7 git submodules plus plain packages. Arm cutting stack: `stow_arm_cpp` (`cut_stem` action server `grid_cutter_action_server`, stow node, per-robot config in `config/robots/`), `moveit_sim_bridge` (executes MoveIt trajectories and gripper commands in the sim), `pruner_action_server`, `plant_cutter_msgs`, `serial_interfaces`; launched by `mtu32_husky/mtu32_bringup`'s `sim_robot_upstart.launch.py` |
 | `tools/sim_ui/` | `server.py` + `index.html`: local web UI (port 8090) that runs the same scripts as this README: start/stop/reset the sim, spawn robots, `sim_robot_upstart`, arm moves with commanded-vs-observed plots, Cut stem |
 | `sim/assets/Ground_cover/`, `sky/`, `trees/`, `shrubs/`, `rocks/` | Grass field USD, cloud HDR, and Omniverse-library vegetation used by `build_world()` (gitignored, see *Scene*) |
@@ -448,9 +460,10 @@ Current tuned values, as a reference starting point:
 | `docker/fastdds_udp.xml` | FastDDS profile (UDP only, since containers don't share `/dev/shm`) |
 | `docker/isaac-sim.Dockerfile`, `docker/isaac-entrypoint.sh` | Isaac Sim image with a system ROS 2 Jazzy (needed for zenoh) |
 | `docs/images/` | images used by this README |
-| `CLAUDE.md`, `last_session.md` | detailed architecture notes and the latest session log (read these before changing the sim, arm or SRDF pipeline) |
+| `CLAUDE.md` + `scripts/`, `sim/`, `robot/`, `colcon_ws/`, `tools/sim_ui/CLAUDE.md`, `.claude/skills/add-real-robot/` | architecture notes: the root file is an overview, each directory's file has the details (read the relevant one before changing that area) |
+| `last_session.md` | the latest session log |
 
-See `CLAUDE.md` for more detail on how the pieces fit together.
+See `CLAUDE.md` and the per-directory `CLAUDE.md` files for more detail on how the pieces fit together.
 
 ## Troubleshooting
 
@@ -464,5 +477,47 @@ See `CLAUDE.md` for more detail on how the pieces fit together.
 - **Sim runs slower than real time:** check `FLEET_DEBUG=1`; lower `SIM_RATE_HZ` or the number of robots.
 - **The WebRTC client is choppy:** the stream cannot be faster than the sim frame rate; see *Faster streaming*.
 - **Wrong middleware in a container:** a host shell exporting `RMW_IMPLEMENTATION` does not affect the stack (use `FLEET_RMW` in `.env`); check with `docker exec a300_0000 bash -c 'echo $RMW_IMPLEMENTATION'`.
-- **One-off `No such file or directory: .../colcon_ws/install/setup.bash`** on a `docker exec`: harmless — `colcon_ws/install/` was deleted after the container last (re)started `/etc/clearpath/setup.bash`; rebuilding (`scripts/colcon_build.sh`) or recreating the container (`docker compose up -d --force-recreate`) fixes it.
+- **One-off `No such file or directory: .../colcon_ws/install/setup.bash`** on a `docker exec`: harmless — `colcon_ws/install/` was deleted after the container last (re)started `/etc/clearpath/setup.bash`; rebuilding (`scripts/colcon_build.sh`) or recreating the robots (`scripts/fleet.sh`) fixes it.
 - **Robots don't see each other's topics:** every container needs the same `ROS_DOMAIN_ID` and the same middleware. With zenoh the `zenoh-router` must be healthy; with FastDDS the shared profile is required.
+
+### Sim start and crashes
+
+- **Sim hangs at ~35 s (no `[fleet]` line, log silent) or exits 139 right after "simulation running":** start-up is flaky (about 1 in 10 starts). Run `docker restart a300-isaac-sim` again; it has always cleared it.
+- **Investigating a crash:** `docker logs` is lost once compose recreates the sim, so save it right after the crash (`docker logs a300-isaac-sim > crash.log 2>&1`). Kit's minidumps are in the `isaac-ov-data` volume (`Kit/Isaac-Sim Full/6.0/*.dmp.zip`, only the latest is kept). The line just before the crash is usually the real cause. Example: `authoring to an instance proxy is not allowed` turned out to be the cause of a lidar segfault, not the ray count.
+- **The PC freezes, or the sim dies inside `libnvidia-rtcore`/`libnvidia-gpucomp`:** check the kernel log first (`journalctl -k -b -1 | grep -i -e xid -e 'bad page'`). Three robots with `ROBOT_LOOKS=full` triggered this when robots were added to an already-playing scene. It hasn't been seen since the scene loads stopped and plays only after spawning. If it recurs, try `ROBOT_LOOKS=0` or fewer robots.
+- **Edited the URDF / ran `gen_urdf.sh`, but the sim still shows the old robot, or spawning says "restart the sim":** `scripts/fleet.sh` doesn't restart a running sim. Run `docker restart a300-isaac-sim`; the import stamp then picks up the new URDF (`FORCE_REIMPORT=1` forces a re-import).
+- **`Articulation controller failed`, or "`.../base_link` is not a valid rigid body or articulation root", and the robot doesn't drive:** `MODEL_PARAMS[model]["chassis_link"]` isn't the prim the importer made the articulation root. There is no warning at import time. Any URDF change can move the root (even merging a visual-only link), so re-run `drive_test.py` after every URDF change. If a real robot's `base_link` is an empty frame, each of its children becomes its own articulation root; see `weld_empty_root_children` in `scripts/flatten_urdf.py`.
+- **`FLEET_MERGE_FIXED=1` breaks the scene build:** it merges away `camera_0_link`. Leave it off.
+- **Foliage renders red:** a vegetation asset was copied without its `materials/` and `textures/` folders.
+
+### Robots and spawning
+
+- **A changed `robot/entrypoint.sh` or `robot/bin/*` has no effect:** both are baked into the image. Run `docker compose build robot0`, then recreate with `scripts/fleet.sh N`.
+- **A changed colcon package has no effect:** run `scripts/colcon_build.sh --packages-select <pkg>`, then restart its launch (a running node keeps the old binary).
+- **The container is still named with a slot suffix (`j100_0921_0000`) after changing a slot's model:** start with `scripts/fleet.sh`, not `docker compose up -d`. `fleet.sh` writes `ROBOT_SUFFIX_<i>`/`ROBOT_HOSTNAME_<i>` into `.env`.
+- **A real robot's container sees none of the sim's topics:** its `robot.yaml` uses a different `domain_id` or middleware than the fleet. `entrypoint.sh` rewrites `domain_id` (look for `[entrypoint] <id>: robot.yaml domain_id 1 -> 0` in the log), but not `middleware.implementation`.
+- **A background service (`robot_state`, `ekf`, `foxglove`, `pruner_stub`) seems dead:** its restart loop swallows errors. Read `/tmp/<service>.log` in the container. For example, `robot_state_publisher` crash-looped unnoticed on a URDF with a dangling joint.
+- **Robots tip over or wheelie while driving:** links without `<inertial>` get mass from their collider at 1000 kg/m³ (a Jackal weighed 75 kg instead of 18 kg). Check `Articulation.get_link_masses()`, and set `massless_density`/`frame_mass` in `MODEL_PARAMS` (applied before the timeline plays; a mass change at runtime is ignored).
+- **The commanded speed and the wall-clock speed disagree:** Kit runs `floor(PHYSICS_HZ / SIM_RATE_HZ)` physics steps per frame, and `FLEET_DEBUG`'s rtf is timeline-based, so it overstates the physical real-time factor. Use a `SIM_RATE_HZ` that divides `PHYSICS_HZ` evenly (20, 15, 12, 10, 30). Measure velocity from the pose: PhysX's reported angular velocity reads ~0.02-0.03 rad/s high.
+- **Camera images of `j100_0921`/`a200_0333` are upside-down:** that is the real camera mount. Rotate the image 180°.
+- **A custom Foxglove client can't connect:** foxglove_bridge 3.x speaks the `foxglove.sdk.v1` subprotocol, not `foxglove.websocket.v1`.
+
+### Arm, MoveIt and `cut_stem`
+
+- **Measurements after a run went chaotic (joints tens of rad past their limits) make no sense:** the physics state is corrupted, and restarting ROS containers doesn't fix it because Isaac owns the physics. Use *Reset scene* in the web UI (`scripts/fleet_ctl.py reset`) or restart the sim, then measure again.
+- **A MoveIt move fails with "couldn't receive full current joint state within 1s":** connecting the WebRTC client stalls the sim for a few seconds. Don't connect during a run.
+- **MoveIt rejects the start state (`START_STATE_INVALID`) after a move:** a `continuous` joint went past ±π. `flatten_urdf.py` (`limit_continuous_arm_joints`) and `robot/bin/robot_state` give the arm's continuous joints ±3.12 limits; check that a new arm gets them too.
+- **`move_group`, servo or the cutter die at launch:** the URDF references a link that doesn't exist (e.g. a `links.box` with a missing `parent`). `robot_state` writes the pruned description over `/etc/clearpath/robot.urdf.xacro`; check `/tmp/robot_state.log`.
+- **MoveIt plans the arm into the robot body:** the SRDF's random "never colliding" search ran with too few trials and disabled real arm-vs-body pairs. `generate_srdf` uses 10000 trials; `moveit_collision_updater` crashes at random (stack smashing) and always at ≥ ~30000 trials, and `generate_srdf` retries. Find the colliding pair with `check_state_validity`.
+- **An arm joint sags, can only move with gravity, or the arm collapses:** the joint's drive is torque-saturated. Compare `platform/joint_states` effort with its limit (a 672 N·m spike means the arm hit something). `ARM_EFFORT_SCALE` (3× the URDF effort) in `setup_scene.py` sets the limit.
+- **Gripper fingers fly past their limits, or the sim crashes with "NewtonMimicAPI follower joint … requires a finite limit":** the importer's mimic constraints are wrong. `flatten_urdf.py` gives the followers limits, and `configure_arm_drives` drops the constraints (the bridge commands every finger joint).
+- **The gripper reopens, or moves the wrong way:** `arm_0/joint_command` keeps only the *last* message's joint set, and the mimic multipliers can be negative. `moveit_sim_bridge` handles both; keep that in mind before publishing to `arm_0/joint_command` by hand.
+- **`cut_stem` fails every patch with "Gripper action server not available":** `sim_robot_upstart.launch.py` isn't running in that robot, or a topic/action name is hardcoded to another namespace (they must stay relative).
+- **Pruner: "Cannot send data. Serial port is not open":** `pruner_stub` (the fake `/dev/ttyOpenCR`) isn't running. Check `/tmp/pruner_stub.log`.
+- **Expected warnings, safe to ignore:** `arm_0_gripper ... is not a chain`, "No 3D sensor plugin(s) defined for octomap updates", and `tf2_pose_node`'s `jackal_charger_april` lookup failures (no AprilTag dock in the scene).
+- **Single-joint debugging:** `arm_joints --record` (or the web UI's plots) for commanded vs. observed positions, and `ros2 topic pub` on `arm_0/joint_command`. Only trust these on a freshly reset sim.
+
+### Sensors and navigation
+
+- **The lidar reports hits at 0.1-0.3 m:** that is the robot's own body. Nav2 needs the `laser_filters` box self-filter (`sim_nav2.launch.py` adds it), otherwise the collision monitor refuses to move.
+- **Raycast sensor values look wrong:** `isaacsim.sensors.experimental.physics.Raycast`'s `depths` are bogus (always `min_range`), and the plugin segfaulted the sim during physics steps. The lidars now cast their own rays through PhysX scene queries; don't switch back. See `sim/CLAUDE.md`.
