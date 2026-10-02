@@ -1,0 +1,26 @@
+# Goal — desired end position for the bin carriage
+uint8 HOME = 0  # Home end of travel (MIN limit switch, homing reference)
+uint8 END  = 1  # Far end of travel  (MAX limit switch)
+
+uint8 target_position
+---
+# Result — final state when action completes, aborts, or is cancelled
+uint8 UNKNOWN   = 0  # Default unset value (should not appear in practice)
+uint8 AT_HOME   = 1  # Carriage reached home end (MIN limit switch confirmed)
+uint8 AT_END    = 2  # Carriage reached far end  (MAX limit switch confirmed)
+uint8 ABORTED   = 3  # Server chose to stop — goal timeout or hardware fault
+uint8 CANCELLED = 4  # Client requested cancellation
+uint8 ERROR     = 5  # Unexpected exception — serial crash or firmware panic
+
+string  message
+uint8   status
+---
+# Feedback — published at poll_hz while carriage is in motion
+uint8 MOVING_TO_HOME = 0  # Travelling toward home end
+uint8 MOVING_TO_END  = 1  # Travelling toward far end
+
+uint8   direction
+int32   step_count           # Cumulative step count reported by firmware
+bool    at_home_limit        # True when home (MIN) limit switch is active
+bool    at_end_limit         # True when end  (MAX) limit switch is active
+float32 progress_percent     # 0–99 while moving, 100 on arrival

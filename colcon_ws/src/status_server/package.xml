@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>status_server</name>
+  <version>0.0.1</version>
+  <description>
+    Synchronises Husky robot status into PostgreSQL and publishes task
+    assignments back to the fleet.
+  </description>
+  <maintainer email="vupadhye@mtu.edu">vupadhye</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- ROS interfaces and client library -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>status_interfaces</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>tf_transformations</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+
+  <!-- Launch -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <!-- Python libraries -->
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+
+  <!--
+    PostgreSQL driver. The code uses psycopg 3 (import psycopg), NOT psycopg2.
+    There is no rosdep key for psycopg 3, so rosdep cannot install it. Install
+    it manually on a new machine:
+        sudo apt install python3-psycopg
+    Do not substitute python3-psycopg2: it has a rosdep key but a different
+    API, and this package would fail at import.
+  -->
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

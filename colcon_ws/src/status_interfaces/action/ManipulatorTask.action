@@ -1,0 +1,21 @@
+# Goal
+string arm_task
+geometry_msgs/PoseStamped  target_eef_pose
+string extra_data
+---
+# Result
+bool success
+int32 harvested_count
+int32 total_targets
+---
+# Feedback
+# Define Constants
+int8 IDLE = 0
+int8 PLANNING = 1
+int8 MOVING = 2
+int8 MOVING_COMPLETE = 3
+int8 FAULT_RECOVERED = 4
+int8 FAILED = 99
+
+# The actual feedback field
+int8 status

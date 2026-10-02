@@ -1,0 +1,46 @@
+# Goal: What the client sends once
+geometry_msgs/Point target_plant_coordinates
+---
+# Result: What the server sends once at the end
+bool success
+int32 final_status
+---
+# Feedback: What the server streams during the task
+# Enum values for Status types
+int32 IDLE = 0  # IDLE
+int32 HOME = 1
+int32 PREPOSE = 2
+int32 PATTERN_GENERATION = 3
+
+int32 START_HARVESTING = 6
+int32 HARVESTING = 7
+int32 DONE_HARVESTING = 8
+int32 START_LOADING = 12
+int32 LOADING = 13
+int32 DONE_LOADING = 14
+
+int32 CANCEL = 93   #CANCEL
+int32 ERROR = 94
+int32 PAUSED = 95
+int32 MAINTENANCE = 96
+int32 OFFLINE = 97
+int32 EMERGENCY_STOP = 98
+int32 ABNORMAL = 99
+
+# Robot Name (string)
+string robot_name # update the variable to something like manipulator_name with value like jackal_kinova
+
+# Online Flag (string)
+int32 online_flag # update the variable to manipulator_flag to report power status of the manipulator
+
+# Status (string)
+int32 status # values to come from ablove enum
+
+# current  Location of endeffector (point with x, y, z coordinates)
+geometry_msgs/Point location # cartesian locaiton of the end-effector
+
+# Task (string)
+string task # current task description
+
+# Load Status
+int32 load_status # temporary once the bin is sorted we may keep it or remove it.

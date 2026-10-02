@@ -1,0 +1,100 @@
+namespace_config:
+  # 'single' -> subscribe to 'namespace' only. 'multi' -> subscribe to every entry in 'namespaces'.
+  mode: multi
+  # Namespace used when mode is 'single'.
+  namespace: /a300_00036
+  # Namespaces subscribed when mode is 'multi'.
+  namespaces:
+    - /j100_0921
+    - /a300_00036
+
+battery:
+  # Min battery percent (0-100) to accept a new task; below this the robot is sent to charge.
+  reserve_threshold: 20.0
+  # EWMA smoothing for power/speed estimates, 0 < alpha <= 1. Higher = faster, noisier.
+  ewma_alpha: 0.1
+  # Margin on predicted energy vs charge on board. 1.5 = carry 50% more than the estimate needs.
+  safety_factor: 1.5
+  # Min metres moved between ticks for a sample to count towards the speed estimate.
+  min_move_distance: 0.05
+  # Whole-task durations (s), incl. each task's own navigation. Charger return leg excluded (derived from
+  # distance). Charging omitted: fallback task, never vetoed.
+  fixed_task_seconds:
+    harvesting: 480.0
+    unloading: 300.0
+
+liveness:
+  # Seconds without a status message before a robot is marked offline. Must exceed worst-case message gap.
+  timeout: 30.0
+  # Watchdog scan period, seconds.
+  check_period: 1.0
+
+farm:
+  # Crop grown here; written onto generated harvest tasks.
+  crop_type: lavender
+  # Routing graph source: 'graph' (graph_node/graph_edge/object_data) or 'farm' (legacy farm_node/farm_edge/farm_asset_on_map).
+  graph_source: graph
+
+clearance:
+  # Push published waypoints off the crop so Nav2 accepts them. Geometry: see README "Clearance geometry".
+  # false: graph already moved so lanes clear the crop. Set true if waypoints start landing on crop again.
+  enabled: false
+  # Half robot footprint width (m). Nav2 inscribed radius.
+  robot_half_width: 0.349
+  # Half robot footprint length (m).
+  robot_half_length: 0.495
+  # Mapped obstacle half-thickness from object centre (m).
+  obstacle_radius: 0.225
+  # Extra clearance on top of the two radii (m). Measured, not guessed.
+  safety_margin: 0.10
+  # Max shift for one waypoint (m). A larger need is published capped and the shortfall logged.
+  max_shift: 0.30
+  # Drop a waypoint that sits within this distance (m) of the straight line between the ones
+  # either side of it, so a straight run publishes only its two ends. Measured deviation along
+  # a 7.1 m pickup row is 0.0007 m, and the robot's own half-width is 0.349 m.
+  collinear_tolerance: 0.05
+
+# Dock IDs per robot namespace, keyed by farm.graph_source first.
+# Drive-to node, Nav2 plugin type and reservation state live in the dock_station table.
+# A dock ID is global: it is both the dock_station key and the name registered with that robot's Nav2 docking server.
+# 'unloading' empty -> unloading tasks fall back to a charging dock.
+#
+# Keyed by source because node IDs are NOT shared between the two schemas: node 12 in farm_node is a
+# different place from node 12 in graph_node, so a dock row that is right under one is wrong under the
+# other. Switching farm.graph_source therefore has to switch the docks with it.
+#
+# A flat block (namespaces at the top level, no source keys) is still accepted and used for every source.
+docks:
+  graph:
+    /j100_0921:
+      charging:
+        - jackal_charger
+      unloading: []
+    /a300_00036:
+      charging:
+        - wiferion_charger
+      unloading: 
+        - unloading_station
+        # - wiferion_charger
+  farm:
+    /j100_0921:
+      charging:
+        - husky_charger
+      unloading:
+        - unloading_station
+    /a300_00036:
+      charging:
+        - husky_charger
+      unloading:
+        - unloading_station
+
+database:
+  host: host.docker.internal  # ip address for postgresql server
+  port: 5433 # db connection port
+  # host: localhost # ip address for postgresql server
+  # port: 5432 # db connection port
+  # port: 5432
+  connect_timeout: 5 # Seconds to wait for a connection before giving up (psycopg connect_timeout).
+  dbname: test_lavender_farming
+  user: admin
+  password: Robotlab@2019
