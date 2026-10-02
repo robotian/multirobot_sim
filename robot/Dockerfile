@@ -34,7 +34,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-jazzy-camera-ros \
         ros-jazzy-navigation2 \
         ros-jazzy-nav2-bringup \
+        ros-jazzy-tf-transformations \
         python3-serial \
+        python3-psycopg \
+        python3-transforms3d \
         gettext-base x11-apps \
     && rm -rf /var/lib/apt/lists/*
 # nav2_common: colcon_ws/src/mtu32_husky/mtu32_bringup (MTU's own private lab package, bind-mounted at runtime,
@@ -49,6 +52,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # python3-serial: colcon_ws/src/pruner_action_server's own node does `import serial` (pyserial, for the real
 # pruner actuator's serial link) -- a plain Python dependency, not a ROS package, so it's not caught by any
 # colcon build step; only surfaces as a runtime ModuleNotFoundError when the node actually starts.
+# python3-psycopg/python3-transforms3d/tf-transformations: same kind of runtime-only Python dependency --
+# colcon_ws/src/status_server talks to its PostgreSQL task database with psycopg 3; husky_operations_manager
+# imports transforms3d directly and, like status_server, tf_transformations (a thin wrapper around transforms3d).
 
 # clearpath_generator_robot + clearpath_sensors: the real per-robot param/launch generator a physical Clearpath
 # robot runs (github.com/clearpathrobotics/clearpath_robot, jazzy branch) -- NOT packaged in the public Jazzy apt
