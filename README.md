@@ -466,3 +466,45 @@ See `CLAUDE.md` for more detail on how the pieces fit together.
 - **Wrong middleware in a container:** a host shell exporting `RMW_IMPLEMENTATION` does not affect the stack (use `FLEET_RMW` in `.env`); check with `docker exec a300_0000 bash -c 'echo $RMW_IMPLEMENTATION'`.
 - **One-off `No such file or directory: .../colcon_ws/install/setup.bash`** on a `docker exec`: harmless — `colcon_ws/install/` was deleted after the container last (re)started `/etc/clearpath/setup.bash`; rebuilding (`scripts/colcon_build.sh`) or recreating the container (`docker compose up -d --force-recreate`) fixes it.
 - **Robots don't see each other's topics:** every container needs the same `ROS_DOMAIN_ID` and the same middleware. With zenoh the `zenoh-router` must be healthy; with FastDDS the shared profile is required.
+
+### Sim start and crashes
+
+- **Sim hangs at ~35 s (no `[fleet]` line, log silent) or exits 139 right after "simulation running":** start-up is flaky (about 1 in 10 starts). Run `docker restart a300-isaac-sim` again; it has always cleared it.
+- **Investigating a crash:** `docker logs` is lost once compose recreates the sim, so save it right after the crash (`docker logs a300-isaac-sim > crash.log 2>&1`). Kit's minidumps are in the `isaac-ov-data` volume (`Kit/Isaac-Sim Full/6.0/*.dmp.zip`, only the latest is kept). The line just before the crash is usually the real cause. Example: `authoring to an instance proxy is not allowed` turned out to be the cause of a lidar segfault, not the ray count.
+- **The PC freezes, or the sim dies inside `libnvidia-rtcore`/`libnvidia-gpucomp`:** check the kernel log first (`journalctl -k -b -1 | grep -i -e xid -e 'bad page'`). Three robots with `ROBOT_LOOKS=full` triggered this when robots were added to an already-playing scene. It hasn't been seen since the scene loads stopped and plays only after spawning. If it recurs, try `ROBOT_LOOKS=0` or fewer robots.
+- **Edited the URDF / ran `gen_urdf.sh`, but the sim still shows the old robot, or spawning says "restart the sim":** `scripts/fleet.sh` doesn't restart a running sim. Run `docker restart a300-isaac-sim`; the import stamp then picks up the new URDF (`FORCE_REIMPORT=1` forces a re-import).
+- **`Articulation controller failed`, or "`.../base_link` is not a valid rigid body or articulation root", and the robot doesn't drive:** `MODEL_PARAMS[model]["chassis_link"]` isn't the prim the importer made the articulation root. There is no warning at import time. Any URDF change can move the root (even merging a visual-only link), so re-run `drive_test.py` after every URDF change. If a real robot's `base_link` is an empty frame, each of its children becomes its own articulation root; see `weld_empty_root_children` in `scripts/flatten_urdf.py`.
+- **`FLEET_MERGE_FIXED=1` breaks the scene build:** it merges away `camera_0_link`. Leave it off.
+- **Foliage renders red:** a vegetation asset was copied without its `materials/` and `textures/` folders.
+
+### Robots and spawning
+
+- **A changed `robot/entrypoint.sh` or `robot/bin/*` has no effect:** both are baked into the image. Run `docker compose build robot0`, then recreate with `scripts/fleet.sh N`.
+- **A changed colcon package has no effect:** run `scripts/colcon_build.sh --packages-select <pkg>`, then restart its launch (a running node keeps the old binary).
+- **The container is still named with a slot suffix (`j100_0921_0000`) after changing a slot's model:** start with `scripts/fleet.sh`, not `docker compose up -d`. `fleet.sh` writes `ROBOT_SUFFIX_<i>`/`ROBOT_HOSTNAME_<i>` into `.env`.
+- **A real robot's container sees none of the sim's topics:** its `robot.yaml` uses a different `domain_id` or middleware than the fleet. `entrypoint.sh` rewrites `domain_id` (look for `[entrypoint] <id>: robot.yaml domain_id 1 -> 0` in the log), but not `middleware.implementation`.
+- **A background service (`robot_state`, `ekf`, `foxglove`, `pruner_stub`) seems dead:** its restart loop swallows errors. Read `/tmp/<service>.log` in the container. For example, `robot_state_publisher` crash-looped unnoticed on a URDF with a dangling joint.
+- **Robots tip over or wheelie while driving:** links without `<inertial>` get mass from their collider at 1000 kg/m³ (a Jackal weighed 75 kg instead of 18 kg). Check `Articulation.get_link_masses()`, and set `massless_density`/`frame_mass` in `MODEL_PARAMS` (applied before the timeline plays; a mass change at runtime is ignored).
+- **The commanded speed and the wall-clock speed disagree:** Kit runs `floor(PHYSICS_HZ / SIM_RATE_HZ)` physics steps per frame, and `FLEET_DEBUG`'s rtf is timeline-based, so it overstates the physical real-time factor. Use a `SIM_RATE_HZ` that divides `PHYSICS_HZ` evenly (20, 15, 12, 10, 30). Measure velocity from the pose: PhysX's reported angular velocity reads ~0.02-0.03 rad/s high.
+- **Camera images of `j100_0921`/`a200_0333` are upside-down:** that is the real camera mount. Rotate the image 180°.
+- **A custom Foxglove client can't connect:** foxglove_bridge 3.x speaks the `foxglove.sdk.v1` subprotocol, not `foxglove.websocket.v1`.
+
+### Arm, MoveIt and `cut_stem`
+
+- **Measurements after a run went chaotic (joints tens of rad past their limits) make no sense:** the physics state is corrupted, and restarting ROS containers doesn't fix it because Isaac owns the physics. Use *Reset scene* in the web UI (`scripts/fleet_ctl.py reset`) or restart the sim, then measure again.
+- **A MoveIt move fails with "couldn't receive full current joint state within 1s":** connecting the WebRTC client stalls the sim for a few seconds. Don't connect during a run.
+- **MoveIt rejects the start state (`START_STATE_INVALID`) after a move:** a `continuous` joint went past ±π. `flatten_urdf.py` (`limit_continuous_arm_joints`) and `robot/bin/robot_state` give the arm's continuous joints ±3.12 limits; check that a new arm gets them too.
+- **`move_group`, servo or the cutter die at launch:** the URDF references a link that doesn't exist (e.g. a `links.box` with a missing `parent`). `robot_state` writes the pruned description over `/etc/clearpath/robot.urdf.xacro`; check `/tmp/robot_state.log`.
+- **MoveIt plans the arm into the robot body:** the SRDF's random "never colliding" search ran with too few trials and disabled real arm-vs-body pairs. `generate_srdf` uses 10000 trials; `moveit_collision_updater` crashes at random (stack smashing) and always at ≥ ~30000 trials, and `generate_srdf` retries. Find the colliding pair with `check_state_validity`.
+- **An arm joint sags, can only move with gravity, or the arm collapses:** the joint's drive is torque-saturated. Compare `platform/joint_states` effort with its limit (a 672 N·m spike means the arm hit something). `ARM_EFFORT_SCALE` (3× the URDF effort) in `setup_scene.py` sets the limit.
+- **Gripper fingers fly past their limits, or the sim crashes with "NewtonMimicAPI follower joint … requires a finite limit":** the importer's mimic constraints are wrong. `flatten_urdf.py` gives the followers limits, and `configure_arm_drives` drops the constraints (the bridge commands every finger joint).
+- **The gripper reopens, or moves the wrong way:** `arm_0/joint_command` keeps only the *last* message's joint set, and the mimic multipliers can be negative. `moveit_sim_bridge` handles both; keep that in mind before publishing to `arm_0/joint_command` by hand.
+- **`cut_stem` fails every patch with "Gripper action server not available":** `sim_robot_upstart.launch.py` isn't running in that robot, or a topic/action name is hardcoded to another namespace (they must stay relative).
+- **Pruner: "Cannot send data. Serial port is not open":** `pruner_stub` (the fake `/dev/ttyOpenCR`) isn't running. Check `/tmp/pruner_stub.log`.
+- **Expected warnings, safe to ignore:** `arm_0_gripper ... is not a chain`, "No 3D sensor plugin(s) defined for octomap updates", and `tf2_pose_node`'s `jackal_charger_april` lookup failures (no AprilTag dock in the scene).
+- **Single-joint debugging:** `arm_joints --record` (or the web UI's plots) for commanded vs. observed positions, and `ros2 topic pub` on `arm_0/joint_command`. Only trust these on a freshly reset sim.
+
+### Sensors and navigation
+
+- **The lidar reports hits at 0.1-0.3 m:** that is the robot's own body. Nav2 needs the `laser_filters` box self-filter (`sim_nav2.launch.py` adds it), otherwise the collision monitor refuses to move.
+- **Raycast sensor values look wrong:** `isaacsim.sensors.experimental.physics.Raycast`'s `depths` are bogus (always `min_range`), and the plugin segfaulted the sim during physics steps. The lidars now cast their own rays through PhysX scene queries; don't switch back. See `sim/CLAUDE.md`.
