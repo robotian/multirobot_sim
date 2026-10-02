@@ -72,7 +72,11 @@
         <button class="ghost" onclick="post('/api/sim/reset')" title="Stop and play the simulation (like Isaac Sim's Stop and Play buttons): every robot back at its spawn pose in a few seconds, then the robot containers restart (sim_robot_upstart and anything else launched by hand must be started again)">Reset scene</button>
       </div>
       <div class="row" title="The world the robots are spawned into (SIM_SCENE), applied at Start (a change recreates the sim). Pick a USD file, e.g. one saved from Isaac Sim with File > Save As into sim/scene/ (its ground should be at z=0): a file already in sim/scene/ is used in place, any other is copied there (its relative asset paths then resolve from sim/scene/). Default scene: a ground plane and lights.">
-        <label>Scene <input type="file" id="sceneFile" accept=".usd,.usda,.usdc,.usdz" onchange="pickScene(this)"></label>
+        <!-- the native input is hidden: its own "No file chosen" text resets on every pick/reload, while the sim
+             keeps a scene; #sceneChoice shows the real choice instead -->
+        <span>Scene</span>
+        <input type="file" id="sceneFile" accept=".usd,.usda,.usdc,.usdz" onchange="pickScene(this)" hidden>
+        <button class="ghost" onclick="document.getElementById('sceneFile').click()">Choose file...</button>
         <button class="ghost" onclick="chooseScene('', 'Default (ground plane + lights)')">Default scene</button>
         <span id="sceneChoice" class="muted"></span>
       </div>
