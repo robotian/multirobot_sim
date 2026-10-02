@@ -140,6 +140,24 @@ def available_models():
     return sorted(d.name for d in (ROOT / "sim/assets").iterdir() if (d / f"{d.name}.urdf").exists())
 
 
+SCENE_DIR = ROOT / "sim/scene"  # mounted in the sim as /sim/scene
+SCENE_EXTS = (".usd", ".usda", ".usdc", ".usdz")
+BUILTIN_SCENES = {"": "Default (ground plane + lights)", "lavender": "Lavender farm (built-in)"}
+
+
+def scene_files():
+    """USD files under sim/scene/ (paths relative to it), e.g. scenes saved from Isaac Sim with File > Save As."""
+    if not SCENE_DIR.is_dir():
+        return []
+    return sorted(str(p.relative_to(SCENE_DIR)) for p in SCENE_DIR.rglob("*")
+                  if p.is_file() and p.suffix.lower() in SCENE_EXTS)
+
+
+def scenes():
+    return [{"value": k, "label": v} for k, v in BUILTIN_SCENES.items()] + \
+        [{"value": f, "label": f} for f in scene_files()]
+
+
 def containers():
     _, out = sh(["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={PROJECT}",
                  "--format", '{{.Names}}\t{{.Label "com.docker.compose.service"}}\t{{.State}}\t{{.Status}}'])
@@ -199,6 +217,8 @@ def status():
         "max_slots": MAX_SLOTS,
         "sim_mode": env.get("SIM_MODE", "stream"),
         "robot_looks": env.get("ROBOT_LOOKS", "full"),
+        "sim_scene": env.get("SIM_SCENE", ""),
+        "scenes": scenes(),
     }
 
 
@@ -227,9 +247,15 @@ def act_sim_start(body):
     looks = (body or {}).get("looks") or read_env().get("ROBOT_LOOKS", "full")
     if looks not in ROBOT_LOOKS:
         raise ValueError(f"looks must be one of {ROBOT_LOOKS}")
+    # scene: SIM_SCENE, "" (ground plane + lights), "lavender" or a file in sim/scene/; written to .env like
+    # SIM_MODE, so a change recreates the sim
+    scene = (body or {}).get("scene")
+    scene = read_env().get("SIM_SCENE", "") if scene is None else scene
+    if scene not in BUILTIN_SCENES and scene not in scene_files():
+        raise ValueError(f"scene must be one of {[s['value'] for s in scenes()]}")
 
     def fn(j):
-        write_env({"SIM_MODE": mode, "ROBOT_LOOKS": looks})
+        write_env({"SIM_MODE": mode, "ROBOT_LOOKS": looks, "SIM_SCENE": scene})
         env = dict(os.environ)
         if mode == "headed":
             display = host_display()
@@ -240,11 +266,11 @@ def act_sim_start(body):
             j.log(f"headed: DISPLAY={display}")
             if j.run(["scripts/x11_auth.sh"], env=env) != 0:
                 return False
-        j.log(f".env: SIM_MODE={mode} ROBOT_LOOKS={looks}")
+        j.log(f".env: SIM_MODE={mode} ROBOT_LOOKS={looks} SIM_SCENE={scene}")
         # scene only: the robots are spawned afterwards (act_spawn); waits until the scene is ready
         return j.run(["scripts/fleet.sh", "scene"], env=env) == 0
 
-    return start_job(f"start sim ({mode}, looks {looks})", fn)
+    return start_job(f"start sim ({mode}, looks {looks}, scene {BUILTIN_SCENES.get(scene, scene)})", fn)
 
 
 def act_sim_stop(_):

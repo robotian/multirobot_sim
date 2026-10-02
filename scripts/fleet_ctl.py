@@ -166,7 +166,7 @@ def wait_scene(timeout=900, log=print):
     if not wait(scene_ready, timeout, "the scene", log):
         return False
     state = read_state()
-    log(f"scene ready ({state['lanes']} lanes) after {time.time() - t0:.0f} s; models: {', '.join(state['models'])}")
+    log(f"scene ready ({state.get('scene_source', 'lavender')}) after {time.time() - t0:.0f} s; models: {', '.join(state['models'])}")
     if not wait(lambda s: True if s.get("boot") == "done" else None, timeout, "the start-up spawn", log):
         return False
     state = read_state()

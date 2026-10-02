@@ -1,4 +1,4 @@
-"""Isaac Sim fleet scene: the lavender-farm world, plus Clearpath robots spawned into it on request, bridged to ROS 2.
+"""Isaac Sim fleet scene: a world (SIM_SCENE), plus Clearpath robots spawned into it on request, bridged to ROS 2.
 
 Runs inside the streaming Kit app (isaac-sim.streaming.sh --exec /sim/scripts/setup_scene.py), in two parts:
   1. scene: import (or reuse the cached import of) every robot model, build the world and start the timeline --
@@ -13,6 +13,8 @@ Runs inside the streaming Kit app (isaac-sim.streaming.sh --exec /sim/scripts/se
      robots again as soon as its scene is up.
 Configuration comes from environment variables (see docker-compose.yml):
   SCENE_LANES        robot lanes between the two lavender rows (default 3); the default spawn poses fill them
+  SIM_SCENE          "" = ground plane + lights (default), "lavender" = the lavender farm, else a USD file
+                     in sim/scene/ (e.g. one saved from Isaac Sim), see build_world
   CAMERA_WIDTH/HEIGHT, CAMERA_FRAME_SKIP, FORCE_REIMPORT, ...
 """
 import asyncio
@@ -109,6 +111,14 @@ ROCK_COUNT = 30
 ROCK_DIST = 19.0
 ROCK_HEIGHT = (0.4, 1.0)  # m
 GROUND_SOIL_COLOR = (0.16, 0.10, 0.06)  # dark brown soil under the grass
+# Scene source (SIM_SCENE, see build_world) and the default scene's look
+SIM_SCENE = os.environ.get("SIM_SCENE", "").strip()
+SCENE_DIR = "/sim/scene"  # ./sim/scene on the host
+SCENE_FILE_EXTS = (".usd", ".usda", ".usdc", ".usdz")
+GROUND_COLOR = (0.25, 0.26, 0.25)  # default scene: mid grey
+DEFAULT_SKY_COLOR = (0.75, 0.85, 1.0)
+DEFAULT_SKY_INTENSITY = 300
+DEFAULT_SUN_INTENSITY = 4000
 GROUND_COVER_USD = "/sim/assets/Ground_cover/ground_cover.usd"
 GROUND_COVER_SCALE_XY = 1.0
 GROUND_COVER_SCALE_Z = 0.6
@@ -1247,57 +1257,87 @@ def add_box(stage, path, size, pos, color):
     return cube
 
 
-def build_world(stage):
+def setup_physics(stage):
+    """Physics scene and stage timing, the same for every scene source: the robots' drive and velocity loop were
+    calibrated with these settings. A loaded scene file's own physics scene is reused (the settings are authored
+    over it on the stage's root layer, so the file itself never changes); without one, /World/physicsScene."""
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
-    UsdGeom.Xform.Define(stage, "/World")
-
-    scene = UsdPhysics.Scene.Define(stage, "/World/physicsScene")
-    scene.CreateGravityDirectionAttr(Gf.Vec3f(0, 0, -1))
-    scene.CreateGravityMagnitudeAttr(9.81)
+    if not stage.GetPrimAtPath("/World"):
+        UsdGeom.Xform.Define(stage, "/World")
+    found = next((p for p in stage.Traverse() if p.IsA(UsdPhysics.Scene)), None)
+    scene = UsdPhysics.Scene(found) if found else UsdPhysics.Scene.Define(stage, "/World/physicsScene")
+    scene.CreateGravityDirectionAttr().Set(Gf.Vec3f(0, 0, -1))
+    scene.CreateGravityMagnitudeAttr().Set(9.81)
     from pxr import PhysxSchema
 
     scene_api = PhysxSchema.PhysxSceneAPI.Apply(scene.GetPrim())
-    scene_api.CreateTimeStepsPerSecondAttr(PHYSICS_HZ)
+    scene_api.CreateTimeStepsPerSecondAttr().Set(PHYSICS_HZ)
     # Skid-steer wheels need the PGS solver (TGS, the default, barely turns them in place: angular velocity far
     # below the wheel speeds; NVIDIA forum "Skid-Steered behavior for robots") plus CCD on the wheels (below).
     # Measured here: PGS at the same 60 Hz costs no frame rate, 360 Hz halves it.
-    scene_api.CreateSolverTypeAttr(PHYSICS_SOLVER)
-    scene_api.CreateEnableCCDAttr(True)
+    scene_api.CreateSolverTypeAttr().Set(PHYSICS_SOLVER)
+    scene_api.CreateEnableCCDAttr().Set(True)
     stage.SetTimeCodesPerSecond(SIM_RATE_HZ)
     stage.SetStartTimeCode(0)
     stage.SetEndTimeCode(10_000_000)
     omni.timeline.get_timeline_interface().set_time_codes_per_second(SIM_RATE_HZ)
+    return scene
 
-    # Grippy ground so the skid-steer wheels get traction
+
+def add_ground(stage, color=GROUND_COLOR, look="ground_grey"):
+    """80 x 80 m ground box, top face at z=0 (SPAWN_Z and SPAWN_LIMIT assume that), with a grippy physics
+    material so the skid-steer wheels get traction and a matte surface of `color` (RTX ignores displayColor: an
+    unbound box renders near-white)."""
     mat = UsdShade.Material.Define(stage, "/World/Materials/ground_physics")
     pm = UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
     pm.CreateStaticFrictionAttr(1.0)
     pm.CreateDynamicFrictionAttr(0.9)
     pm.CreateRestitutionAttr(0.0)
-    ground = add_box(stage, "/World/ground", (80, 80, 1), (0, 0, -0.5), (0.35, 0.37, 0.35))
+    ground = add_box(stage, "/World/ground", (80, 80, 1), (0, 0, -0.5), color)
     UsdShade.MaterialBindingAPI.Apply(ground.GetPrim()).Bind(mat, UsdShade.Tokens.weakerThanDescendants, "physics")
 
-    # Dirt-coloured surface, so what shows through the grass is soil, not a bright grey box.
-    soil = UsdShade.Material.Define(stage, "/World/Materials/ground_soil")
-    shader = UsdShade.Shader.Define(stage, "/World/Materials/ground_soil/shader")
+    surface = UsdShade.Material.Define(stage, f"/World/Materials/{look}")
+    shader = UsdShade.Shader.Define(stage, f"/World/Materials/{look}/shader")
     shader.CreateIdAttr("UsdPreviewSurface")
-    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*GROUND_SOIL_COLOR))
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
     shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(1.0)
-    soil.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
-    UsdShade.MaterialBindingAPI(ground.GetPrim()).Bind(soil)
-    ground.CreateDisplayColorAttr([Gf.Vec3f(*GROUND_SOIL_COLOR)])
+    surface.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    UsdShade.MaterialBindingAPI(ground.GetPrim()).Bind(surface)
+    return ground
+
+
+def add_lights(stage, sky_hdr=None, sky_intensity=DEFAULT_SKY_INTENSITY, sun_intensity=DEFAULT_SUN_INTENSITY):
+    """Dome light (a plain sky colour, or an HDR panorama the cameras also see as background) and a sun."""
+    dome = UsdLux.DomeLight.Define(stage, "/World/Lights/dome")
+    dome.CreateIntensityAttr(sky_intensity)
+    if sky_hdr:
+        dome.CreateTextureFileAttr(sky_hdr)
+        dome.CreateTextureFormatAttr("latlong")
+    else:
+        dome.CreateColorAttr(Gf.Vec3f(*DEFAULT_SKY_COLOR))
+    sun = UsdLux.DistantLight.Define(stage, "/World/Lights/sun")
+    sun.CreateIntensityAttr(sun_intensity)
+    UsdGeom.Xformable(sun).AddRotateXYZOp().Set(Gf.Vec3f(-60, 33, -30))
+
+
+def build_default_world(stage):
+    """SIM_SCENE empty: ground plane and lights, nothing else."""
+    setup_physics(stage)
+    add_ground(stage)
+    add_lights(stage)
+    return {"lavender_rows": []}
+
+
+def build_lavender_world(stage):
+    """SIM_SCENE=lavender: the lavender farm, modelled on real photos."""
+    setup_physics(stage)
+    # Dirt-coloured surface, so what shows through the grass is soil, not a bright grey box.
+    add_ground(stage, GROUND_SOIL_COLOR, "ground_soil")
 
     add_ground_cover(stage)
     add_horizon_vegetation(stage)
-
-    dome = UsdLux.DomeLight.Define(stage, "/World/Lights/dome")
-    dome.CreateIntensityAttr(SKY_INTENSITY)
-    dome.CreateTextureFileAttr(SKY_HDR)  # cloudy sky panorama, also what the cameras see as background
-    dome.CreateTextureFormatAttr("latlong")
-    sun = UsdLux.DistantLight.Define(stage, "/World/Lights/sun")
-    sun.CreateIntensityAttr(10000)
-    UsdGeom.Xformable(sun).AddRotateXYZOp().Set(Gf.Vec3f(-60, 33, -30))
+    add_lights(stage, SKY_HDR, SKY_INTENSITY, 10000)  # cloudy sky panorama
 
     # Lavender farm: a hedge row of overlapping plants on each side of the fleet's driving lanes (robots drive
     # along +X), like the real field's rows. Each plant is ~1.26M triangles, so the row length is what costs fps.
@@ -1313,6 +1353,79 @@ def build_world(stage):
             k += 1
         rows.append([xs[0] - 0.6, xs[-1] + 0.6, y])  # plants are ~1.2 m wide
     return {"lavender_rows": rows}  # for the web UI's spawn map
+
+
+_scene_layer = None  # the loaded scene file's layer, held so the in-memory robot removal below sticks
+
+
+def scene_file_path(name):
+    """SIM_SCENE -> the scene file, which must be inside SCENE_DIR (sim/scene/ on the host)."""
+    path = os.path.realpath(os.path.join(SCENE_DIR, name))
+    if not path.startswith(os.path.realpath(SCENE_DIR) + os.sep):
+        raise ValueError(f"SIM_SCENE={name!r}: the scene file must be inside sim/scene/")
+    if not path.lower().endswith(SCENE_FILE_EXTS) or not os.path.isfile(path):
+        raise ValueError(f"SIM_SCENE={name!r}: no USD file {path} (expected one of {', '.join(SCENE_FILE_EXTS)})")
+    return path
+
+
+def build_file_world(stage, name):
+    """SIM_SCENE=<file in sim/scene/>: a scene saved from Isaac Sim (File > Save As), used as a sublayer of the
+    stage, so its relative asset paths resolve and nothing the sim does is ever written into it. What the fleet
+    needs is added on the root layer: the physics settings (setup_physics), and the default ground / lights when
+    the file has no collider / no light at all. Its ground must be at z=0 (robots spawn at SPAWN_Z) within
+    +-SPAWN_LIMIT m. Robots and their graphs saved along with the scene are dropped (from the in-memory copy of
+    the file only), since spawn requests add their own."""
+    global _scene_layer
+    path = scene_file_path(name)
+    layer = Sdf.Layer.FindOrOpen(path)
+    if layer is None:
+        raise ValueError(f"could not open scene file {path}")
+    generic = [m for m in MODEL_ASSETS if "_" not in m]
+    robot_re = re.compile(r"(%s)_\d{4}" % "|".join(map(re.escape, generic))) if generic else None
+    stale = []
+    world = layer.GetPrimAtPath("/World")
+    for child in (world.nameChildren if world else []):
+        if child.name in MODEL_ASSETS or (robot_re and robot_re.fullmatch(child.name)):
+            stale.append(child.path)
+    if layer.GetPrimAtPath("/Graphs"):
+        stale.append(Sdf.Path("/Graphs"))
+    if stale:
+        edit = Sdf.BatchNamespaceEdit()
+        for p in stale:
+            edit.Add(p, Sdf.Path.emptyPath)
+        if layer.Apply(edit):
+            log(f"scene {name}: left out what was saved from a previous fleet: {', '.join(map(str, stale))}")
+        else:
+            log(f"scene {name}: could not leave out {', '.join(map(str, stale))}")
+    _scene_layer = layer
+    for key, want in (("upAxis", "Z"), ("metersPerUnit", 1.0)):
+        info = layer.pseudoRoot
+        if info.HasInfo(key) and info.GetInfo(key) != want:
+            log(f"WARNING scene {name}: {key} is {info.GetInfo(key)}, the fleet's stage uses {want}; "
+                "its contents will look rotated/scaled")
+    stage.GetRootLayer().subLayerPaths.append(path)
+
+    setup_physics(stage)
+    prims = list(stage.Traverse(Usd.TraverseInstanceProxies()))
+    if not any(p.HasAPI(UsdPhysics.CollisionAPI) for p in prims):
+        log(f"scene {name}: no collider in it, adding the default ground")
+        add_ground(stage)
+    if not any(p.HasAPI(UsdLux.LightAPI) for p in prims):
+        log(f"scene {name}: no light in it, adding the default lights")
+        add_lights(stage)
+    return {"lavender_rows": []}
+
+
+def build_world(stage):
+    """The scene chosen by SIM_SCENE: "" -> ground plane + lights, "lavender" -> the lavender farm, else a USD
+    file in sim/scene/. Returns layout info for FLEET_STATE (the web UI's spawn map)."""
+    if not SIM_SCENE:
+        layout = build_default_world(stage)
+    elif SIM_SCENE == "lavender":
+        layout = build_lavender_world(stage)
+    else:
+        layout = build_file_world(stage, SIM_SCENE)
+    return dict(layout, scene_source=SIM_SCENE or "default")
 
 
 def spawn_robot(stage, ns, model, pose):
@@ -2047,6 +2160,7 @@ _state = {
     "scene": "loading",  # loading | ready | error
     "error": "",
     "lanes": SCENE_LANES,
+    "scene_source": SIM_SCENE or "default",  # see build_world
     "default_poses": {str(n): default_poses(n) for n in range(MAX_ROBOTS + 1)},
     "models": [],  # models that can be spawned (imported)
     "robots": [],  # robots in the scene: {slot, ns, model, x, y, yaw}
@@ -2314,7 +2428,7 @@ async def main():
         for _ in range(10):
             await app.next_update_async()
         # The timeline stays stopped: spawn_fleet plays it once every robot of a request is in the scene.
-        log(f"scene ready ({SCENE_LANES} lanes, stopped), waiting for a spawn request in {FLEET_REQUEST}; "
+        log(f"scene ready ({layout['scene_source']}, stopped), waiting for a spawn request in {FLEET_REQUEST}; "
             f"models: {', '.join(models)}")
         write_state(scene="ready", ground=SPAWN_LIMIT, **layout)
     except Exception:
