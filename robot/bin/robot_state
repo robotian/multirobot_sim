@@ -75,6 +75,18 @@ if _pruned or _limited:
     print("[robot_state] wrote the modified description (pruned dangling joints / limited continuous arm joints) to /etc/clearpath/robot.urdf.xacro too")
 
 urdf = open("/etc/clearpath/robot.urdf").read()
+
+# Some descriptions reference meshes as file://$(find pkg)/... (realsense2_description's D435, robotiq_description's
+# gripper). foxglove_bridge only serves package:// assets (its default asset_uri_allowlist), so the Foxglove URDF
+# panel left those links empty. Only the published topic is rewritten; robot.urdf(.xacro) keep the original URIs.
+import os, re
+def to_package_uri(m):
+    prefix, pkg = m.group(1), m.group(2)
+    if os.path.exists(f"{prefix}/share/ament_index/resource_index/packages/{pkg}"):
+        return f"package://{pkg}/"
+    return m.group(0)
+urdf = re.sub(r"file://(/[^\"'\s]*?)/share/([\w-]+)/", to_package_uri, urdf)
+
 open("/tmp/robot_description.yaml", "w").write("/**:\n  ros__parameters:\n    robot_description: " + json.dumps(urdf) + "\n")
 PY
 exec ros2 run robot_state_publisher robot_state_publisher --ros-args \
