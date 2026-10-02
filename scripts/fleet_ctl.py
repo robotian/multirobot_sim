@@ -6,6 +6,8 @@ a new id replaces the robots in the scene. It reports progress in sim/generated/
 
   scripts/fleet_ctl.py wait-scene            wait until the running sim's scene is ready (and a pending spawn done)
   scripts/fleet_ctl.py spawn [--poses JSON]  spawn NUM_ROBOTS robots (models ROBOT_MODEL_<i> from .env), wait
+  scripts/fleet_ctl.py reset                 stop + play the sim's timeline (robots back at their spawn
+                                             state), then restart the robot containers
   scripts/fleet_ctl.py clear                 delete the request (the next sim start has no robots)
   scripts/fleet_ctl.py state                 print the sim's state (null if the sim isn't running / stale)
 
@@ -29,7 +31,9 @@ FLEET_DIR = ROOT / "sim/generated/fleet"
 REQUEST = FLEET_DIR / "spawn_request.json"
 STATE = FLEET_DIR / "state.json"
 APPLIED = FLEET_DIR / "applied_request.json"  # written by the sim: the last request it spawned successfully
+CONTROL = FLEET_DIR / "control.json"  # {id, action: "reset"}: the running sim stops and plays its timeline
 SIM = "a300-isaac-sim"
+PROJECT = "clearpath-fleet"  # docker-compose.yml name:
 MAX_SLOTS = 8
 
 
@@ -187,6 +191,62 @@ def wait_spawn(req_id, timeout=600, log=print):
     return True
 
 
+def robot_containers():
+    """Names of the running robot containers (compose services robot0..robot7)."""
+    p = subprocess.run(["docker", "ps", "--filter", f"label=com.docker.compose.project={PROJECT}",
+                        "--format", '{{.Names}}\t{{.Label "com.docker.compose.service"}}'],
+                       capture_output=True, text=True)
+    rows = [line.split("\t") for line in p.stdout.splitlines()]
+    return [name for name, service in rows if service.startswith("robot") and service[5:].isdigit()]
+
+
+def reset(timeout=60, restart_robots=True, log=print):
+    """Put the robots back at their spawn state: the running sim stops and plays its timeline (Isaac's Stop and Play
+    buttons) -- seconds, not the ~1 min of restarting the sim container. With restart_robots the robot containers
+    are stopped *first* (a cut_stem run, MoveIt, the EKF can't keep acting on the restarted scene), then the sim is
+    reset, then they are started again and boot fresh; whatever was launched by hand must be started again."""
+    state = read_state()
+    if not state or state.get("scene") != "ready":
+        log("the sim is not running with a ready scene -- press Start first")
+        return False
+    t0 = time.time()
+    names = robot_containers() if restart_robots else []
+    if names:
+        log(f"killing robot containers: {', '.join(names)}")
+        # SIGKILL, all at once: they boot fresh afterwards, so a clean shutdown buys nothing, and `docker stop`'s
+        # grace period let a running cut_stem keep moving the arm for ~4 s after the click
+        p = subprocess.run(["docker", "kill", *names], capture_output=True, text=True)
+        if p.returncode != 0:
+            log(p.stderr.strip())
+            return False
+        log(f"killed in {time.time() - t0:.1f} s")
+    FLEET_DIR.mkdir(parents=True, exist_ok=True)
+    ctl = {"id": uuid.uuid4().hex[:12], "written": time.time(), "action": "reset"}
+    tmp = FLEET_DIR / f".control.{os.getpid()}.tmp"
+    tmp.write_text(json.dumps(ctl))
+    os.chmod(tmp, 0o666)
+    os.replace(tmp, CONTROL)
+    log(f"reset {ctl['id']}: stop + play the timeline")
+    t1, done = time.time(), False
+    while time.time() - t1 < timeout:
+        r = (read_state() or {}).get("reset") or {}
+        if r.get("id") == ctl["id"] and r.get("state") == "done":
+            done = True
+            log(f"sim reset in {time.time() - t1:.1f} s")
+            break
+        time.sleep(0.3)
+    if not done:
+        log(f"no answer from the sim after {timeout:.0f} s")
+    if names:  # started again even if the sim didn't answer, so the fleet isn't left down
+        p = subprocess.run(["docker", "start", *names], capture_output=True, text=True)
+        if p.returncode != 0:
+            log(p.stderr.strip())
+            return False
+        log(f"robot containers started; done in {time.time() - t0:.1f} s (their boot -- robot.srdf etc. -- takes "
+            f"~10-30 s more)")
+    return done
+
+
 def spawn(robots, timeout=900, log=print):
     """Spawn `robots`. Into an empty scene the running sim adds them in place; robots already in the scene are
     replaced by restarting the sim, which spawns the new request at start: removing robots from a running sim (their
@@ -222,8 +282,11 @@ def main():
     sp.add_argument("--poses", help="JSON list, one {x, y, yaw} (or null) per slot")
     sp.add_argument("--timeout", type=float, default=600)
     sub.add_parser("clear")
+    sub.add_parser("reset").add_argument("--keep-robots", action="store_true", help="don't restart the robot containers")
     sub.add_parser("state")
     args = ap.parse_args()
+    if args.cmd == "reset":
+        return 0 if reset(restart_robots=not args.keep_robots) else 1
     if args.cmd == "wait-scene":
         return 0 if wait_scene(args.timeout) else 1
     if args.cmd == "spawn":

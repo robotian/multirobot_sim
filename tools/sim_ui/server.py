@@ -10,6 +10,7 @@ mtu32_bringup's sim_robot_upstart.launch.py per robot, and move the arm to named
 Stdlib only. Long operations run as background jobs whose output the page polls.
 """
 import argparse
+import importlib
 import json
 import math
 import os
@@ -38,6 +39,8 @@ CUT_MATCH = "ros2 action send_goal.*cut_stem"
 CUT_CMD = ('exec ros2 action send_goal --feedback /$ROBOT_NAMESPACE/cut_stem '
            'plant_cutter_msgs/action/CutStem "{start_cutting: true}"')
 LAUNCH_LOG = "/tmp/sim_robot_upstart.log"
+SRDF = "/etc/clearpath/robot.srdf"  # written at container boot; sim_robot_upstart needs it
+SRDF_WAIT_S = 120
 LAUNCH_CMD = ("source /home/robot/colcon_ws/install/setup.bash && "
               f"exec ros2 launch mtu32_bringup sim_robot_upstart.launch.py > {LAUNCH_LOG} 2>&1")
 
@@ -249,10 +252,15 @@ def act_sim_stop(_):
 
 
 def act_sim_reset(_):
-    # Restarting the sim container re-runs setup_scene.py: fresh scene, then the last spawn request is spawned
-    # again, i.e. every robot back at its spawn pose. Robot containers (and their ROS nodes) keep running.
-    return start_job("reset scene", lambda j: j.run(["docker", "restart", SIM]) == 0
-                     and fleet_ctl.wait_scene(log=j.log))
+    # The running sim stops and plays its timeline (Isaac's Stop and Play buttons): every robot back at its spawn
+    # state in seconds, instead of the ~1 min of restarting the sim container. Robot containers keep running.
+    # reloaded so an edited scripts/fleet_ctl.py takes effect without restarting this server (a stale copy once
+    # reset the sim before stopping the robots)
+    def fn(j):
+        importlib.reload(fleet_ctl)
+        return fleet_ctl.reset(log=j.log)
+
+    return start_job("reset scene", fn)
 
 
 def act_spawn(body):
@@ -300,9 +308,29 @@ def act_launch_start(body):
         if sh(["docker", "exec", robot, "pgrep", "-f", "sim_robot_upstart.launch.py"])[0] == 0:
             j.log("already running")
             return True
+        # The launch reads /etc/clearpath/robot.srdf, which the container's boot (robot/bin/generate_srdf) writes
+        # ~5-30 s after the container starts; launched before that it dies at once.
+        deadline = time.time() + SRDF_WAIT_S
+        if sh(["docker", "exec", robot, "test", "-s", SRDF])[0] != 0:
+            j.log(f"waiting for {SRDF} (the robot is still booting)...")
+            while sh(["docker", "exec", robot, "test", "-s", SRDF])[0] != 0:
+                if time.time() > deadline:
+                    j.log(f"no {SRDF} after {SRDF_WAIT_S} s; see `docker logs {robot}` ([generate_srdf] lines)")
+                    return False
+                time.sleep(2)
         rc = j.run(["docker", "exec", "-d", robot, "bash", "-c", LAUNCH_CMD])
+        if rc != 0:
+            return False
+        time.sleep(5)  # a launch that can't start (missing file, bad package) exits within a second or two
+        if sh(["docker", "exec", robot, "pgrep", "-f", "sim_robot_upstart.launch.py"])[0] != 0:
+            j.log("the launch exited right away; end of its log:")
+            j.log(in_robot(robot, f"tail -n 15 {LAUNCH_LOG}")[1].rstrip())
+            # nodes it started before failing (e.g. moveit_sim_bridge) outlive it and would double up with the
+            # next launch's; restart_ros (= the Stop button) removes them
+            j.run(["docker", "exec", robot, "restart_ros"])
+            return False
         j.log(f"started; output in {robot}:{LAUNCH_LOG} (move_group comes up ~20 s later)")
-        return rc == 0
+        return True
 
     return start_job(f"{robot}: start sim_robot_upstart", fn)
 
@@ -421,7 +449,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the page went away mid-request (reload/close during a ~1.5 s status poll); nothing to answer
 
     def handle_api(self, table, arg):
         path = urlparse(self.path).path

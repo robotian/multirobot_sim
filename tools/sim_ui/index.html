@@ -69,7 +69,7 @@
         <button onclick="post('/api/sim/start', { mode: document.getElementById('simMode').value, looks: document.getElementById('robotLooks').value })"
           title="Start Isaac Sim and load the scene (no robots; spawn them below once the scene is ready)">Start</button>
         <button class="danger" onclick="confirm('Stop and remove every container?') && post('/api/sim/stop')">Stop</button>
-        <button class="ghost" onclick="post('/api/sim/reset')" title="Restart the sim container: fresh scene, the same robots spawned again at their spawn poses; robot ROS nodes keep running">Reset scene</button>
+        <button class="ghost" onclick="post('/api/sim/reset')" title="Stop and play the simulation (like Isaac Sim's Stop and Play buttons): every robot back at its spawn pose in a few seconds, then the robot containers restart (sim_robot_upstart and anything else launched by hand must be started again)">Reset scene</button>
       </div>
       <div class="muted" id="simInfo"></div>
       <div id="sceneInfo"></div>
@@ -277,7 +277,8 @@ window.addEventListener('resize', drawMap);
 function renderRobots() {
   const box = document.getElementById('robots');
   const open = new Set([...box.querySelectorAll('details[open]')].map(d => d.dataset.robot));
-  if (!status.robots.length) { box.innerHTML = '<span class="muted">no robot containers</span>'; return; }
+  // sig cleared too: the same robots coming back (e.g. respawned) would otherwise match it and never be drawn
+  if (!status.robots.length) { box.innerHTML = '<span class="muted">no robot containers</span>'; delete box.dataset.sig; return; }
   // Only rebuild when the set/state of robots changes, so inputs being edited aren't wiped every poll.
   const sig = JSON.stringify(status.robots.map(r => [r.name, r.state, r.launch, r.cutting, r.move_group, r.cut_stem_action]));
   if (box.dataset.sig === sig) return;

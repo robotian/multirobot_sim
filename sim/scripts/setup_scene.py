@@ -46,6 +46,9 @@ FLEET_REQUEST = f"{FLEET_DIR}/spawn_request.json"
 FLEET_STATE = f"{FLEET_DIR}/state.json"
 # the last request that was spawned successfully: what a restarted sim spawns again (a rejected request is not)
 FLEET_APPLIED = f"{FLEET_DIR}/applied_request.json"
+# {id, action: "reset"} (scripts/fleet_ctl.py reset, the web UI's "Reset scene"): stop and play the timeline, like
+# Isaac's Stop and Play buttons, which puts every robot back in its spawn state; answered in state.json "reset"
+FLEET_CONTROL = f"{FLEET_DIR}/control.json"
 
 
 def robot_namespace(slot, model):
@@ -2185,6 +2188,22 @@ def _read_json(path):
         return None
 
 
+async def reset_timeline(app, ctl_id):
+    """Stop and play the timeline (Isaac's Stop/Play buttons): physics and the stage go back to their authored
+    state, i.e. every robot at its spawn pose with its joints at their initial positions. Seconds, where restarting
+    the sim container takes ~1 min."""
+    write_state(reset={"id": ctl_id, "state": "running", "time": time.time()})
+    tl = omni.timeline.get_timeline_interface()
+    tl.stop()
+    for _ in range(5):
+        await app.next_update_async()
+    tl.play()
+    for _ in range(5):
+        await app.next_update_async()
+    log(f"reset: timeline stopped and played again, {len(ROBOTS)} robot(s) back at their spawn state")
+    write_state(reset={"id": ctl_id, "state": "done", "time": time.time()})
+
+
 async def spawn_loop(app, stage, og, usdrt_sdf, prev_state=None):
     """Spawn the requests found at start, then poll FLEET_REQUEST; a request with a new id replaces the robots.
 
@@ -2202,6 +2221,7 @@ async def spawn_loop(app, stage, og, usdrt_sdf, prev_state=None):
     if not boot:
         write_state(boot="done")
     handled = {r.get("id") for r in (applied, pending) if r}
+    control_done = (_read_json(FLEET_CONTROL) or {}).get("id")  # one left from a previous run isn't replayed
     next_check = 0.0
     while True:
         await app.next_update_async()
@@ -2212,6 +2232,11 @@ async def spawn_loop(app, stage, og, usdrt_sdf, prev_state=None):
             if time.time() < next_check:
                 continue
             next_check = time.time() + 0.5
+            ctl = _read_json(FLEET_CONTROL)
+            if ctl and ctl.get("id") != control_done:
+                control_done = ctl.get("id")
+                await reset_timeline(app, control_done)
+                continue
             req = _read_json(FLEET_REQUEST)
             # at_start: written for the restart that fleet_ctl is about to do -- the next start spawns it
             if req is None or req.get("id") in handled or req.get("at_start"):
@@ -2288,8 +2313,8 @@ async def main():
         set_viewport_resolution()
         for _ in range(10):
             await app.next_update_async()
-        omni.timeline.get_timeline_interface().play()
-        log(f"scene ready ({SCENE_LANES} lanes), waiting for a spawn request in {FLEET_REQUEST}; "
+        # The timeline stays stopped: spawn_fleet plays it once every robot of a request is in the scene.
+        log(f"scene ready ({SCENE_LANES} lanes, stopped), waiting for a spawn request in {FLEET_REQUEST}; "
             f"models: {', '.join(models)}")
         write_state(scene="ready", ground=SPAWN_LIMIT, **layout)
     except Exception:
