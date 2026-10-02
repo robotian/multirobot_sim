@@ -66,10 +66,15 @@
           <select id="simMode"><option value="stream">Stream (WebRTC)</option><option value="headed">Headed (local window)</option></select></label>
         <label title="Robot materials (ROBOT_LOOKS). Full: textured (dust, scratches). Basic: plain colours, no textures. Off: the URDF importer's flat materials. Applied at Start; recreates the sim when changed.">Robot look
           <select id="robotLooks"><option value="full">Full</option><option value="basic">Basic</option><option value="off">Off</option></select></label>
-        <button onclick="post('/api/sim/start', { mode: document.getElementById('simMode').value, looks: document.getElementById('robotLooks').value })"
+        <button onclick="post('/api/sim/start', { mode: document.getElementById('simMode').value, looks: document.getElementById('robotLooks').value, scene: chosenScene ?? status.sim_scene })"
           title="Start Isaac Sim and load the scene (no robots; spawn them below once the scene is ready)">Start</button>
         <button class="danger" onclick="confirm('Stop and remove every container?') && post('/api/sim/stop')">Stop</button>
         <button class="ghost" onclick="post('/api/sim/reset')" title="Stop and play the simulation (like Isaac Sim's Stop and Play buttons): every robot back at its spawn pose in a few seconds, then the robot containers restart (sim_robot_upstart and anything else launched by hand must be started again)">Reset scene</button>
+      </div>
+      <div class="row" title="The world the robots are spawned into (SIM_SCENE), applied at Start (a change recreates the sim). Pick a USD file, e.g. one saved from Isaac Sim with File > Save As into sim/scene/ (its ground should be at z=0): a file already in sim/scene/ is used in place, any other is copied there (its relative asset paths then resolve from sim/scene/). Default scene: a ground plane and lights.">
+        <label>Scene <input type="file" id="sceneFile" accept=".usd,.usda,.usdc,.usdz" onchange="pickScene(this)"></label>
+        <button class="ghost" onclick="chooseScene('', 'Default (ground plane + lights)')">Default scene</button>
+        <span id="sceneChoice" class="muted"></span>
       </div>
       <div class="muted" id="simInfo"></div>
       <div id="sceneInfo"></div>
@@ -145,8 +150,11 @@ async function refreshStatus() {
     : scene.scene !== 'ready' ? `scene ${scene.scene}` : spawning ? 'spawning robots'
     : `scene ready, ${scene.robots.length} robot(s)`);
   pill.className = 'pill ' + (!up || (scene && scene.scene === 'error') ? 'bad' : scene && scene.scene === 'ready' && !spawning ? 'ok' : 'warn');
-  document.getElementById('simInfo').textContent = sim ? `${sim.name}: ${sim.status} · ${status.sim_mode} · looks ${status.robot_looks}` : 'no sim container -- press Start';
+  renderScenes();
+  const loaded = scene && scene.scene_source ? ` · scene ${scene.scene_source}` : '';
+  document.getElementById('simInfo').textContent = sim ? `${sim.name}: ${sim.status} · ${status.sim_mode} · looks ${status.robot_looks}${loaded}` : 'no sim container -- press Start';
   document.getElementById('sceneInfo').innerHTML = !scene ? '' :
+    scene.scene === 'error' ? `<pre style="color:var(--bad);white-space:pre-wrap">scene failed to load:\n${esc(scene.error)}</pre>` :
     (scene.robots.length ? `<table><tr><th>in the scene</th><th>model</th><th>x</th><th>y</th><th>yaw</th></tr>${scene.robots.map(r =>
       `<tr><td>${esc(r.ns)}</td><td>${esc(r.model)}</td><td>${r.x.toFixed(2)}</td><td>${r.y.toFixed(2)}</td><td>${r.yaw.toFixed(0)}</td></tr>`).join('')}</table>`
       : '<span class="muted">no robots in the scene</span>')
@@ -158,6 +166,36 @@ async function refreshStatus() {
   else if (scene && scene.scene === 'ready' && !defaultsKnown) { defaultsKnown = true; fillBlankPoses(); }
   drawMap();
   renderRobots();
+}
+
+// scene: null until the user picks one, then the SIM_SCENE value Start sends ("" = default scene)
+let chosenScene = null, chosenLabel = '';
+function renderScenes() {
+  document.getElementById('sceneChoice').textContent = chosenScene === null
+    ? `${status.sim_scene_label} (current)` : `${chosenLabel} -- applied at Start`;
+}
+function chooseScene(value, label) {
+  chosenScene = value; chosenLabel = label;
+  document.getElementById('sceneFile').value = '';
+  renderScenes();
+}
+// The browser hands over the file's contents, not its path: the server finds the same file under sim/scene/
+// (so its relative asset paths keep working) or copies it there.
+async function pickScene(input) {
+  const f = input.files[0];
+  if (!f) return;
+  document.getElementById('sceneChoice').textContent = `reading ${f.name}...`;
+  try {
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    const r = await api('/api/scene/upload', { name: f.name, data: btoa(bin) });
+    chooseScene(r.scene, r.label + (r.copied ? ' (copied there)' : ''));
+  } catch (e) {
+    toast(e.message);
+    input.value = '';
+    renderScenes();
+  }
 }
 
 // ------------------------------------------------------------ spawn form

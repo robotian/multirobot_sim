@@ -10,6 +10,8 @@ mtu32_bringup's sim_robot_upstart.launch.py per robot, and move the arm to named
 Stdlib only. Long operations run as background jobs whose output the page polls.
 """
 import argparse
+import base64
+import hashlib
 import importlib
 import json
 import math
@@ -140,6 +142,66 @@ def available_models():
     return sorted(d.name for d in (ROOT / "sim/assets").iterdir() if (d / f"{d.name}.urdf").exists())
 
 
+SCENE_DIR = ROOT / "sim/scene"  # mounted in the sim as /sim/scene
+SCENE_EXTS = (".usd", ".usda", ".usdc", ".usdz")
+SCENE_MAX_BYTES = 512 * 1024 * 1024
+# "lavender" is only reachable through .env (SIM_SCENE=lavender); the page offers a file picker + Default
+BUILTIN_SCENES = {"": "Default (ground plane + lights)", "lavender": "Lavender farm (built-in)"}
+
+
+def scene_files():
+    """USD files under sim/scene/ (paths relative to it), e.g. scenes saved from Isaac Sim with File > Save As."""
+    if not SCENE_DIR.is_dir():
+        return []
+    return sorted(str(p.relative_to(SCENE_DIR)) for p in SCENE_DIR.rglob("*")
+                  if p.is_file() and p.suffix.lower() in SCENE_EXTS)
+
+
+def scene_label(scene):
+    return BUILTIN_SCENES.get(scene, f"sim/scene/{scene}")
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def act_scene_upload(body):
+    """The page's file picker can only hand over the file's contents, not its path. A scene's assets are usually
+    referenced relative to it (Isaac's Save As writes ../assets/...), so it has to be loaded from where it lives:
+    a file under sim/scene/ with the same contents is used in place; anything else is copied into sim/scene/
+    (never over a different file of the same name) and its relative references then resolve from there."""
+    name = Path(str(body.get("name") or "")).name
+    if not name.lower().endswith(SCENE_EXTS):
+        raise ValueError(f"pick a USD file ({', '.join(SCENE_EXTS)})")
+    try:
+        data = base64.b64decode(body.get("data") or "", validate=True)
+    except ValueError:
+        raise ValueError("bad file data")
+    if not data or len(data) > SCENE_MAX_BYTES:
+        raise ValueError(f"the file must be 1 byte to {SCENE_MAX_BYTES >> 20} MB")
+    digest = hashlib.sha256(data).hexdigest()
+    same_size = [f for f in scene_files() if (SCENE_DIR / f).stat().st_size == len(data)]
+    # prefer a file with the picked name (the usual case: picking a scene saved into sim/scene/)
+    for f in sorted(same_size, key=lambda f: Path(f).name != name):
+        if _sha256(SCENE_DIR / f) == digest:
+            return {"scene": f, "label": scene_label(f), "copied": False}
+    SCENE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        SCENE_DIR.chmod(0o777)  # the sim (uid 1234) saves scenes here too
+    except OSError:
+        pass
+    dest = SCENE_DIR / name
+    if dest.exists():
+        dest = SCENE_DIR / f"{Path(name).stem}_{digest[:8]}{Path(name).suffix}"
+    dest.write_bytes(data)
+    f = str(dest.relative_to(SCENE_DIR))
+    return {"scene": f, "label": scene_label(f), "copied": True}
+
+
 def containers():
     _, out = sh(["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={PROJECT}",
                  "--format", '{{.Names}}\t{{.Label "com.docker.compose.service"}}\t{{.State}}\t{{.Status}}'])
@@ -199,6 +261,8 @@ def status():
         "max_slots": MAX_SLOTS,
         "sim_mode": env.get("SIM_MODE", "stream"),
         "robot_looks": env.get("ROBOT_LOOKS", "full"),
+        "sim_scene": env.get("SIM_SCENE", ""),
+        "sim_scene_label": scene_label(env.get("SIM_SCENE", "")),
     }
 
 
@@ -227,9 +291,15 @@ def act_sim_start(body):
     looks = (body or {}).get("looks") or read_env().get("ROBOT_LOOKS", "full")
     if looks not in ROBOT_LOOKS:
         raise ValueError(f"looks must be one of {ROBOT_LOOKS}")
+    # scene: SIM_SCENE, "" (ground plane + lights), "lavender" or a file in sim/scene/; written to .env like
+    # SIM_MODE, so a change recreates the sim
+    scene = (body or {}).get("scene")
+    scene = read_env().get("SIM_SCENE", "") if scene is None else scene
+    if scene not in BUILTIN_SCENES and scene not in scene_files():
+        raise ValueError(f"no scene {scene!r}: pick a USD file again")
 
     def fn(j):
-        write_env({"SIM_MODE": mode, "ROBOT_LOOKS": looks})
+        write_env({"SIM_MODE": mode, "ROBOT_LOOKS": looks, "SIM_SCENE": scene})
         env = dict(os.environ)
         if mode == "headed":
             display = host_display()
@@ -240,11 +310,11 @@ def act_sim_start(body):
             j.log(f"headed: DISPLAY={display}")
             if j.run(["scripts/x11_auth.sh"], env=env) != 0:
                 return False
-        j.log(f".env: SIM_MODE={mode} ROBOT_LOOKS={looks}")
+        j.log(f".env: SIM_MODE={mode} ROBOT_LOOKS={looks} SIM_SCENE={scene}")
         # scene only: the robots are spawned afterwards (act_spawn); waits until the scene is ready
         return j.run(["scripts/fleet.sh", "scene"], env=env) == 0
 
-    return start_job(f"start sim ({mode}, looks {looks})", fn)
+    return start_job(f"start sim ({mode}, looks {looks}, scene {scene_label(scene)})", fn)
 
 
 def act_sim_stop(_):
@@ -425,6 +495,7 @@ POST = {
     "/api/sim/start": act_sim_start,
     "/api/sim/stop": act_sim_stop,
     "/api/sim/reset": act_sim_reset,
+    "/api/scene/upload": act_scene_upload,
     "/api/spawn": act_spawn,
     "/api/launch/start": act_launch_start,
     "/api/launch/stop": act_launch_stop,
