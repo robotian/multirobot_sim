@@ -195,12 +195,14 @@ def status():
         "robots": robots(),
         "max_slots": MAX_SLOTS,
         "sim_mode": env.get("SIM_MODE", "stream"),
+        "robot_looks": env.get("ROBOT_LOOKS", "full"),
     }
 
 
 # ---------------------------------------------------------------- actions
 
 SIM_MODES = ("stream", "headed")
+ROBOT_LOOKS = ("full", "basic", "off")  # sim/scripts/robot_looks.py MODE
 
 
 def host_display():
@@ -217,9 +219,14 @@ def act_sim_start(body):
     mode = (body or {}).get("mode") or read_env().get("SIM_MODE", "stream")
     if mode not in SIM_MODES:
         raise ValueError(f"mode must be one of {SIM_MODES}")
+    # looks: robot materials (ROBOT_LOOKS), "full" (textured), "basic" (plain colours) or "off" (importer's own);
+    # written to .env like SIM_MODE, so a change recreates the sim too
+    looks = (body or {}).get("looks") or read_env().get("ROBOT_LOOKS", "full")
+    if looks not in ROBOT_LOOKS:
+        raise ValueError(f"looks must be one of {ROBOT_LOOKS}")
 
     def fn(j):
-        write_env({"SIM_MODE": mode})
+        write_env({"SIM_MODE": mode, "ROBOT_LOOKS": looks})
         env = dict(os.environ)
         if mode == "headed":
             display = host_display()
@@ -230,11 +237,11 @@ def act_sim_start(body):
             j.log(f"headed: DISPLAY={display}")
             if j.run(["scripts/x11_auth.sh"], env=env) != 0:
                 return False
-        j.log(f".env: SIM_MODE={mode}")
+        j.log(f".env: SIM_MODE={mode} ROBOT_LOOKS={looks}")
         # scene only: the robots are spawned afterwards (act_spawn); waits until the scene is ready
         return j.run(["scripts/fleet.sh", "scene"], env=env) == 0
 
-    return start_job(f"start sim ({mode})", fn)
+    return start_job(f"start sim ({mode}, looks {looks})", fn)
 
 
 def act_sim_stop(_):
