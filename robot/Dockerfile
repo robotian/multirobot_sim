@@ -56,6 +56,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # colcon_ws/src/status_server talks to its PostgreSQL task database with psycopg 3; husky_operations_manager
 # imports transforms3d directly and, like status_server, tf_transformations (a thin wrapper around transforms3d).
 
+# RealSense frames: Clearpath's intel_realsense.urdf.xacro calls the per-model sensor_d4xx macro without
+# use_nominal_extrinsics, so the URDF only gets <name>_link/_bottom_screw_frame -- on the real robot the
+# realsense2_camera driver publishes the depth/color/infra frames from the camera's calibration. Nothing does that
+# in the sim, so turn the nominal frames on ("e.g. running the device in simulation", per the macros' own comment):
+# robot_state_publisher then publishes camera_0_depth_frame (depthimage_to_laserscan's output_frame) and
+# camera_0_color_optical_frame, which setup_scene.py mounts the simulated camera on. gen_urdf.sh runs xacro in
+# this image too, so the sim's USD gets the same frames.
+RUN f=/opt/ros/jazzy/share/clearpath_sensors_description/urdf/intel_realsense.urdf.xacro \
+    && sed -i -E 's|(<xacro:sensor_d4[0-9a-z]+ name="\$\{name\}" parent="\$\{parent_link\}")>|\1 use_nominal_extrinsics="true">|' "$f" \
+    && test "$(grep -c 'use_nominal_extrinsics="true"' "$f")" -eq 5
+
 # clearpath_generator_robot + clearpath_sensors: the real per-robot param/launch generator a physical Clearpath
 # robot runs (github.com/clearpathrobotics/clearpath_robot, jazzy branch) -- NOT packaged in the public Jazzy apt
 # repo (only clearpath_generator_common is, via ros-jazzy-clearpath-generator-common above), so it's built from

@@ -2239,6 +2239,15 @@ async def spawn_one(app, stage, og, usdrt_sdf, ns, model, pose):
     if params.get("has_camera", True):
         optical_link = params.get("camera_optical_link")
         hfov = ZED_HFOV_DEG if optical_link else HFOV_DEG
+        if not optical_link:
+            # RealSense with nominal extrinsics (robot/Dockerfile): the URDF has its own optical frame, which the
+            # robot's robot_state_publisher already publishes, so mount the camera there like the ZED path does.
+            try:
+                find_prim(stage, root, "camera_0_color_optical_frame")
+                optical_link = "camera_0_color_optical_frame"
+            except RuntimeError:
+                pass  # older asset without the nominal frames: add_camera builds one under camera_0_link
+        params = dict(params, camera_optical_link=optical_link)  # build_ros_graph: no PubTfCamera for a URDF frame
         cam_path = add_camera(stage, root, optical_link=optical_link, hfov_deg=hfov)
 
     log(f"spawned {ns} ({model}) at {root}, x={pose[0]:g} y={pose[1]:g} yaw={pose[2]:g} deg")
