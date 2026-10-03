@@ -27,9 +27,9 @@ REL_ASSETS = "../assets"  # as seen from sim/scene/<file>
 LAVENDER = "lavender/SM_Lavender_Nanite_01.usd"
 # Plant size. The map (status_server) treats a row as 0.45 m thick and the plants are ~0.44 m apart in a row, so
 # a 0.5 m clump just touches its neighbours into a hedge and leaves the mapped lane width free. The asset is a
-# ~2 m wide, 1.34 m tall clump in cm, scaled per axis to these sizes.
+# ~2 m wide, 1.34 m tall clump in cm, scaled uniformly (its own proportions; a taller-than-wide scale looked
+# squeezed) to this width, so it ends up ~0.33 m tall.
 PLANT_DIAMETER = 0.5
-PLANT_HEIGHT = 0.55
 PLANT_SINK = 0.02  # lowest point below z=0, so no plant floats
 
 GROUND_COVER = "Ground_cover/ground_cover.usd"  # 100 x 100 m of grass blades, geometry really in metres
@@ -123,13 +123,12 @@ def add_lights(stage):
 
 def add_plants(stage, plants):
     """One instanceable copy of the lavender prototype per plant, under /World/lavender/row_<row_id>, scaled per axis
-    to PLANT_DIAMETER x PLANT_HEIGHT and centred on its x/y (the asset's bbox is off its origin). Returns the rows'
+    uniformly to PLANT_DIAMETER wide and centred on its x/y (the asset's bbox is off its origin). Returns the rows'
     extents [x_min, x_max, y_mean, width] for the web UI's spawn map."""
     proto = add_prototype(stage, "lavender", LAVENDER)
     r = asset_bounds(LAVENDER)
     size, mid = r.GetSize(), r.GetMidpoint()
-    sxy = PLANT_DIAMETER / max(size[0], size[1])
-    sz = PLANT_HEIGHT / size[2]
+    k = PLANT_DIAMETER / max(size[0], size[1])
     pivot = Gf.Vec3d(-mid[0], -mid[1], -r.GetMin()[2])
     UsdGeom.Xform.Define(stage, "/World/lavender")
     rows = {}
@@ -146,7 +145,7 @@ def add_plants(stage, plants):
         xf = UsdGeom.Xformable(prim)
         xf.AddTranslateOp().Set(Gf.Vec3d(p["x"], p["y"], -PLANT_SINK))
         xf.AddRotateZOp().Set(random.Random(p["object_id"]).uniform(0.0, 360.0))  # same look on every rebuild
-        xf.AddScaleOp().Set(Gf.Vec3d(sxy, sxy, sz))
+        xf.AddScaleOp().Set(Gf.Vec3d(k, k, k))
         xf.AddTranslateOp(opSuffix="pivot").Set(pivot)
     half = PLANT_DIAMETER / 2
     return [[min(q["x"] for q in ps) - half, max(q["x"] for q in ps) + half, sum(q["y"] for q in ps) / len(ps),
