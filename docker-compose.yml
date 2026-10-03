@@ -116,6 +116,8 @@ services:
       CAMERA_WIDTH: ${CAMERA_WIDTH:-640}
       CAMERA_HEIGHT: ${CAMERA_HEIGHT:-360}
       CAMERA_FRAME_SKIP: ${CAMERA_FRAME_SKIP:-0}
+      # 1: a robot camera renders only while one of its topics has a subscriber (setup_scene.camera_on_demand_loop)
+      CAMERA_ON_DEMAND: ${CAMERA_ON_DEMAND:-1}
       FORCE_REIMPORT: ${FORCE_REIMPORT:-0}
       FLEET_DEBUG: ${FLEET_DEBUG:-0}
       CAMERA_STREAMS: ${CAMERA_STREAMS:-color,depth}

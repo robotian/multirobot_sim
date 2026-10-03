@@ -75,6 +75,12 @@ FORCE_REIMPORT = os.environ.get("FORCE_REIMPORT", "0") == "1"
 # Which D435i streams to publish. Each one costs main-thread time in the sim, so trim if the frame rate suffers.
 # "none" turns the cameras off (no render products at all), which is what gives the streamed viewport its full frame rate.
 CAM_STREAMS = set(filter(None, os.environ.get("CAMERA_STREAMS", "color,depth").split(","))) - {"none", "off"}
+# 1: a robot camera renders only while something subscribes to one of its topics (camera_on_demand_loop); an idle
+# render product still costs frame time, and CAMERA_FRAME_SKIP only skips the publish, not the render.
+# 0: every camera renders every frame.
+CAM_ON_DEMAND = os.environ.get("CAMERA_ON_DEMAND", "1") == "1"
+CAM_IDLE_OFF_S = 2.0  # a camera stays on this long after its last subscriber left
+CAM_WARMUP_S = 5.0  # and renders this long after play/spawn/reset, so its ROS publishers exist (topic type known)
 
 # Per-model URDF/USD paths, from scripts/gen_urdf.sh's output (sim/assets/<model>/) and the importer's cache
 # (sim/generated/<model>/, see import_urdf_if_needed).
@@ -2155,6 +2161,81 @@ async def debug_loop(og):
         log(f"debug {ns}: chassis_pos={tuple(round(v, 3) for v in pos)} {vals}")
 
 
+def _robot_camera_textures():
+    """{render product path: (HydraTexture, [topics])} of the robot cameras (camera prim under /World/<ns>/, not the
+    viewport's). IsaacCreateRenderProduct makes them with rep.create.render_product, which registers them in
+    replicator's viewport manager; looked up in every context of it (attach_hydra_texture's lookup uses another
+    context name). Topics as build_ros_graph names them: /<ns>/sensors/camera_<i>/<stream>/{image,camera_info}."""
+    import omni.replicator.core as rep
+
+    out = {}
+    for textures in rep.vp_manager.ViewportManager()._hydra_textures._hydra_textures.values():
+        for t in textures:
+            ht = t.hydra_texture
+            cam = str(ht.get_camera_path()) if ht is not None else ""
+            idx = re.findall(r"camera_(\d+)_", cam)
+            if not cam.startswith("/World/") or not idx:
+                continue
+            base = f"/{cam.split('/')[2]}/sensors/camera_{idx[-1]}"
+            out[str(ht.get_render_product_path())] = (
+                ht, [f"{base}/{s}/{k}" for s in sorted(CAM_STREAMS) for k in ("image", "camera_info")])
+    return out
+
+
+async def camera_on_demand_loop():
+    """CAMERA_ON_DEMAND=1: a robot camera's render product updates (hydra texture updates on) only while one of its
+    topics has a subscriber, checked every 0.5 s and kept on for CAM_IDLE_OFF_S after the last one leaves.
+    Measured with j100_0921 alone (2 cameras, FLEET_DEBUG render_fps): both rendering 19.4, camera_1 off 24.2.
+    Switching only when a subscriber comes or goes is the point: toggling the updates often costs more than it
+    saves (alternating the cameras every frame: 9.5 fps and no images at all; in blocks of 5 frames: 18.6 fps).
+    All cameras are switched back on while the timeline is stopped (spawn/reset); the list is refreshed every 2 s."""
+    import rclpy
+
+    if not rclpy.ok():
+        rclpy.init()
+    node = rclpy.create_node("fleet_camera_on_demand")
+    app = omni.kit.app.get_app()
+    tl = omni.timeline.get_timeline_interface()
+    textures, on, last_used, next_check, refresh = {}, {}, {}, 0.0, 0.0
+    while True:
+        await app.next_update_async()
+        if not tl.is_playing():
+            for ht, _ in textures.values():
+                ht.set_updates_enabled(True)
+            textures, on, last_used, refresh = {}, {}, {}, 0.0
+            continue
+        now = time.time()
+        if now < next_check:
+            continue
+        next_check = now + 0.5
+        if now >= refresh:
+            refresh = now + 2.0
+            try:
+                found = _robot_camera_textures()
+            except Exception as e:
+                log(f"camera on demand: render products not readable ({type(e).__name__}: {e}), all cameras stay on")
+                for ht, _ in textures.values():
+                    ht.set_updates_enabled(True)
+                node.destroy_node()
+                return
+            if found.keys() != textures.keys():
+                log(f"camera on demand: {len(found)} camera(s), each rendered only while its topics have a subscriber")
+            textures = found
+            for rp in found:  # warm-up: a camera that never rendered has no ROS publisher, so `ros2 topic
+                last_used.setdefault(rp, now + CAM_WARMUP_S - CAM_IDLE_OFF_S)  # hz`/Foxglove can't subscribe
+        for rp, (ht, topics) in textures.items():
+            try:
+                if any(node.count_subscribers(t) for t in topics):
+                    last_used[rp] = now
+            except Exception:
+                last_used[rp] = now  # can't tell: keep it on
+            want = now - last_used.get(rp, -1e9) < CAM_IDLE_OFF_S
+            if on.get(rp) != want:
+                ht.set_updates_enabled(want)
+                on[rp] = want
+                log(f"camera on demand: {topics[0].rsplit('/', 2)[0]} {'on' if want else 'off'}")
+
+
 # ---------------------------------------------------------------- spawn protocol (see FLEET_REQUEST/FLEET_STATE)
 
 MAX_ROBOTS = 8  # docker-compose.yml's robot0..robot7 slots
@@ -2444,6 +2525,8 @@ async def main():
         log(f"scene ready ({layout['scene_source']}, stopped), waiting for a spawn request in {FLEET_REQUEST}; "
             f"models: {', '.join(models)}")
         write_state(scene="ready", ground=SPAWN_LIMIT, **layout)
+        if CAM_ON_DEMAND and CAM_STREAMS:
+            asyncio.ensure_future(camera_on_demand_loop())
     except Exception:
         log("FATAL error while building the scene:\n" + traceback.format_exc())
         write_state(scene="error", error=traceback.format_exc(limit=3))

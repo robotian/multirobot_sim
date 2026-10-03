@@ -336,6 +336,7 @@ Edit `.env`, then `docker restart a300-isaac-sim` for sim variables, or `scripts
 | `CAMERA_WIDTH` / `CAMERA_HEIGHT` | `640` / `360` | D435i image size |
 | `CAMERA_FRAME_SKIP` | `0` | publish every (N+1)th sim frame |
 | `CAMERA_STREAMS` | `color,depth` | streams to publish; `none` turns the cameras off completely |
+| `CAMERA_ON_DEMAND` | `1` | a camera renders only while one of its topics has a subscriber (after 5 s at each play/spawn/reset, so its topics are advertised); `0`: every camera renders every frame. See *Faster streaming* |
 | `SIM_RATE_HZ` | `20` | frames per second of simulated time; keep it close to the frame rate the sim reaches (see *Faster streaming*). Prefer a value that divides `PHYSICS_HZ` (20, 15, 12, 10, 30): Kit runs `floor(PHYSICS_HZ / SIM_RATE_HZ)` physics steps per frame, so otherwise simulated time and physics drift apart |
 | `PHYSICS_HZ` | `60` | physics steps per second of simulated time |
 | `SIM_MODE` | `stream` | `stream` (WebRTC) or `headed` (Isaac's desktop window on this machine's X display; needs `scripts/x11_auth.sh`) |
@@ -361,7 +362,18 @@ The WebRTC client shows at most the frame rate of the sim, because the sim rende
 | lower camera resolution, colour only, no depth, `RaytracedLighting`, hiding the Kit UI, camera `CAMERA_FRAME_SKIP`, async replicator | no change |
 | viewport at 3440×1440 instead of 1280×720 | 18 vs 19 fps, GPU load 46% vs 30% |
 
-So the levers that matter are the number of robots with cameras and async rendering. If you only need to watch the scene, `CAMERA_STREAMS=none` roughly doubles the frame rate (the robots then publish no images). `FLEET_VIEWPORT_RES=1280x720` keeps the GPU load down on a large client window at almost no cost in frame rate. Not measured: the encoder and network path with a client connected.
+So the levers that matter are the number of robots with cameras and async rendering. If you only need to watch the scene, `CAMERA_STREAMS=none` roughly doubles the frame rate (the robots then publish no images).
+
+**Cameras on demand (`CAMERA_ON_DEMAND=1`, the default).** A camera's render product costs its frame time whether anything listens or not, so the sim switches a camera's rendering off while none of its topics (`sensors/camera_<i>/{color,depth}/{image,camera_info}`) has a subscriber, and back on within ~0.5 s when one appears (`ros2 topic echo` got its first image within 1 s, CLI start included). Measured with j100_0921 alone (ZED + wrist D405, `lavender_farm.usd`, async rendering, `SIM_RATE_HZ=22`):
+
+| Subscribed | Frame rate | Camera rate |
+|---|---|---|
+| everything rendering (`CAMERA_ON_DEMAND=0`) | 19.4 fps | ~19 Hz |
+| nothing | 28.4 fps | — |
+| camera_0 | 23.7 fps | 23.5 Hz |
+| camera_0 and camera_1 | 21.0 fps | 20.8 Hz |
+
+Rendering cameras on alternate frames does not work: switching a render product on and off often costs more than it saves (every frame: 9.5 fps and no images at all; blocks of 5 frames: 18.6 fps, ~5 Hz per camera), which is also why `CAMERA_FRAME_SKIP` (only skips the publish) can't help. A robot node that subscribes to a camera permanently keeps it rendering, as before. `FLEET_VIEWPORT_RES=1280x720` keeps the GPU load down on a large client window at almost no cost in frame rate. Not measured: the encoder and network path with a client connected.
 
 ## Scene
 
