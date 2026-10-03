@@ -5,6 +5,7 @@ Copies every mesh referenced through package:// or file:// into <out>/meshes/<pk
 URDF to use relative paths, so the Isaac container does not need any ROS packages installed.
 Also drops <gazebo>/<ros2_control> blocks, which the importer does not use.
 """
+import json
 import math
 import os
 import re
@@ -203,7 +204,11 @@ def merge_visual_only_links(root):
     first) didn't fix this -- the constraint is still there, just less obviously wrong. Merging the geometry
     directly into the parent link's own <visual> list removes the joint entirely, so there is nothing left
     to drift: the mesh is now literally part of the parent body.
+
+    Returns {merged link: link it now lives in}, chains resolved (main() writes it to merged_links.json, which
+    setup_scene.py reads to find where a merged sensor frame such as imu_0_link ended up).
     """
+    merged = {}
     joints = root.findall("joint")
     changed = True
     while changed:
@@ -248,7 +253,13 @@ def merge_visual_only_links(root):
             root.remove(child)
             joints.remove(joint)
             root.remove(joint)
+            merged[child_name] = parent_name
             changed = True  # a link merged away might itself have been the parent of another such joint
+    for name, into in merged.items():
+        while into in merged:
+            into = merged[into]
+        merged[name] = into
+    return merged
 
 
 def _rigid_inverse(m):
@@ -420,7 +431,7 @@ def main(urdf_in, out_dir, urdf_name, mass_overrides=""):
         apply_mass_deltas(root, mass_overrides)
 
     prune_dangling_joints(root)
-    merge_visual_only_links(root)
+    merged = merge_visual_only_links(root)
     weld_empty_root_children(root)
     limit_continuous_mimic_followers(root)
     limit_continuous_arm_joints(root)
@@ -445,6 +456,8 @@ def main(urdf_in, out_dir, urdf_name, mass_overrides=""):
 
     os.makedirs(out_dir, exist_ok=True)
     tree.write(os.path.join(out_dir, urdf_name), xml_declaration=True, encoding="utf-8")
+    with open(os.path.join(out_dir, "merged_links.json"), "w") as f:
+        json.dump(merged, f, indent=1, sort_keys=True)
     print(f"wrote {os.path.join(out_dir, urdf_name)} with {len(copied)} meshes")
 
 

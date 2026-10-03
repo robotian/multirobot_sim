@@ -1,0 +1,60 @@
+# Sim parameters per robot model, read by sim/scripts/setup_scene.py at sim start (model_params()).
+#
+# A model's parameters are derived; nothing here has to be added for a new robot:
+#   1. `platforms[<platform>]`, the platform taken from robot.yaml's serial_number (a300-00037 -> a300);
+#   2. robot.yaml's platform.extras.ros_parameters.platform_velocity_controller, if any (the robot's real
+#      calibration: wheel_radius x mean(left/right_wheel_radius_multiplier), wheel_separation_multiplier,
+#      linear.x/angular.z.max_velocity);
+#   3. sensors and arm from robot.yaml + the flattened URDF (sim/assets/<m>/): camera, imu, gps, lidar2d,
+#      lidar3d, has_arm, wrist_camera (camera_1_link), imu_link (where flatten_urdf.py merged the IMU frame,
+#      merged_links.json);
+#   4. chassis_link at spawn: the one prim the URDF importer gave ArticulationRootAPI;
+#   5. `robots[<model>]` below, last: only for what can't be derived or was tuned by hand.
+# The derived values are logged at sim start ("[fleet] params <model>: ...").
+#
+# Keys: drive (diff|omni), wheel_radius, wheel_separation, separation_multiplier, max_linear, max_angular,
+# chassis_link, has_camera, camera_optical_link, wrist_camera, imu_link, imu_index, gps_links, lidar2d_link,
+# lidar3d_link, has_arm, drop_mimic_constraints, massless_density, frame_mass, vel_ctl (see setup_scene.py).
+
+# Generic drive constants from each platform's real clearpath_control/config/<platform>/control/diff_4wd.yaml
+# (omni_4wd.yaml for r100) -- keep them in sync with the real configs.
+platforms:
+  a300: {drive: diff, wheel_radius: 0.1625, wheel_separation: 0.562, separation_multiplier: 1.75, max_linear: 2.0, max_angular: 2.0}
+  a200: {drive: diff, wheel_radius: 0.1651, wheel_separation: 0.555, separation_multiplier: 1.875, max_linear: 1.0, max_angular: 1.0}
+  j100: {drive: diff, wheel_radius: 0.098, wheel_separation: 0.37559, separation_multiplier: 1.5, max_linear: 2.0, max_angular: 4.0}
+  # Ridgeback, holonomic mecanum. Wheels handle forward/back and rotation like the other platforms; BodyDrive
+  # (setup_scene.py) injects the sideways component, which a plain-cylinder wheel collider can't produce.
+  # wheel_positions/wheel_axis/mecanum_angles are its real mecanum geometry, NOT used to drive anything (a
+  # per-wheel HolonomicController solve was tried and fought rotation), kept as verified reference:
+  # positions are r100.urdf's rocker xyz (+-0.319, 0, 0.05) + wheel xyz (0, +-0.2755, 0), 0.319 + 0.2755 =
+  # omni_4wd.yaml's sum_of_robot_center_projection_on_X_Y_axis 0.59; angles are degrees (HolonomicController
+  # applies them with degrees=True despite its schema saying radians), standard "X" arrangement.
+  r100:
+    drive: omni
+    wheel_radius: 0.0759
+    wheel_separation: 0.551
+    separation_multiplier: 1.0
+    max_linear: 1.3
+    max_angular: 4.0
+    wheel_positions: [[0.319, 0.2755, 0.05], [0.319, -0.2755, 0.05], [-0.319, 0.2755, 0.05], [-0.319, -0.2755, 0.05]]
+    wheel_axis: [0.0, 1.0, 0.0]
+    mecanum_angles: [-135.0, -45.0, -45.0, -135.0]
+
+robots:
+  # Its robot_data/ folder is gone, so it is still generated from the stripped robot/config/robot.j100_0936.yaml.tmpl
+  # (platform.extras dropped): the drive calibration below is the real robot.yaml's platform_velocity_controller
+  # (same as j100_0921), and its asset predates merged_links.json -- its IMU chain (imu_1_link .. the fake
+  # top_mount_link, all visual-only) merges into chassis_link.
+  j100_0936:
+    wheel_radius: 0.0931  # 0.098 x 0.95
+    separation_multiplier: 1.17
+    max_linear: 1.0
+    max_angular: 1.0
+    imu_link: chassis_link
+    imu_index: 1  # its imu_1_link is merged away, and without merged_links.json only the built-in imu_0_link is seen
+  # Its mtu32 top frame, GPS spheres and ~13 frame links have no <inertial>, so PhysX weighed it 75 kg (URDF
+  # 18.4 kg) with the mass high up, and it tipped backwards at 0.2 m/s. See fix_massless_bodies. Not applied to
+  # j100_0921/a200_0284/a300_00036, whose cut_stem runs were tuned with the current masses.
+  j100_0922:
+    massless_density: 100.0
+    frame_mass: 0.02

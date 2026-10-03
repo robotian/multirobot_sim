@@ -79,7 +79,7 @@ CAM_STREAMS = set(filter(None, os.environ.get("CAMERA_STREAMS", "color,depth").s
 # Per-model URDF/USD paths, from scripts/gen_urdf.sh's output (sim/assets/<model>/) and the importer's cache
 # (sim/generated/<model>/, see import_urdf_if_needed).
 # Every model scripts/gen_urdf.sh has produced (sim/assets/<m>/<m>.urdf) is available -- gen_urdf.sh itself takes
-# the real robots from robot_data/<id>/, so a new robot needs no list edited here (only a MODEL_PARAMS entry).
+# the real robots from robot_data/<id>/, so a new robot needs no list edited here (nor a MODEL_PARAMS entry).
 # The fixed names are kept as a floor so a listing problem can never make a known model disappear.
 _ASSET_ROOT = "/sim/assets"
 _GENERATED = [d for d in (os.listdir(_ASSET_ROOT) if os.path.isdir(_ASSET_ROOT) else [])
@@ -139,201 +139,140 @@ LAVENDER_CORE_HEIGHT = 0.3  # m, from the ground
 SOFT_PLANTS_GROUP = "/World/collisionGroups/soft_plants"
 ROBOTS_GROUP = "/World/collisionGroups/robots"
 
-# Per-model drive parameters, from each model's real clearpath_control/config/<model>/control/diff_4wd.yaml.
-# `chassis_link` is the URDF link the drive/odometry OmniGraph targets -- it must be a prim the URDF importer
-# actually gave UsdPhysics.ArticulationRootAPI, checked per model in the imported USD after generating it, not
-# assumed from the URDF structure alone (see below).
-# a300/r100 each have exactly one direct fixed-jointed child of base_link ("chassis_link") that becomes the
-# articulation root. a200's base_link has several direct children (top_chassis_link, inertial_link, the bumper
-# mounts, ...) with no single obvious "chassis", so the importer roots the articulation at base_link itself
-# instead. j100 *used to* pattern-match a300/r100 (one child, "chassis_link"), but scripts/flatten_urdf.py's
-# merge_visual_only_links() now folds its fenders (visual-only, no collision/inertial -- see that function for
-# why they needed folding in at all) directly into base_link to fix them visually detaching from the chassis
-# when driven; that alone was enough to make base_link "look like a body" to the importer too, moving the
-# articulation root there exactly like a200. Moral: re-check ArticulationRootAPI after *any* URDF-shape change,
-# not just when adding a new model -- targeting the wrong link fails at runtime ("Articulation controller
-# failed") with no error at import time, so nothing catches a wrong guess until the robot won't drive.
-# Ridgeback (r100) is Clearpath's holonomic mecanum platform. It drives omnidirectionally: real diff_4wd.yaml-
-# style wheel driving (same as the other three models, wheel_separation/separation_multiplier below) handles
-# forward/back and rotation via genuine wheel-ground rolling, and BodyDrive (see its comment) separately injects
-# *just* the sideways (Vy) component the wheels structurally cannot produce, so it can strafe and combine
-# translation with rotation, not just drive forward/back and turn like the others. wheel_positions/wheel_axis/
-# mecanum_angles below are Ridgeback's real mecanum geometry, NOT currently used to drive anything (a genuine
-# per-wheel mecanum solve was tried first -- see git history / last_session.md -- but a spinning cylinder can't
-# produce the sideways thrust it computes, and layering it under BodyDrive's override fought rotation instead of
-# helping) -- kept as verified reference in case a future fix finds a use for it.
-#   wheel_positions/wheel_axis are measured from sim/assets/r100/r100.urdf (chassis_link -> {front,rear}_rocker
-#   -> *_wheel_joint, composing both joints' origins; rocker/wheel joints all have rpy="0 0 0", so a wheel's
-#   position relative to chassis_link is just its rocker's xyz plus its own xyz, and its axis is chassis-aligned).
-#     front_rocker  xyz=( 0.319, 0,      0.05), front_{left,right}_wheel_joint xyz=(0, +-0.2755, 0), axis=(0,1,0)
-#     rear_rocker   xyz=(-0.319, 0,      0.05), rear_{left,right}_wheel_joint  xyz=(0, +-0.2755, 0), axis=(0,1,0)
-#   0.319+0.2755 = 0.5945, matching (to rounding) omni_4wd.yaml's own kinematics.sum_of_robot_center_projection_
-#   on_X_Y_axis: 0.59 -- confirms these numbers against Clearpath's real control config, not just the mesh.
-#   mecanum_angles (degrees, per wheel, same order as wheel_positions) are NOT measured from the URDF --
-#   Clearpath's ROS description carries no roller-angle metadata, only the mesh -- so they're derived from the
-#   standard mecanum kinematics equations instead, for isaacsim.robot.wheeled_robots.HolonomicController's
-#   convention (isaacsim.robot.experimental.wheeled_robots.controllers.HolonomicController._build_base rotates
-#   wheelAxis by mecanum_angle about upAxis to get each wheel's effective ground-push direction; its OGN schema
-#   *says* mecanumAngles is in radians but the actual implementation applies it with degrees=True -- confirmed
-#   by reading that source, not the schema doc, and the values here are already in degrees accordingly).
-#   front_left/rear_right share one diagonal roller angle, front_right/rear_left the other, per the standard "X"
-#   mecanum wheel arrangement.
-MODEL_PARAMS = {
-    "a300": dict(chassis_link="chassis_link", drive="diff", wheel_radius=0.1625, wheel_separation=0.562, separation_multiplier=1.75, max_linear=2.0, max_angular=2.0),
-    "a200": dict(chassis_link="base_link", drive="diff", wheel_radius=0.1651, wheel_separation=0.555, separation_multiplier=1.875, max_linear=1.0, max_angular=1.0),
-    "j100": dict(chassis_link="base_link", drive="diff", wheel_radius=0.098, wheel_separation=0.37559, separation_multiplier=1.5, max_linear=2.0, max_angular=4.0),
-    "r100": dict(
-        chassis_link="chassis_link", drive="omni", wheel_radius=0.0759, wheel_separation=0.551, separation_multiplier=1.0,
-        wheel_positions=[(0.319, 0.2755, 0.05), (0.319, -0.2755, 0.05), (-0.319, 0.2755, 0.05), (-0.319, -0.2755, 0.05)],
-        wheel_axis=[0.0, 1.0, 0.0], mecanum_angles=[-135.0, -45.0, -45.0, -135.0],
-        max_linear=1.3, max_angular=4.0,
-    ),
-    # Real MTU robots. wheel_radius/separation_multiplier/max_linear/max_angular are this specific robot's own
-    # real calibrated values (platform.extras.ros_parameters.platform_velocity_controller in the real
-    # robot.yaml): wheel_radius = generic j100's 0.098 * the real left/right_wheel_radius_multiplier (0.95, both
-    # sides equal); wheel_separation is the same physical constant as generic j100 (a hardware geometry fact,
-    # not something the real robot's software recalibrates); separation_multiplier 1.17 *replaces* generic
-    # j100's 1.5 (the real robot.yaml's value is the actual calibrated one, not an additional factor on top);
-    # max_linear/max_angular 1.0/1.0 replace generic j100's 2.0/4.0 the same way. Both real robots have
-    # identical values here (confirmed: diffing the two real robot.yaml files shows no difference in this
-    # section). camera_optical_link/imu_link/gps_links/has_arm/lidar2d_link (used by build_ros_graph/add_camera,
-    # not by the 4 Clearpath-catalog models above) describe this robot's real, richer sensor/arm loadout: a
-    # Stereolabs ZED2i (already gives a correctly-oriented ROS optical frame from its own xacro, unlike the
-    # D435i models above which build one by hand in add_camera -- see camera_optical_link), a Microstrain IMU,
-    # dual SwiftNav Duro GPS, and a Kinova Gen3 Lite arm + 2F Lite gripper; j100_0936 additionally has the real
-    # SICK LMS1xx 2D lidar the real 0921 doesn't carry (lidar2d_link is None there) -- though add_lidar2d
-    # currently does nothing with it regardless of model, since the only 2D-lidar pipeline this Isaac Sim
-    # version has (RTX Lidar) is broken in this specific install; see add_lidar2d's own docstring.
-    #
-    # j100_0921 now generates from its own real robot_data/j100_0921/robot.yaml directly (see robot/entrypoint.sh
-    # and scripts/gen_urdf.sh), with platform.extras (mtu32_description's own custom xacro) genuinely built and
-    # included -- no more stripped-template workaround, and no more fake top_mount->default_mount alias link
-    # (mtu32_description's xacro genuinely defines top_mount_link, real mesh + collision, parented on
-    # default_mount). That changes imu_link from the previous chassis_link: imu_1_link/imu_1_base_link (the
-    # sensor's own mount, still visual-only) now merge only as far up as the real top_mount_link (which has real
-    # collision so merge_visual_only_links stops there, unlike before when the whole chain up to chassis_link was
-    # visual-only and got merged away entirely) -- confirmed in the actual flattened URDF (grep for "imu_1": no
-    # remaining reference, i.e. fully merged; top_shelf_link's own joint parent is top_mount_link directly, not
-    # chassis_link), not assumed. chassis_link is still base_link (fenders are unchanged; re-confirmed live via a
-    # successful drive test with no "Articulation controller failed" error). camera_optical_link/gps_links/
-    # has_arm are unaffected -- they come from clearpath_sensors_description's own sensor macros, unrelated to
-    # mtu32_description.
-    "j100_0921": dict(
-        chassis_link="base_link", drive="diff", wheel_radius=0.098 * 0.95, wheel_separation=0.37559, separation_multiplier=1.17,
-        max_linear=1.0, max_angular=1.0,
-        camera_optical_link="camera_0_left_camera_frame_optical",
-        imu_link="top_mount_link", imu_index=1, gps_links=["gps_1_link", "gps_2_link"], has_arm=True,
-        # RealSense D405 on arm_0_end_effector_link (mtu32_description's camera_1): its own URDF link, mounted
-        # with the ROS link convention (x fwd), so the default hand-built optical frame path applies.
-        wrist_camera=True,
-    ),
-    # j100_0936 still uses the old stripped robot.j100_0936.yaml.tmpl (platform.extras dropped, fake
-    # top_mount->default_mount alias) -- its own robot_data folder isn't available to migrate it the same way
-    # j100_0921 was; out of scope until it reappears or this is asked for specifically. imu_link is chassis_link
-    # here for that reason (see the merge-chain explanation this comment used to carry for both robots): imu_1_
-    # link and every link up to the chassis (imu_1_base_link, the *fake* top_mount_link, default_mount) are all
-    # visual-only, so merge_visual_only_links folds the whole chain into chassis_link.
-    "j100_0936": dict(
-        chassis_link="base_link", drive="diff", wheel_radius=0.098 * 0.95, wheel_separation=0.37559, separation_multiplier=1.17,
-        max_linear=1.0, max_angular=1.0,
-        camera_optical_link="camera_0_left_camera_frame_optical",
-        imu_link="chassis_link", imu_index=1, gps_links=["gps_1_link", "gps_2_link"], has_arm=True,
-        lidar2d_link="lidar2d_0_laser",
-    ),
-    # Two more real MTU robots, same "use the real robot_data/<serial>/robot.yaml directly" pipeline as
-    # j100_0921 -- unlike the Jackals, neither references any private package (a200_0333's platform.extras.urdf
-    # is an empty {}; a300_00036 has no extras key at all), so there was no missing-package workaround to retire
-    # and no fake link to alias; generate_description succeeded first try. Drivetrain (wheel_radius/separation/
-    # separation_multiplier/max_linear/max_angular) is identical to the generic a200/a300 entries above -- neither
-    # real robot.yaml has a platform_velocity_controller override the way the real Jackals do, so there's no
-    # recalibrated value to carry.
-    #
-    # a200_0333: camera is a plain "d435" (not "d435i" like every other model here) via sensors.camera + a
-    # mounts.fath_pivot adapter (a Clearpath mount type not seen elsewhere in this project) -- still produces the
-    # same camera_0_link name add_camera's default (hand-built optical frame) path already expects, confirmed in
-    # the flattened URDF, so no camera_optical_link override needed, same code path as the 4 generic models.
-    # lidar2d (hokuyo_ust) and lidar3d (velodyne VLP16, a new sensor category -- see add_lidar3d) are both
-    # present in the URDF but neither is simulated: both are RTX Lidar in this Isaac Sim version, and that whole
-    # extension is broken in this specific install (see add_lidar2d's own docstring) -- not specific to 2D lidar.
-    "a200_0333": dict(
-        chassis_link="base_link", drive="diff", wheel_radius=0.1651, wheel_separation=0.555, separation_multiplier=1.875,
-        max_linear=1.0, max_angular=1.0,
-        lidar2d_link="lidar2d_0_laser", lidar3d_link="lidar3d_0_laser",
-    ),
-    # a300_00036 (real robot.yaml updated after this entry's first version, which had only a Phidgets IMU and no
-    # camera): now a full MTU field robot -- D435 (sensors.camera, via mounts.fath_pivot on top_plate_mount_c1,
-    # same camera_0_link name/hand-built-optical-frame path as a200_0333, so no camera_optical_link override), a
-    # Hokuyo UST 2D lidar (lidar2d_0_laser, on wireless_charger_link), dual SwiftNav Duro GPS (gps_0_link/
-    # gps_1_link -- a300 numbers its GPS from 0, unlike the Jackals' gps_1/gps_2), a Microstrain IMU, and a Kinova
-    # Gen3 Lite arm + 2F Lite gripper on top_plate_mount_e9 (has_arm), plus platform.extras -> mtu32_description's
-    # generic urdf/robot_description.urdf.xacro. Drivetrain unchanged (no platform_velocity_controller override).
-    # imu_link is top_plate_link: the Microstrain (imu_0_link, imu_index 0 -- a300 has no platform-default IMU
-    # occupying slot 0) and its empty mount frames are visual-only, so merge_visual_only_links folds them into
-    # the nearest link with real collision, top_plate_link -- confirmed in the flattened URDF (no "imu" string
-    # survives; top_plate_link's visuals are top_plate.dae plus one extra box), not assumed.
-    # chassis_link is "chassis_link" again (it was base_link while the Phidgets IMU box gave base_link geometry):
-    # base_link is now a pure frame, and flatten_urdf.py's weld_empty_root_children re-parents its extra collision
-    # children (arch/estop/button/eth, both GPS, wireless charger + lidar) onto chassis_link. Without that pass
-    # the importer rooted 8 separate articulations, pinned to the world (physics:body0 = the robot root prim),
-    # and the drive graph failed on base_link ("not a valid rigid body or articulation root"). Re-verified live
-    # per this project's rule for chassis_link after any URDF shape change.
-    "a300_00036": dict(
-        chassis_link="chassis_link", drive="diff", wheel_radius=0.1625, wheel_separation=0.562, separation_multiplier=1.75,
-        max_linear=2.0, max_angular=2.0,
-        imu_link="top_plate_link", imu_index=0, gps_links=["gps_0_link", "gps_1_link"], has_arm=True,
-        lidar2d_link="lidar2d_0_laser",
-    ),
-    # a300_00037: a300_00036's robot.yaml with a UR10e + Robotiq 2F-85 on top_plate_mount_e9 instead of the Kinova
-    # Gen3 Lite + 2F Lite; base, sensors and the flattened URDF's chassis/top_plate/sensor links are otherwise
-    # identical, so the same params. The arm joints are arm_0_shoulder_pan_joint .. arm_0_wrist_3_joint (not
-    # arm_0_joint_N): configure_arm_drives still gives them position drives (matched on "arm_0"), but they keep
-    # their URDF effort limits (330/330/150/54 N*m) instead of ARM_EFFORT_SCALE x.
-    "a300_00037": dict(
-        chassis_link="chassis_link", drive="diff", wheel_radius=0.1625, wheel_separation=0.562, separation_multiplier=1.75,
-        max_linear=2.0, max_angular=2.0,
-        imu_link="top_plate_link", imu_index=0, gps_links=["gps_0_link", "gps_1_link"], has_arm=True,
-        lidar2d_link="lidar2d_0_laser",
-    ),
-    # a200_0284: an A200 with the MTU field-robot loadout -- Microstrain IMU (imu_0), D435 (via sensors.camera on
-    # front_camera_mount_link, so the usual camera_0_link + hand-built optical frame), dual Duro GPS (gps_0/gps_1),
-    # SICK LMS1xx 2D lidar (lidar2d_0_laser, on top_plate_base_link) and a Kinova Gen3 *7-DOF* arm (arm_0_joint_1
-    # .. 7, no gripper: that section of the yaml is commented out) on arm_mount_plate_link. The arm graph and
-    # configure_arm_drives match by name/articulation, so 7 joints need nothing special.
-    # Drivetrain: the real robot.yaml overrides platform_velocity_controller with wheel_radius 0.157 and
-    # left/right radius multipliers 1.01 / 0.96 (wheel_separation_multiplier 1.875, max 1.0 m/s and 1.0 rad/s).
-    # This sim's DifferentialController takes a single radius, so wheel_radius = 0.157 * mean(1.01, 0.96) = 0.1546;
-    # the left/right asymmetry itself can't be represented (same "real calibrated value" approach as j100_0921).
-    # imu_link is base_link: the Microstrain and its mount frames are visual-only, so merge_visual_only_links folds
-    # them into base_link (confirmed: base_link gains exactly one extra "box" visual vs. the plain a200 URDF).
-    # chassis_link="base_link" like a200 (base_link has real visual+collision and several direct children, so the
-    # importer roots the articulation there) -- to be re-verified live with a drive test.
-    "a200_0284": dict(
-        chassis_link="base_link", drive="diff", wheel_radius=0.157 * (1.01 + 0.96) / 2, wheel_separation=0.555,
-        separation_multiplier=1.875, max_linear=1.0, max_angular=1.0,
-        imu_link="base_link", imu_index=0, gps_links=["gps_0_link", "gps_1_link"], has_arm=True,
-        lidar2d_link="lidar2d_0_laser",
-    ),
-    # j100_0922: same real robot.yaml lineage as j100_0921 (identical camera/IMU/GPS/links sections, same
-    # platform_velocity_controller values) but with its entire manipulators.arms section commented out -- no
-    # arm/gripper at all, so has_arm is omitted (falsy) and configure_arm_drives is never called for it.
-    # chassis_link/imu_link are the same as j100_0921 for the same reasons (identical URDF structure otherwise,
-    # re-verified live via drive test since chassis_link has flipped on unrelated-looking changes before).
-    # Real upstream bug found generating this one, fixed in scripts/flatten_urdf.py (prune_dangling_joints, not
-    # specific to this robot): mtu32_description's own xacro unconditionally mounts a second camera (camera_1,
-    # a RealSense D405) on arm_0_end_effector_link, assuming every Jackal running it has the Kinova arm -- with
-    # no arm here, that link is never defined anywhere, leaving camera_1's mount joint (and its own child joint)
-    # dangling references that Isaac's importer would have choked on; both are now dropped during flattening.
-    "j100_0922": dict(
-        chassis_link="base_link", drive="diff", wheel_radius=0.098 * 0.95, wheel_separation=0.37559, separation_multiplier=1.17,
-        max_linear=1.0, max_angular=1.0,
-        camera_optical_link="camera_0_left_camera_frame_optical",
-        imu_link="top_mount_link", imu_index=1, gps_links=["gps_1_link", "gps_2_link"],
-        # Its mtu32 top frame, GPS spheres and ~13 frame links have no <inertial>, so PhysX weighs the robot 75 kg
-        # (URDF: 18.4 kg; top_mount_link 29.8 kg from its mesh at 1000 kg/m^3) with all of it high up: it tips
-        # backwards at 0.2 m/s. See fix_massless_bodies.
-        massless_density=100.0, frame_mass=0.02,
-    ),
-}
+# Per-model sim parameters (drive constants, sensors, arm) are derived, not listed: model_params() builds them
+# from sim/config/model_params.yaml's `platforms` (the generic drive constants), the model's own robot.yaml and
+# flattened URDF in sim/assets/<m>/, and that file's `robots` overrides -- see the file's header. A new robot or a
+# changed robot.yaml therefore needs only scripts/gen_urdf.sh and a sim restart, no edit here.
+# chassis_link (the prim the drive/odometry OmniGraph targets) is not derived from the URDF at all: it must be the
+# prim the URDF importer gave ArticulationRootAPI, which no URDF rule predicted reliably (a200's and j100's
+# importer root is base_link, a300's/r100's chassis_link, and an unrelated change such as merging j100's fenders
+# into base_link or a300_00036's IMU box once flipped it, failing only at runtime with "Articulation controller
+# failed"), so chassis_prim() reads it from the spawned robot. A robot with more than one articulation root (cf.
+# flatten_urdf.py's weld_empty_root_children) is refused at spawn with that reason.
+MODEL_CONFIG = "/sim/config/model_params.yaml"
+MODEL_PARAMS = {}  # model -> params, filled by load_model_params() at sim start
+
+
+def _pvc_value(pvc, key):
+    """platform_velocity_controller value by its dotted ROS parameter name, flat ("linear.x.max_velocity") or
+    nested ({linear: {x: {max_velocity}}})."""
+    if key in pvc:
+        return pvc[key]
+    node = pvc
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def derive_model_params(model, platforms):
+    """Parameters of `model` from sim/assets/<model>/robot.yaml + <model>.urdf (+ merged_links.json)."""
+    import xml.etree.ElementTree as ET
+
+    import yaml
+
+    d = f"{_ASSET_ROOT}/{model}"
+    with open(f"{d}/robot.yaml") as f:
+        cfg = yaml.safe_load(f) or {}
+    platform = str(cfg.get("serial_number") or model).split("-")[0].split("_")[0]
+    if platform not in platforms:
+        raise ValueError(f"platform {platform!r} (robot.yaml serial_number) has no entry in {MODEL_CONFIG} platforms")
+    params = dict(platforms[platform], platform=platform)
+
+    # The robot's own drive calibration (as the real robot runs it), on top of the platform's generic constants.
+    plat = cfg.get("platform") if isinstance(cfg.get("platform"), dict) else {}
+    pvc = (((plat.get("extras") or {}).get("ros_parameters") or {}).get("platform_velocity_controller")) or {}
+    if pvc:
+        radius = _pvc_value(pvc, "wheel_radius") or params["wheel_radius"]
+        left = _pvc_value(pvc, "left_wheel_radius_multiplier") or 1.0
+        right = _pvc_value(pvc, "right_wheel_radius_multiplier") or 1.0
+        params["wheel_radius"] = radius * (left + right) / 2  # one radius: a left/right asymmetry can't be modelled
+        for key, name in (("wheel_separation", "wheel_separation"),
+                          ("separation_multiplier", "wheel_separation_multiplier"),
+                          ("max_linear", "linear.x.max_velocity"), ("max_angular", "angular.z.max_velocity")):
+            value = _pvc_value(pvc, name)
+            if value is not None:
+                params[key] = value
+
+    urdf = ET.parse(f"{d}/{model}.urdf").getroot()
+    links = {link.get("name"): link for link in urdf.findall("link")}
+    parent_of = {j.find("child").get("link"): j.find("parent").get("link") for j in urdf.findall("joint")}
+    merged_path = f"{d}/merged_links.json"
+    merged = json.load(open(merged_path)) if os.path.isfile(merged_path) else None
+    sensors = cfg.get("sensors") or {}
+
+    def frames(kind, suffix):
+        """URDF frames of robot.yaml's sensors.<kind> entries. Clearpath numbers a platform's built-in sensors
+        first (j100's own imu_0_link and gps slot), so the yaml's k sensors are the k highest-numbered frames."""
+        k = len(sensors.get(kind) or [])
+        names = set(links) | set(merged or {})
+        idx = sorted(int(m.group(1)) for n in names if (m := re.fullmatch(rf"{kind}_(\d+)_{suffix}", n)))
+        return [f"{kind}_{i}_{suffix}" for i in idx[-k:]] if k else []
+
+    def body(name):
+        """The URDF link that carries frame `name` as a body: the link it was merged into (merged_links.json),
+        then up the tree to the first link with a collision or inertial."""
+        name = (merged or {}).get(name, name)
+        while name in links and links[name].find("collision") is None and links[name].find("inertial") is None:
+            if name not in parent_of:
+                break
+            name = parent_of[name]
+        return name if name in links else None
+
+    params["has_camera"] = bool(sensors.get("camera")) and any(n.startswith("camera_0_") for n in links)
+    if "camera_0_left_camera_frame_optical" in links:  # Stereolabs ZED: the xacro has a ROS optical frame
+        params["camera_optical_link"] = "camera_0_left_camera_frame_optical"
+    if "camera_1_link" in links and len(sensors.get("camera") or []) < 2:
+        params["wrist_camera"] = True  # mtu32_description's D405 on the arm, not a robot.yaml sensor
+    imus = frames("imu", "link")
+    if imus:
+        imu_link = body(imus[0])
+        if imu_link:
+            params["imu_link"] = imu_link
+            params["imu_index"] = int(imus[0].split("_")[1])
+        else:
+            log(f"{model}: {imus[0]} was merged away and {merged_path} is missing (run scripts/gen_urdf.sh): no IMU")
+    params["gps_links"] = [n for n in frames("gps", "link") if n in links]
+    lidar2d = [n for n in frames("lidar2d", "laser") if n in links]
+    lidar3d = [n for n in frames("lidar3d", "laser") if n in links]
+    if lidar2d:
+        params["lidar2d_link"] = lidar2d[0]
+    if lidar3d:
+        params["lidar3d_link"] = lidar3d[0]
+    params["has_arm"] = any(j.get("name").startswith("arm_0_") and j.get("type") != "fixed" for j in urdf.findall("joint"))
+    return params
+
+
+def load_model_params(models):
+    """MODEL_PARAMS for every model in `models` that has a robot.yaml; a model that fails is logged and left out
+    (it can't be spawned)."""
+    import yaml
+
+    with open(MODEL_CONFIG) as f:
+        config = yaml.safe_load(f) or {}
+    platforms = config.get("platforms") or {}
+    overrides = config.get("robots") or {}
+    for model in models:
+        try:
+            params = derive_model_params(model, platforms)
+        except Exception as e:
+            log(f"params of {model} could not be derived, it can't be spawned: {e}")
+            continue
+        params.update(overrides.get(model) or {})
+        MODEL_PARAMS[model] = params
+        log(f"params {model}: " + ", ".join(f"{k}={v}" for k, v in params.items()))
+
+
+def chassis_prim(stage, root, params):
+    """Path of the robot's articulation root (or of an explicit chassis_link override) under `root`."""
+    if params.get("chassis_link"):
+        return find_prim(stage, root, params["chassis_link"])
+    roots = [str(p.GetPath()) for p in Usd.PrimRange(stage.GetPrimAtPath(root), Usd.TraverseInstanceProxies())
+             if p.HasAPI(UsdPhysics.ArticulationRootAPI)]
+    if len(roots) != 1:
+        raise RuntimeError(f"{root} has {len(roots)} articulation roots, needs exactly 1: {roots}")
+    return roots[0]
 
 # Velocity calibration. The open-loop wheel kinematics above (MODEL_PARAMS) cannot hold the commanded speed on a
 # skid-steer robot: a 0.2 rad/s in-place turn did not move at all (static-friction breakaway), 0.5 turned 0.2-0.6x,
@@ -371,7 +310,7 @@ PHYSICS_FRAME_DT = max(1, int(PHYSICS_HZ // SIM_RATE_HZ)) / PHYSICS_HZ
 # Ridgeback's real sideways motion (and, see below, its yaw rate). Forward/back is left entirely to the same real
 # DifferentialController + IsaacArticulationController wheel driving every model uses (genuine wheel-ground
 # rolling -- reliable even from a standstill, exactly like the other three models). Only linear.y is patched in
-# here, since real wheel rolling structurally cannot produce it (see MODEL_PARAMS' r100 comment). Every tick,
+# here, since real wheel rolling structurally cannot produce it (see sim/config/model_params.yaml's r100 comment). Every tick,
 # this reads the chassis' CURRENT actual world velocity, decomposes it into the chassis' own body frame,
 # replaces just the lateral component with the commanded vy (leaving the forward component -- whatever the real
 # diff-drive wheels produced -- untouched), and recomposes back to world frame. Since the velocity-calibration
@@ -391,7 +330,7 @@ PHYSICS_FRAME_DT = max(1, int(PHYSICS_HZ // SIM_RATE_HZ)) / PHYSICS_HZ
 #
 # Articulation.set_velocities()/.get_velocities() (isaacsim.core.experimental.prims) act on a floating-base
 # articulation's *root* velocity, which is what a URDF import with fix_base=False gives every robot here --
-# confirmed chassis == that root via ArticulationRootAPI, same check MODEL_PARAMS' chassis_link already relies
+# confirmed chassis == that root via ArticulationRootAPI, same check chassis_prim() already relies
 # on. Constructing Articulation() needs the physics tensor view, which only exists once the timeline is playing,
 # so it's created lazily on first compute rather than in setup(), and re-tried on failure instead of latching a
 # permanent error.
@@ -567,7 +506,7 @@ def compute(db):
     db.outputs.out_w, st.int_w = _chan(cmd_w, st.mw, st.int_w, db.inputs.kp_w, db.inputs.ki_w, dt, db.inputs.lim_w)
 """
 
-# Real MTU robots' Microstrain IMU (see MODEL_PARAMS' imu_link comment for why it's physically attached to
+# Real MTU robots' Microstrain IMU (see derive_model_params' body() for why it's physically attached to
 # chassis_link, not the real imu_1_link name). isaacsim.sensors.experimental.physics has no OGN "read" node, so
 # this authors the actual IsaacImuSensor prim on first tick (lazily, same reasoning as BodyDrive's Articulation:
 # needs the physics tensor view, which only exists once playing) and reads it every tick after.
@@ -1679,7 +1618,7 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
     ]
 
     # Every model, including Ridgeback, drives forward/back and rotation via real diff_4wd.yaml-style wheel
-    # rolling -- see MODEL_PARAMS' r100 comment for why Ridgeback's sideways motion needs a different mechanism
+    # rolling -- see sim/config/model_params.yaml's r100 comment for why Ridgeback's sideways motion needs a different mechanism
     # (BodyDrive, added below) instead of extending this same approach to linear.y.
     front = ["front_left_wheel_joint", "front_right_wheel_joint"]
     rear = ["rear_left_wheel_joint", "rear_right_wheel_joint"]
@@ -1762,7 +1701,7 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
     if params["drive"] == "omni":
         # Ridgeback: BodyDrive patches in the one motion component real wheel rolling structurally cannot
         # produce (sideways/linear.y) -- see its comment (BODY_DRIVE_SCRIPT) for the full reasoning and the
-        # comment above MODEL_PARAMS' r100 entry for the underlying wheel-collision-geometry finding.
+        # comment on r100 in sim/config/model_params.yaml for the underlying wheel-collision-geometry finding.
         nodes += [("BodyDrive", "omni.graph.scriptnode.ScriptNode")]
         create_attributes += [
             ("BodyDrive.inputs:vy", "double"),
@@ -1891,7 +1830,7 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
     # frameId is the real robot's own imu_<n>_link name (what that robot's robot_state_publisher, running from
     # its own un-flattened URDF regeneration in robot_state, actually publishes in its TF tree), not
     # params["imu_link"] -- that field names where the sensor is physically attached in *this sim's* flattened/
-    # merged USD (see MODEL_PARAMS' comment on why those differ), which has no bearing on the real TF frame name
+    # merged USD (see derive_model_params' body() on why those differ), which has no bearing on the real TF frame name
     # ROS clients expect.
     if params.get("imu_link"):
         imu_idx = params.get("imu_index", 0)
@@ -2159,7 +2098,7 @@ async def snapshot_loop():
     state = ViewportCameraState("/OmniverseKit_Persp")
     tag = robot_looks.MODE
     for ns, model in ROBOTS:
-        chassis = stage.GetPrimAtPath(find_prim(stage, f"/World/{ns}", MODEL_PARAMS[model]["chassis_link"]))
+        chassis = stage.GetPrimAtPath(chassis_prim(stage, f"/World/{ns}", MODEL_PARAMS[model]))
         p = UsdGeom.Xformable(chassis).ComputeLocalToWorldTransform(0).ExtractTranslation()
         for view, ((dx, dy, dz), tz) in SNAPSHOT_VIEWS.items():
             state.set_position_world(Gf.Vec3d(p[0] + dx, p[1] + dy, dz), True)
@@ -2179,7 +2118,7 @@ async def debug_loop(og):
     from pxr import UsdGeom as _G
     ns, model = ROBOTS[0]
     stage = omni.usd.get_context().get_stage()
-    chassis = stage.GetPrimAtPath(find_prim(stage, f"/World/{ns}", MODEL_PARAMS[model]["chassis_link"]))
+    chassis = stage.GetPrimAtPath(chassis_prim(stage, f"/World/{ns}", MODEL_PARAMS[model]))
     app = omni.kit.app.get_app()
     from pxr import Usd as _U
     cache = _U.__dict__  # noqa: F841
@@ -2317,7 +2256,7 @@ async def spawn_one(app, stage, og, usdrt_sdf, ns, model, pose):
     log(f"spawned {ns} ({model}) at {root}, x={pose[0]:g} y={pose[1]:g} yaw={pose[2]:g} deg")
     for _ in range(3):
         await app.next_update_async()
-    chassis = find_prim(stage, root, params["chassis_link"])
+    chassis = chassis_prim(stage, root, params)
     enable_wheel_ccd(stage, root)
     if ARTIC_POS_ITERS or ARTIC_VEL_ITERS:
         log(f"{ns}: solver iterations pos={ARTIC_POS_ITERS} vel={ARTIC_VEL_ITERS} on "
@@ -2479,6 +2418,7 @@ async def main():
         ])
         # Every model that could be spawned later is imported now: the importer can't run once the scene is open.
         # A cached, current import only costs a stat.
+        load_model_params([m for m in MODEL_ASSETS if os.path.isfile(f"{_ASSET_ROOT}/{m}/robot.yaml")])
         models = []
         for model in MODEL_ASSETS:
             if model not in MODEL_PARAMS or not os.path.isfile(MODEL_ASSETS[model]["urdf"]):
