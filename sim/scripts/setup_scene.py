@@ -15,6 +15,8 @@ Configuration comes from environment variables (see docker-compose.yml):
   SCENE_LANES        robot lanes between the two lavender rows (default 3); the default spawn poses fill them
   SIM_SCENE          "" = ground plane + lights (default), "lavender" = the lavender farm, else a USD file
                      in sim/scene/ (e.g. one saved from Isaac Sim), see build_world
+  LAVENDER_SOFT      1 (default): robots pass through lavender foliage, only a rigid core per plant stops them
+                     (lidars still see the foliage); 0: the whole plant is solid, see soften_lavender
   CAMERA_WIDTH/HEIGHT, CAMERA_FRAME_SKIP, FORCE_REIMPORT, ...
 """
 import asyncio
@@ -129,6 +131,13 @@ LAVENDER_ROW_OFFSET = 1.6   # row centre distance beyond the outermost robot lan
 LAVENDER_ROW_X0 = 2.0
 LAVENDER_PLANT_PITCH = 1.0  # plants are ~1.2 m wide, so they overlap into a hedge
 LAVENDER_ROW_PLANTS = 10
+# Soft lavender (see soften_lavender): the foliage stops blocking robots but stays visible to the lidars, and a
+# small rigid cylinder at each plant's centre stands in for the woody crown, which does stop a robot.
+LAVENDER_SOFT = os.environ.get("LAVENDER_SOFT", "1") != "0"
+LAVENDER_CORE_RADIUS = 0.1  # m
+LAVENDER_CORE_HEIGHT = 0.3  # m, from the ground
+SOFT_PLANTS_GROUP = "/World/collisionGroups/soft_plants"
+ROBOTS_GROUP = "/World/collisionGroups/robots"
 
 # Per-model drive parameters, from each model's real clearpath_control/config/<model>/control/diff_4wd.yaml.
 # `chassis_link` is the URDF link the drive/odometry OmniGraph targets -- it must be a prim the URDF importer
@@ -1139,7 +1148,7 @@ def import_urdf_if_needed(model):
 # around e.g. the oak's limb mesh would be a 20 m wall). The scene references the wrapper instead of the asset, so the
 # visuals and instancing (lavender) are unchanged and PhysX cooks each distinct mesh once. Meshes that are
 # PointInstancer prototypes (the trees' and shrubs' leaves/twigs) can't be colliders and stay invisible to the lidar.
-# They are solid for the robots too: driving into a hedge is a collision, as it would be in the field.
+# The lavender's colliders don't block the robots (soften_lavender); everything else is solid for them too.
 VEGETATION_COLLIDERS = True
 _COLLIDER_DIR = "/sim/generated/colliders"
 
@@ -1196,6 +1205,44 @@ def add_lavender(stage, path, pos, rot_z=0.0):
     xf.AddRotateZOp().Set(rot_z)
     xf.AddScaleOp().Set(Gf.Vec3d(LAVENDER_SCALE, LAVENDER_SCALE, LAVENDER_SCALE))
     return prim
+
+
+def soften_lavender(stage):
+    """Lavender stems are thin and flexible: a robot brushing a plant pushes through it, only the woody crown at
+    its centre stops it. Here every collider under /World/lavender (any scene source) goes into SOFT_PLANTS_GROUP,
+    filtered against ROBOTS_GROUP (spawn_robot adds each robot), so robots pass through the foliage while the lidars'
+    scene-query raycasts still hit it -- collision groups only filter contacts. Each plant (an instanceable prim
+    under /World/lavender) gets an invisible rigid cylinder at its bbox centre, /World/lavender_cores/..., outside
+    the group. Measured in a headless spike (Isaac 6.0): an inverted group with no filteredGroups ("collide with
+    nothing") is ignored, the plants still blocked; the explicit plants/robots pair lets a box through at full speed,
+    instanced plants included, and raycasts hit the same foliage as before."""
+    if not LAVENDER_SOFT or not stage.GetPrimAtPath("/World/lavender"):
+        return
+    plants_g = UsdPhysics.CollisionGroup.Define(stage, SOFT_PLANTS_GROUP)
+    robots_g = UsdPhysics.CollisionGroup.Define(stage, ROBOTS_GROUP)
+    plants_g.CreateFilteredGroupsRel().SetTargets([robots_g.GetPath()])
+    robots_g.CreateFilteredGroupsRel().SetTargets([plants_g.GetPath()])
+    plants_g.GetCollidersCollectionAPI().CreateIncludesRel().SetTargets([Sdf.Path("/World/lavender")])
+    bbox = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
+    xfc = UsdGeom.XformCache()
+    UsdGeom.Scope.Define(stage, "/World/lavender_cores")
+    n = 0
+    it = iter(Usd.PrimRange(stage.GetPrimAtPath("/World/lavender")))
+    for prim in it:
+        if not prim.IsInstance():
+            continue
+        it.PruneChildren()
+        mid = xfc.GetLocalToWorldTransform(prim).Transform(bbox.ComputeUntransformedBound(prim).ComputeCentroid())
+        rel = prim.GetPath().MakeRelativePath("/World/lavender")
+        core = UsdGeom.Cylinder.Define(stage, Sdf.Path("/World/lavender_cores").AppendPath(rel))
+        core.CreateAxisAttr(UsdGeom.Tokens.z)
+        core.CreateRadiusAttr(LAVENDER_CORE_RADIUS)
+        core.CreateHeightAttr(LAVENDER_CORE_HEIGHT)
+        core.CreatePurposeAttr(UsdGeom.Tokens.guide)  # not rendered (cameras), still a collider (robots, lidars)
+        core.AddTranslateOp().Set(Gf.Vec3d(mid[0], mid[1], LAVENDER_CORE_HEIGHT / 2))
+        UsdPhysics.CollisionAPI.Apply(core.GetPrim())
+        n += 1
+    log(f"soft lavender: robots pass through the foliage, {n} rigid {LAVENDER_CORE_RADIUS * 200:.0f} cm crown cores")
 
 
 def add_ground_cover(stage, path="/World/GroundCover"):
@@ -1427,6 +1474,7 @@ def build_world(stage):
         layout = build_lavender_world(stage)
     else:
         layout = build_file_world(stage, SIM_SCENE)
+    soften_lavender(stage)
     return dict(layout, scene_source=SIM_SCENE or "default")
 
 
@@ -1439,6 +1487,9 @@ def spawn_robot(stage, ns, model, pose):
     xf = UsdGeom.Xformable(prim)
     xf.AddTranslateOp().Set(Gf.Vec3d(x, y, SPAWN_Z))
     xf.AddRotateZOp().Set(float(yaw))
+    robots_g = UsdPhysics.CollisionGroup.Get(stage, ROBOTS_GROUP)
+    if robots_g:  # soften_lavender: the lavender foliage doesn't block robots
+        robots_g.GetCollidersCollectionAPI().CreateIncludesRel().AddTarget(root)
     return root
 
 
