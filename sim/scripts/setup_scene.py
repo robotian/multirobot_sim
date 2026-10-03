@@ -283,6 +283,17 @@ MODEL_PARAMS = {
         imu_link="top_plate_link", imu_index=0, gps_links=["gps_0_link", "gps_1_link"], has_arm=True,
         lidar2d_link="lidar2d_0_laser",
     ),
+    # a300_00037: a300_00036's robot.yaml with a UR10e + Robotiq 2F-85 on top_plate_mount_e9 instead of the Kinova
+    # Gen3 Lite + 2F Lite; base, sensors and the flattened URDF's chassis/top_plate/sensor links are otherwise
+    # identical, so the same params. The arm joints are arm_0_shoulder_pan_joint .. arm_0_wrist_3_joint (not
+    # arm_0_joint_N): configure_arm_drives still gives them position drives (matched on "arm_0"), but they keep
+    # their URDF effort limits (330/330/150/54 N*m) instead of ARM_EFFORT_SCALE x.
+    "a300_00037": dict(
+        chassis_link="chassis_link", drive="diff", wheel_radius=0.1625, wheel_separation=0.562, separation_multiplier=1.75,
+        max_linear=2.0, max_angular=2.0,
+        imu_link="top_plate_link", imu_index=0, gps_links=["gps_0_link", "gps_1_link"], has_arm=True,
+        lidar2d_link="lidar2d_0_laser",
+    ),
     # a200_0284: an A200 with the MTU field-robot loadout -- Microstrain IMU (imu_0), D435 (via sensors.camera on
     # front_camera_mount_link, so the usual camera_0_link + hand-built optical frame), dual Duro GPS (gps_0/gps_1),
     # SICK LMS1xx 2D lidar (lidar2d_0_laser, on top_plate_base_link) and a Kinova Gen3 *7-DOF* arm (arm_0_joint_1
