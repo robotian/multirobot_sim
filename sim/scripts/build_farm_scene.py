@@ -25,11 +25,11 @@ ASSETS = "/sim/assets"
 REL_ASSETS = "../assets"  # as seen from sim/scene/<file>
 
 LAVENDER = "lavender/SM_Lavender_Nanite_01.usd"
-# Plant size. The map (status_server) treats a row as 0.45 m thick and the plants are ~0.44 m apart in a row, so
-# a 0.5 m clump just touches its neighbours into a hedge and leaves the mapped lane width free. The asset is a
-# ~2 m wide, 1.34 m tall clump in cm, scaled uniformly (its own proportions; a taller-than-wide scale looked
-# squeezed) to this width, so it ends up ~0.33 m tall.
-PLANT_DIAMETER = 0.5
+# Plant size. The asset is a ~2 m wide, 1.34 m tall clump in cm, scaled uniformly (its own proportions; a
+# taller-than-wide scale looked squeezed) to this width, so it ends up ~0.5 m tall. Rows are ~1.85 m apart and
+# plants ~0.44 m apart in a row, so the clumps overlap into a hedge and leave a ~1.1 m lane (the map,
+# status_server, treats a row as 0.45 m thick; 0.5 m wide plants were only ~0.33 m tall).
+PLANT_DIAMETER = 0.75
 PLANT_SINK = 0.02  # lowest point below z=0, so no plant floats
 
 GROUND_COVER = "Ground_cover/ground_cover.usd"  # 100 x 100 m of grass blades, geometry really in metres
