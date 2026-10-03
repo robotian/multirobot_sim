@@ -26,15 +26,18 @@ docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e "RMW=${RMW:-rmw_zenoh_cpp
     -v "$PWD/sim/assets:/out" \
     -v "$PWD/scripts/flatten_urdf.py:/flatten_urdf.py:ro" \
     -v "$PWD/robot_data:/robot_data:ro" \
-    -v "$PWD/sim/colcon_ws:/colcon_ws" \
+    -v "$PWD/colcon_ws/src/mtu32_husky/mtu32_description:/src/mtu32_description:ro" \
     --entrypoint bash "$IMAGE" -c '
 set -e
 source /opt/ros/jazzy/setup.bash
-# mtu32_description (a real robot'"'"'s own custom xacro package, e.g. j100_0921'"'"'s platform.extras.urdf) --
-# colcon build once here and source it like any other overlay; harmless for models that never reference it.
-# colcon'"'"'s build/install/log dirs are relative to cwd, not --base-paths, hence the cd.
-(cd /colcon_ws && colcon build)
-source /colcon_ws/install/setup.bash
+# mtu32_description (MTU'"'"'s own xacro package, the real robots'"'"' platform.extras.urdf) is built from the same
+# source the robot containers and the real robots use, colcon_ws/src/mtu32_husky -- a separate copy went stale
+# once (a300_00036 kept the old sensor arch in the sim while Foxglove showed sensor_arch_v2). Built into /tmp of
+# this throwaway container (colcon writes build/install/log under cwd); --base-paths is the package itself, so
+# copies elsewhere in the submodule (e.g. .claude/worktrees/) are never picked up. Harmless for models that never
+# reference it.
+(mkdir -p /tmp/ws && cd /tmp/ws && colcon build --base-paths /src/mtu32_description >/dev/null)
+source /tmp/ws/install/setup.bash
 for m in $MODELS; do
     rm -rf /tmp/setup && mkdir -p /tmp/setup
     if [ -f "/robot_data/$m/robot.yaml" ]; then

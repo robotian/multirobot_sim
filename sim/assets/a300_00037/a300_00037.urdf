@@ -1451,11 +1451,20 @@
   <limit lower="0" upper="0.8" effort="50" velocity="0.5" /></joint>
   
   
+  
+  <material name="aluminum">
+    <color rgba="0.5 0.5 0.5 1" />
+  </material>
+  <material name="plastic">
+    <color rgba="0.1 0.1 0.1 1" />
+  </material>
+  
   <link name="arch_link">
     <visual>
       <material name="clearpath_black" />
       <geometry>
-        <mesh filename="meshes/mtu32_description/meshes/sensor_arch.STL" />
+        
+        <mesh filename="meshes/mtu32_description/meshes/sensor_arch_v2.STL" />
       </geometry>
     </visual>
     <collision>
@@ -1474,51 +1483,13 @@
     <origin rpy="0 -0 0" xyz="0 0 0" />
   </joint>
   
-  <link name="estop_link">
-    <visual>
-      <material name="clearpath_yellow" />
-      <geometry>
-        <mesh filename="meshes/mtu32_description/meshes/duro_estop.STL" />
-      </geometry>
-    </visual>
-    <collision>
-      <origin rpy="0 0 0" xyz="0.32 0 0.4" />
-      <geometry>
-        <box size="0.12 0.59 0.3" />
-         #main sensor arch box
-    
-      </geometry>
-    </collision>
-  </link>
   
-  <joint name="estop_joint" type="fixed">
-    <child link="estop_link" />
-    <parent link="chassis_link" />
-    <origin rpy="0 -0 0" xyz="0 0 0" />
-  </joint>
   
-  <link name="button_link">
-    <visual>
-      <material name="clearpath_red" />
-      <geometry>
-        <mesh filename="meshes/mtu32_description/meshes/button.STL" />
-      </geometry>
-    </visual>
-    <collision>
-      <origin rpy="0 0 0" xyz="0.2 0 0.31" />
-      <geometry>
-        <box size="0.12 0.42 0.12" />
-         #cable protection box
-    
-      </geometry>
-    </collision>
-  </link>
   
-  <joint name="button_joint" type="fixed">
-    <child link="button_link" />
-    <parent link="chassis_link" />
-    <origin rpy="0 -0 0" xyz="0 0 0" />
-  </joint>
+  
+  
+  
+  
   
   <link name="eth_link">
     <collision>
