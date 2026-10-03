@@ -1,0 +1,7 @@
+{
+ "front_fender_link": "base_link",
+ "gps_0_link": "chassis_link",
+ "imu_1_base_link": "top_mount_link",
+ "imu_1_link": "top_mount_link",
+ "rear_fender_link": "base_link"
+}

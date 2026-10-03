@@ -1,0 +1,29 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "omniverse://localhost/Projects/Props/materials/textures/lawngrass_a_basecolor.png",
+            "source_hash": "sha-256-flat;1048576;9ef573395890136e849e429e18fc9c76e8b724aba7eae6ad4cbd7f6dc1af858a",
+            "target_url": "./localhost/Projects/Props/materials/textures/lawngrass_a_basecolor.png",
+            "target_hash": "8832c0ffbe4f7f95bc422ded2735046fc0e17dab"
+        },
+        {
+            "source_url": "omniverse://localhost/Projects/Props/materials/textures/lawngrass_a_normal.png",
+            "source_hash": "sha-256-flat;1048576;31a900a50045668ff53749813321b42a15b37038d704284d76daf7f5e853d1fc",
+            "target_url": "./localhost/Projects/Props/materials/textures/lawngrass_a_normal.png",
+            "target_hash": "738648f2c3a2ed5cf4511b96107fe05b4c10f099"
+        },
+        {
+            "source_url": "omniverse://localhost/Projects/Props/materials/textures/lawngrass_a_roughness.png",
+            "source_hash": "sha-256-flat;1048576;fbd519aa1ac6504c4bce6aa924407732e087bb7e7e436c1323d8d8c8fae7652b",
+            "target_url": "./localhost/Projects/Props/materials/textures/lawngrass_a_roughness.png",
+            "target_hash": "8d066cccf51c71d7ad286c18ca412ad678f5d086"
+        },
+        {
+            "source_url": "omniverse://localhost/Projects/Props/materials/lawngrass_a_mat.mdl",
+            "source_hash": "sha-256-flat;1048576;6c353df5aeaad71aabd4a871df8ea330799ac321668c52b933d317b70d894c16",
+            "target_url": "./localhost/Projects/Props/materials/lawngrass_a_mat.mdl",
+            "target_hash": "6e0755ef80e23fc74b2b279aad461940ad23501d"
+        }
+    ]
+}

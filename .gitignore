@@ -1,15 +1,19 @@
 # Rebuilt by scripts/gen_urdf.sh and the sim's first start
-sim/assets/
 sim/generated/
 __pycache__/
 # colcon build artifacts (source packages under colcon_ws/src/ are tracked)
 colcon_ws/build/
 colcon_ws/install/
 colcon_ws/log/
+sim/colcon_ws/build/
+sim/colcon_ws/install/
+sim/colcon_ws/log/
 # Real robots' own actual robot.yaml files and their original colcon workspaces. The packages the sim needs
 # from them are in colcon_ws/src/ instead: git-backed ones as submodules (mtu32_husky/mocap_fake_localizer on
 # their `sim` branch), the rest as plain files.
 robot_data/
-sim/colcon_ws/
 # Per-robot Foxglove layouts written by scripts/foxglove_layout.sh
 foxglove/
+# sim/assets/ is tracked, its binaries through Git LFS (.gitattributes); hand-made backups of them are not
+sim/assets/**/*.orig
+sim/assets/**/*.bak-*

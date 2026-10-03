@@ -1,0 +1,11 @@
+{
+ "default_mount": "base_link",
+ "front_bumper_base_link": "base_link",
+ "front_bumper_link": "base_link",
+ "front_bumper_mount": "base_link",
+ "rear_bumper_base_link": "base_link",
+ "rear_bumper_link": "base_link",
+ "rear_bumper_mount": "base_link",
+ "top_chassis_link": "base_link",
+ "top_plate_user_rail_link": "base_link"
+}

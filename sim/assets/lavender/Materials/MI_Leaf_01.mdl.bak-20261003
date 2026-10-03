@@ -1,0 +1,202 @@
+mdl 1.6;
+
+import ::math::*;
+import ::state::*;
+import ::tex::*;
+import ::anno::*;
+import ::scene::*;
+using OmniUe4Function import *;
+using OmniUe4Subsurface import *;
+
+export annotation sampler_color();
+export annotation sampler_normal();
+export annotation sampler_grayscale();
+export annotation sampler_alpha();
+export annotation sampler_masks();
+export annotation sampler_distancefield();
+export annotation dither_masked_off();
+export annotation world_space_normal();
+
+export material MI_Leaf_01(
+	float Flatness_S_ = -1.0
+	[[
+		anno::display_name("Flatness (S)"),
+		anno::ui_order(32),
+		anno::in_group("03 - Normal Detail")
+	]],
+	float4 BaseColor = float4(1.0,1.0,1.0,1.0)
+	[[
+		anno::display_name("Base Color"),
+		anno::in_group("01 - Albedo")
+	]],
+	float Specular = 0.25
+	[[
+		anno::display_name("Specular"),
+		anno::in_group("02 - Reflectivity")
+	]],
+	float Roughness = 0.5
+	[[
+		anno::display_name("Roughness"),
+		anno::ui_order(1),
+		anno::in_group("02 - Reflectivity")
+	]],
+	float WindSpeedMultiplier = 1.0
+	[[
+		anno::display_name("Wind Speed Multiplier")
+	]],
+	float WindSpeed_S_ = 1.0
+	[[
+		anno::display_name("WindSpeed (S)"),
+		anno::ui_order(5),
+		anno::in_group("05 - Wind (if activated, this override the values from the Material Collection Parameter)")
+	]],
+	float TilingWindTurbulence = 5.0
+	[[
+		anno::display_name("Tiling Wind Turbulence"),
+		anno::ui_order(1),
+		anno::in_group("05 - Wind (if activated, this override the values from the Material Collection Parameter)")
+	]],
+	float WPOIntensity = 2.0
+	[[
+		anno::display_name("WPO Intensity"),
+		anno::ui_order(2),
+		anno::in_group("05 - Wind (if activated, this override the values from the Material Collection Parameter)")
+	]],
+	int NumberInstances = 0
+	[[
+		anno::hidden()
+	]],
+	float WindIntensityMultiplier = 1.5
+	[[
+		anno::display_name("Wind Intensity Multiplier")
+	]],
+	float WindWeight = 0.0
+	[[
+		anno::display_name("Wind Weight"),
+		anno::ui_order(3),
+		anno::in_group("05 - Wind (if activated, this override the values from the Material Collection Parameter)")
+	]],
+	float WindIntensity = 1.0
+	[[
+		anno::display_name("Wind Intensity"),
+		anno::ui_order(4),
+		anno::in_group("05 - Wind (if activated, this override the values from the Material Collection Parameter)")
+	]],
+	float ObjectRadius_S_ = 0.4
+	[[
+		anno::display_name("Object Radius (S)"),
+		anno::ui_order(32),
+		anno::in_group("06 - Object Size (for Wind)")
+	]],
+	float Contrast_S_ = 2.0
+	[[
+		anno::display_name("Contrast (S)"),
+		anno::ui_order(32),
+		anno::in_group("06 - Object Size (for Wind)")
+	]],
+	int MaxTexCoordIndex = 3
+	[[
+		anno::hidden()
+	]])
+[[
+	distill_off()
+]]
+ = 
+	let {
+	float3 Local4 = math::normalize(float3(float4(0.0,1.0,0.0,1.0).x,float4(0.0,1.0,0.0,1.0).y,float4(0.0,1.0,0.0,1.0).z));
+	float Local5 = (WindSpeedMultiplier * WindSpeed_S_);
+	float Local6 = (Local5 / 10.0);
+	float Local7 = (state::animation_time() * Local6);
+	float Local8 = (Local7 * -0.5);
+	float Local9 = (float4(0.0,1.0,0.0,1.0).w * Local8);
+	float3 Local10 = (Local4 * Local9);
+	float3 Local11 = ((::convert_to_left_hand(state::transform_point(state::coordinate_internal,state::coordinate_world,state::position()), true)*state::meters_per_scene_unit()*100.0) / 1024.0);
+	float3 Local12 = (Local10 + Local11);
+	float3 Local13 = (Local12 + 0.5);
+	float3 Local14 = math::frac(Local13);
+	float3 Local15 = (Local14 * 2.0);
+	float3 Local16 = (Local15 + -1.0);
+	float3 Local17 = math::abs(Local16);
+	float3 Local18 = (Local17 * 2.0);
+	float3 Local19 = (3.0 - Local18);
+	float3 Local20 = (Local19 * Local17);
+	float3 Local21 = (Local20 * Local17);
+	float Local22 = math::dot(Local4, Local21);
+	float3 Local23 = ((::convert_to_left_hand(state::transform_point(state::coordinate_internal,state::coordinate_world,state::position()), true)*state::meters_per_scene_unit()*100.0) / 200.0);
+	float3 Local24 = (Local9 + Local23);
+	float3 Local25 = (Local24 + 0.5);
+	float3 Local26 = math::frac(Local25);
+	float3 Local27 = (Local26 * 2.0);
+	float3 Local28 = (Local27 + -1.0);
+	float3 Local29 = math::abs(Local28);
+	float3 Local30 = (Local29 * 2.0);
+	float3 Local31 = (3.0 - Local30);
+	float3 Local32 = (Local31 * Local29);
+	float3 Local33 = (Local32 * Local29);
+	float3 Local34 = (Local33 - 0.0);
+	float Local35 = math::length(Local34);
+	float Local36 = (Local22 + Local35);
+	float Local37 = (Local36 * 6.283185);
+	float3 Local38 = math::cross(Local4,float3(0.0,0.0,1.0));
+	float Local39 = math::frac(Local7);
+	float Local40 = (TilingWindTurbulence / 1000.0);
+	float2 Local41 = (float2((::convert_to_left_hand(state::transform_point(state::coordinate_internal,state::coordinate_world,state::position()), true)*state::meters_per_scene_unit()*100.0).x,(::convert_to_left_hand(state::transform_point(state::coordinate_internal,state::coordinate_world,state::position()), true)*state::meters_per_scene_unit()*100.0).y) * Local40);
+	float2 Local42 = (float2(Local39,Local39) + Local41);
+	float4 Local43 = ::greyscale_texture_lookup(tex::lookup_float4(texture_2d("./Textures/LowResBlurredNoise.png",::tex::gamma_linear),float2(Local42.x,1.0-Local42.y),tex::wrap_repeat,tex::wrap_repeat));
+	float Local44 = (WPOIntensity * Local43.x);
+	float Local45 = (Local43.x + Local44);
+	float Local46 = math::min(math::max(::per_instance_random(texture_2d("./Textures/PerlinNoiseGradientTexture.png",tex::gamma_linear), NumberInstances),0.5),10.0);
+	float Local47 = (Local46 * WindIntensityMultiplier);
+	float Local48 = (1.0 - Local47);
+	float Local49 = math::lerp(Local45,2.5,Local48);
+	float3 Local50 = (Local49 + float3(0.0,0.0,-10.0));
+	float3 Local51 = ::rotate_about_axis(float4(Local38.x,Local38.y,Local38.z,Local37),Local50,float3(Local49,Local49,Local49));
+	float3 Local52 = (Local51 * WindWeight);
+	float3 Local53 = (Local52 * Local43.x);
+	float3 Local54 = (Local53 + Local49);
+	float Local55 = (WindIntensityMultiplier * WindIntensity);
+	float3 Local56 = (Local54 * Local55);
+	float3 Local57 = ((::convert_to_left_hand(state::transform_point(state::coordinate_internal,state::coordinate_world,state::position()), true)*state::meters_per_scene_unit()*100.0) - ::object_world_position(true));
+	float Local58 = (::object_radius() * ObjectRadius_S_);
+	float Local59 = (Local57.z / Local58);
+	float Local60 = math::min(math::max(Local59,-1.0),1.0);
+	float Local61 = (1.0 + Local60);
+	float Local62 = (Local61 * 0.5);
+	float Local63 = math::pow(math::max(Local62,float(0.000001)),Contrast_S_);
+	float3 Local64 = math::lerp(float3(0.0,0.0,0.0),Local56,Local63);
+
+	float3 WorldPositionOffset_mdl = Local64;
+	float2 CustomizedUV0_mdl = float2(state::texture_coordinate(math::min(0,MaxTexCoordIndex)).x,1.0-state::texture_coordinate(math::min(0,MaxTexCoordIndex)).y);
+
+	float4 Local0 = ::unpack_normal_map(tex::lookup_float4(texture_2d("./Textures/T_Lavender_leaf_Normal.png",::tex::gamma_linear),float2(CustomizedUV0_mdl.x,1.0-CustomizedUV0_mdl.y),tex::wrap_repeat,tex::wrap_repeat));
+	float3 Local1 = math::lerp(float3(Local0.x,Local0.y,Local0.z),float3(0.0,0.0,1.0),Flatness_S_);
+
+	float3 Normal_mdl = Local1;
+
+	float4 Local2 = tex::lookup_float4(texture_2d("./Textures/T_Lavender_leaf_Albedo.png",::tex::gamma_srgb),float2(CustomizedUV0_mdl.x,1.0-CustomizedUV0_mdl.y),tex::wrap_repeat,tex::wrap_repeat);
+	float3 Local3 = (float3(BaseColor.x,BaseColor.y,BaseColor.z) * float3(Local2.x,Local2.y,Local2.z));
+
+	float3 EmissiveColor_mdl = float3(0.0,0.0,0.0);
+	float Opacity_mdl = 1.0;
+	float OpacityMask_mdl = 1.0;
+	float3 BaseColor_mdl = Local3;
+	float Metallic_mdl = 0.0;
+	float Specular_mdl = Specular;
+	float Roughness_mdl = Roughness;
+	float3 SubsurfaceColor_mdl = 0;
+	float SurfaceThickness_mdl = 0.01;
+	float Displacement_mdl = 0.0;
+
+	} in
+		::OmniUe4Subsurface(
+			base_color: BaseColor_mdl,
+			metallic: Metallic_mdl,
+			roughness: Roughness_mdl,
+			specular: Specular_mdl,
+			normal: Normal_mdl,
+			opacity: Opacity_mdl,
+			emissive_color: EmissiveColor_mdl,
+			displacement: WorldPositionOffset_mdl,
+			opacity_mask: OpacityMask_mdl,
+			subsurface_color: SubsurfaceColor_mdl,
+			two_sided: true);

@@ -1,0 +1,1539 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="a300_00037">
+  <material name="clearpath_dark_grey">
+    <color rgba="0.2 0.2 0.2 1.0" />
+  </material>
+  <material name="clearpath_medium_grey">
+    <color rgba="0.6 0.6 0.6 1.0" />
+  </material>
+  <material name="clearpath_light_grey">
+    <color rgba="0.8 0.8 0.8 1.0" />
+  </material>
+  <material name="clearpath_yellow">
+    <color rgba="0.8 0.8 0.0 1.0" />
+  </material>
+  <material name="clearpath_black">
+    <color rgba="0.15 0.15 0.15 1.0" />
+  </material>
+  <material name="clearpath_white">
+    <color rgba="1.0 1.0 1.0 1.0" />
+  </material>
+  <material name="clearpath_red">
+    <color rgba="1.0 0.0 0.0 1.0" />
+  </material>
+  <material name="clearpath_aluminum">
+    <color rgba="0.5 0.5 0.5 1" />
+  </material>
+  <material name="clearpath_plastic">
+    <color rgba="0.1 0.1 0.1   1" />
+  </material>
+  
+  <link name="base_link" />
+  
+  <link name="chassis_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/chassis.dae" />
+      </geometry>
+    </visual>
+    <visual>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/livery.dae" />
+      </geometry>
+    </visual>
+    <visual>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/status_lights.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <material name="clearpath_yellow" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/chassis_collision.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="70" />
+      <origin rpy="0 0 0" xyz="0 0 0.1147795" />
+      <inertia ixx="1.1408911178058334" ixy="0" ixz="0" iyy="4.621734451139166" iyz="0" izz="5.147823333333332" />
+    </inertial>
+  </link>
+  <joint name="chassis_joint" type="fixed">
+    <child link="chassis_link" />
+    <parent link="base_link" />
+    <origin rpy="0 0 0" xyz="0 0 0" />
+  </joint>
+  <link name="chassis_left_suspension_mount" />
+  <link name="chassis_right_suspension_mount" />
+  <joint name="chassis_left_suspension_mount_joint" type="fixed">
+    <child link="chassis_left_suspension_mount" />
+    <parent link="chassis_link" />
+    <origin rpy="0 0 0" xyz="0.0 0.192 0.03763" />
+  </joint>
+  <joint name="chassis_right_suspension_mount_joint" type="fixed">
+    <child link="chassis_right_suspension_mount" />
+    <parent link="chassis_link" />
+    <origin rpy="0 0 0" xyz="0.0 -0.192 0.03763" />
+  </joint>
+  
+  <link name="front_bumper_mount" />
+  <link name="rear_bumper_mount" />
+  <joint name="front_bumper_mount_joint" type="fixed">
+    <child link="front_bumper_mount" />
+    <parent link="chassis_link" />
+    <origin rpy="0 0 0" xyz="0.3685 0.0 0.01805" />
+  </joint>
+  <joint name="rear_bumper_mount_joint" type="fixed">
+    <child link="rear_bumper_mount" />
+    <parent link="chassis_link" />
+    <origin rpy="0 0 3.141592653589793" xyz="-0.3685 0.0 0.01805" />
+  </joint>
+  
+  <link name="default_mount" />
+  <joint name="default_mount_joint" type="fixed">
+    <child link="default_mount" />
+    <parent link="chassis_link" />
+    <origin xyz="0.0 0.0 0.229559" />
+  </joint>
+  
+  <link name="left_suspension_beam_spacer_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_spacer.stl" />
+      </geometry>
+      <origin rpy="0 0 0" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_spacer.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="left_suspension_beam_spacer_joint" type="fixed">
+    <parent link="chassis_left_suspension_mount" />
+    <child link="left_suspension_beam_spacer_link" />
+  </joint>
+  
+  <link name="left_suspension_beam_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_beam.stl" />
+      </geometry>
+      <origin rpy="0 0 0" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_beam.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="left_suspension_beam_joint" type="fixed">
+    <parent link="left_suspension_beam_spacer_link" />
+    <child link="left_suspension_beam_link" />
+    <origin xyz="0 0.0159 0" />
+  </joint>
+  
+  <link name="left_suspension_beam_front_mount" />
+  <link name="left_suspension_beam_rear_mount" />
+  <joint name="left_suspension_beam_front_mount_joint" type="fixed">
+    <parent link="left_suspension_beam_link" />
+    <child link="left_suspension_beam_front_mount" />
+    <origin rpy="0 0 0" xyz="0.256 0.0095 -0.0085" />
+  </joint>
+  <joint name="left_suspension_beam_rear_mount_joint" type="fixed">
+    <parent link="left_suspension_beam_link" />
+    <child link="left_suspension_beam_rear_mount" />
+    <origin rpy="0 0 0" xyz="-0.256 0.0095 -0.0085" />
+  </joint>
+  
+  <link name="right_suspension_beam_spacer_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_spacer.stl" />
+      </geometry>
+      <origin rpy="0 0 3.141592653589793" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_spacer.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="right_suspension_beam_spacer_joint" type="fixed">
+    <parent link="chassis_right_suspension_mount" />
+    <child link="right_suspension_beam_spacer_link" />
+  </joint>
+  
+  <link name="right_suspension_beam_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_beam.stl" />
+      </geometry>
+      <origin rpy="0 0 3.141592653589793" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_beam.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="right_suspension_beam_joint" type="fixed">
+    <parent link="right_suspension_beam_spacer_link" />
+    <child link="right_suspension_beam_link" />
+    <origin xyz="0 -0.0159 0" />
+  </joint>
+  
+  <link name="right_suspension_beam_front_mount" />
+  <link name="right_suspension_beam_rear_mount" />
+  <joint name="right_suspension_beam_front_mount_joint" type="fixed">
+    <parent link="right_suspension_beam_link" />
+    <child link="right_suspension_beam_front_mount" />
+    <origin rpy="0 0 0" xyz="0.256 0.0095 -0.0085" />
+  </joint>
+  <joint name="right_suspension_beam_rear_mount_joint" type="fixed">
+    <parent link="right_suspension_beam_link" />
+    <child link="right_suspension_beam_rear_mount" />
+    <origin rpy="0 0 0" xyz="-0.256 0.0095 -0.0085" />
+  </joint>
+  <link name="front_left_motor_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+      <origin rpy="0 0 3.141592653589793" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="front_left_motor_joint" type="fixed">
+    <parent link="left_suspension_beam_front_mount" />
+    <child link="front_left_motor_link" />
+    <origin rpy="0 0 0" />
+  </joint>
+  <link name="front_left_motor_mount" />
+  <joint name="front_left_motor_mount_joint" type="fixed">
+    <parent link="front_left_motor_link" />
+    <child link="front_left_motor_mount" />
+    <origin xyz="0 0.0655 0" />
+  </joint>
+  <link name="front_right_motor_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+      <origin rpy="0 0 0" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="front_right_motor_joint" type="fixed">
+    <parent link="right_suspension_beam_front_mount" />
+    <child link="front_right_motor_link" />
+    <origin rpy="0 0 0" />
+  </joint>
+  <link name="front_right_motor_mount" />
+  <joint name="front_right_motor_mount_joint" type="fixed">
+    <parent link="front_right_motor_link" />
+    <child link="front_right_motor_mount" />
+    <origin xyz="0 -0.0655 0" />
+  </joint>
+  <link name="front_left_wheel_link">
+    <inertial>
+      <mass value="2.5" />
+      <origin xyz="0 0 0" />
+      <inertia ixx="0.019758025" ixy="0" ixz="0" iyy="0.0340725125" iyz="0" izz="0.019758025" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/wheels/outdoor_left.stl" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 0 0" />
+      <geometry>
+        <cylinder length="0.1143" radius="0.1651" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="front_left_wheel_joint" type="continuous">
+    <parent link="front_left_motor_mount" />
+    <child link="front_left_wheel_link" />
+    <axis rpy="0 0 0" xyz="0 1 0" />
+  </joint>
+  <link name="front_right_wheel_link">
+    <inertial>
+      <mass value="2.5" />
+      <origin xyz="0 0 0" />
+      <inertia ixx="0.019758025" ixy="0" ixz="0" iyy="0.0340725125" iyz="0" izz="0.019758025" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 3.141592653589793" xyz="0 0 0" />
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/wheels/outdoor_right.stl" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 0 0" />
+      <geometry>
+        <cylinder length="0.1143" radius="0.1651" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="front_right_wheel_joint" type="continuous">
+    <parent link="front_right_motor_mount" />
+    <child link="front_right_wheel_link" />
+    <axis rpy="0 0 0" xyz="0 1 0" />
+  </joint>
+  <link name="rear_left_motor_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+      <origin rpy="0 0 3.141592653589793" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="rear_left_motor_joint" type="fixed">
+    <parent link="left_suspension_beam_rear_mount" />
+    <child link="rear_left_motor_link" />
+    <origin rpy="0 0 0" />
+  </joint>
+  <link name="rear_left_motor_mount" />
+  <joint name="rear_left_motor_mount_joint" type="fixed">
+    <parent link="rear_left_motor_link" />
+    <child link="rear_left_motor_mount" />
+    <origin xyz="0 0.0655 0" />
+  </joint>
+  <link name="rear_right_motor_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+      <origin rpy="0 0 0" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="rear_right_motor_joint" type="fixed">
+    <parent link="right_suspension_beam_rear_mount" />
+    <child link="rear_right_motor_link" />
+    <origin rpy="0 0 0" />
+  </joint>
+  <link name="rear_right_motor_mount" />
+  <joint name="rear_right_motor_mount_joint" type="fixed">
+    <parent link="rear_right_motor_link" />
+    <child link="rear_right_motor_mount" />
+    <origin xyz="0 -0.0655 0" />
+  </joint>
+  <link name="rear_left_wheel_link">
+    <inertial>
+      <mass value="2.5" />
+      <origin xyz="0 0 0" />
+      <inertia ixx="0.019758025" ixy="0" ixz="0" iyy="0.0340725125" iyz="0" izz="0.019758025" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/wheels/outdoor_left.stl" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 0 0" />
+      <geometry>
+        <cylinder length="0.1143" radius="0.1651" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="rear_left_wheel_joint" type="continuous">
+    <parent link="rear_left_motor_mount" />
+    <child link="rear_left_wheel_link" />
+    <axis rpy="0 0 0" xyz="0 1 0" />
+  </joint>
+  <link name="rear_right_wheel_link">
+    <inertial>
+      <mass value="2.5" />
+      <origin xyz="0 0 0" />
+      <inertia ixx="0.019758025" ixy="0" ixz="0" iyy="0.0340725125" iyz="0" izz="0.019758025" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 3.141592653589793" xyz="0 0 0" />
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/wheels/outdoor_right.stl" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 0 0" />
+      <geometry>
+        <cylinder length="0.1143" radius="0.1651" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="rear_right_wheel_joint" type="continuous">
+    <parent link="rear_right_motor_mount" />
+    <child link="rear_right_wheel_link" />
+    <axis rpy="0 0 0" xyz="0 1 0" />
+  </joint>
+  
+  <link name="base_footprint" />
+  <joint name="base_footprint_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0.1651" />
+    <parent link="chassis_link" />
+    <child link="base_footprint" />
+  </joint>
+  
+  
+  <link name="front_bumper_link">
+    <visual>
+      <origin xyz="-0.368500 0 -0.018050" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/attachments/bumper.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.368500 0 -0.018050" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/attachments/bumper_collision.stl" />
+      </geometry>
+    </collision>
+  </link>
+  
+  <joint name="front_bumper_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0" />
+    <parent link="front_bumper_mount" />
+    <child link="front_bumper_link" />
+  </joint>
+  
+  <link name="rear_bumper_link">
+    <visual>
+      <origin xyz="-0.368500 0 -0.018050" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/attachments/bumper.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.368500 0 -0.018050" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/attachments/bumper_collision.stl" />
+      </geometry>
+    </collision>
+  </link>
+  
+  <joint name="rear_bumper_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0" />
+    <parent link="rear_bumper_mount" />
+    <child link="rear_bumper_link" />
+  </joint>
+  
+  <link name="top_plate_link">
+    <visual>
+      <origin xyz="0.0 0.0 -0.229559" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/attachments/top_plate.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0 0.0 0.00635" />
+      <geometry>
+        <box size="0.74 0.42 0.0127" />
+      </geometry>
+    </collision>
+  <visual>
+      <origin xyz="0.24 -6.63397451e-09 0.0202" rpy="3.14159 -0 0" /><geometry>
+        <box size="0.02 0.02 0.005" />
+      </geometry>
+      <material name="clearpath_dark_grey" />
+    </visual>
+  </link>
+  <joint name="top_plate_joint" type="fixed">
+    <parent link="default_mount" />
+    <child link="top_plate_link" />
+    <origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0" />
+  </joint>
+  <link name="top_plate_mount_a1" />
+  <joint name="top_plate_mount_a1_joint" type="fixed">
+    <child link="top_plate_mount_a1" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.32 0.15999999999999998 0.0127" />
+  </joint>
+  <link name="top_plate_mount_b1" />
+  <joint name="top_plate_mount_b1_joint" type="fixed">
+    <child link="top_plate_mount_b1" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.32 0.07999999999999997 0.0127" />
+  </joint>
+  <link name="top_plate_mount_c1" />
+  <joint name="top_plate_mount_c1_joint" type="fixed">
+    <child link="top_plate_mount_c1" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.32 -2.7755575615628914e-17 0.0127" />
+  </joint>
+  <link name="top_plate_mount_d1" />
+  <joint name="top_plate_mount_d1_joint" type="fixed">
+    <child link="top_plate_mount_d1" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.32 -0.08000000000000002 0.0127" />
+  </joint>
+  <link name="top_plate_mount_e1" />
+  <joint name="top_plate_mount_e1_joint" type="fixed">
+    <child link="top_plate_mount_e1" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.32 -0.16000000000000003 0.0127" />
+  </joint>
+  <link name="top_plate_mount_a2" />
+  <joint name="top_plate_mount_a2_joint" type="fixed">
+    <child link="top_plate_mount_a2" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.24 0.15999999999999998 0.0127" />
+  </joint>
+  <link name="top_plate_mount_b2" />
+  <joint name="top_plate_mount_b2_joint" type="fixed">
+    <child link="top_plate_mount_b2" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.24 0.07999999999999997 0.0127" />
+  </joint>
+  <link name="top_plate_mount_d2" />
+  <joint name="top_plate_mount_d2_joint" type="fixed">
+    <child link="top_plate_mount_d2" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.24 -0.08000000000000002 0.0127" />
+  </joint>
+  <link name="top_plate_mount_e2" />
+  <joint name="top_plate_mount_e2_joint" type="fixed">
+    <child link="top_plate_mount_e2" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.24 -0.16000000000000003 0.0127" />
+  </joint>
+  <link name="top_plate_mount_a3" />
+  <joint name="top_plate_mount_a3_joint" type="fixed">
+    <child link="top_plate_mount_a3" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.16 0.15999999999999998 0.0127" />
+  </joint>
+  <link name="top_plate_mount_b3" />
+  <joint name="top_plate_mount_b3_joint" type="fixed">
+    <child link="top_plate_mount_b3" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.16 0.07999999999999997 0.0127" />
+  </joint>
+  <link name="top_plate_mount_c3" />
+  <joint name="top_plate_mount_c3_joint" type="fixed">
+    <child link="top_plate_mount_c3" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.16 -2.7755575615628914e-17 0.0127" />
+  </joint>
+  <link name="top_plate_mount_d3" />
+  <joint name="top_plate_mount_d3_joint" type="fixed">
+    <child link="top_plate_mount_d3" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.16 -0.08000000000000002 0.0127" />
+  </joint>
+  <link name="top_plate_mount_e3" />
+  <joint name="top_plate_mount_e3_joint" type="fixed">
+    <child link="top_plate_mount_e3" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.16 -0.16000000000000003 0.0127" />
+  </joint>
+  <link name="top_plate_mount_a4" />
+  <joint name="top_plate_mount_a4_joint" type="fixed">
+    <child link="top_plate_mount_a4" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.08000000000000002 0.15999999999999998 0.0127" />
+  </joint>
+  <link name="top_plate_mount_b4" />
+  <joint name="top_plate_mount_b4_joint" type="fixed">
+    <child link="top_plate_mount_b4" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.08000000000000002 0.07999999999999997 0.0127" />
+  </joint>
+  <link name="top_plate_mount_c4" />
+  <joint name="top_plate_mount_c4_joint" type="fixed">
+    <child link="top_plate_mount_c4" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.08000000000000002 -2.7755575615628914e-17 0.0127" />
+  </joint>
+  <link name="top_plate_mount_d4" />
+  <joint name="top_plate_mount_d4_joint" type="fixed">
+    <child link="top_plate_mount_d4" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.08000000000000002 -0.08000000000000002 0.0127" />
+  </joint>
+  <link name="top_plate_mount_e4" />
+  <joint name="top_plate_mount_e4_joint" type="fixed">
+    <child link="top_plate_mount_e4" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.08000000000000002 -0.16000000000000003 0.0127" />
+  </joint>
+  <link name="top_plate_mount_a5" />
+  <joint name="top_plate_mount_a5_joint" type="fixed">
+    <child link="top_plate_mount_a5" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.0 0.15999999999999998 0.0127" />
+  </joint>
+  <link name="top_plate_mount_b5" />
+  <joint name="top_plate_mount_b5_joint" type="fixed">
+    <child link="top_plate_mount_b5" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.0 0.07999999999999997 0.0127" />
+  </joint>
+  <link name="top_plate_mount_c5" />
+  <joint name="top_plate_mount_c5_joint" type="fixed">
+    <child link="top_plate_mount_c5" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.0 -2.7755575615628914e-17 0.0127" />
+  </joint>
+  <link name="top_plate_mount_d5" />
+  <joint name="top_plate_mount_d5_joint" type="fixed">
+    <child link="top_plate_mount_d5" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.0 -0.08000000000000002 0.0127" />
+  </joint>
+  <link name="top_plate_mount_e5" />
+  <joint name="top_plate_mount_e5_joint" type="fixed">
+    <child link="top_plate_mount_e5" />
+    <parent link="top_plate_link" />
+    <origin xyz="0.0 -0.16000000000000003 0.0127" />
+  </joint>
+  <link name="top_plate_mount_a6" />
+  <joint name="top_plate_mount_a6_joint" type="fixed">
+    <child link="top_plate_mount_a6" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.08000000000000002 0.15999999999999998 0.0127" />
+  </joint>
+  <link name="top_plate_mount_b6" />
+  <joint name="top_plate_mount_b6_joint" type="fixed">
+    <child link="top_plate_mount_b6" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.08000000000000002 0.07999999999999997 0.0127" />
+  </joint>
+  <link name="top_plate_mount_c6" />
+  <joint name="top_plate_mount_c6_joint" type="fixed">
+    <child link="top_plate_mount_c6" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.08000000000000002 -2.7755575615628914e-17 0.0127" />
+  </joint>
+  <link name="top_plate_mount_d6" />
+  <joint name="top_plate_mount_d6_joint" type="fixed">
+    <child link="top_plate_mount_d6" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.08000000000000002 -0.08000000000000002 0.0127" />
+  </joint>
+  <link name="top_plate_mount_e6" />
+  <joint name="top_plate_mount_e6_joint" type="fixed">
+    <child link="top_plate_mount_e6" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.08000000000000002 -0.16000000000000003 0.0127" />
+  </joint>
+  <link name="top_plate_mount_a7" />
+  <joint name="top_plate_mount_a7_joint" type="fixed">
+    <child link="top_plate_mount_a7" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.15999999999999998 0.15999999999999998 0.0127" />
+  </joint>
+  <link name="top_plate_mount_b7" />
+  <joint name="top_plate_mount_b7_joint" type="fixed">
+    <child link="top_plate_mount_b7" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.15999999999999998 0.07999999999999997 0.0127" />
+  </joint>
+  <link name="top_plate_mount_c7" />
+  <joint name="top_plate_mount_c7_joint" type="fixed">
+    <child link="top_plate_mount_c7" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.15999999999999998 -2.7755575615628914e-17 0.0127" />
+  </joint>
+  <link name="top_plate_mount_d7" />
+  <joint name="top_plate_mount_d7_joint" type="fixed">
+    <child link="top_plate_mount_d7" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.15999999999999998 -0.08000000000000002 0.0127" />
+  </joint>
+  <link name="top_plate_mount_e7" />
+  <joint name="top_plate_mount_e7_joint" type="fixed">
+    <child link="top_plate_mount_e7" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.15999999999999998 -0.16000000000000003 0.0127" />
+  </joint>
+  <link name="top_plate_mount_a8" />
+  <joint name="top_plate_mount_a8_joint" type="fixed">
+    <child link="top_plate_mount_a8" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.24000000000000005 0.15999999999999998 0.0127" />
+  </joint>
+  <link name="top_plate_mount_b8" />
+  <joint name="top_plate_mount_b8_joint" type="fixed">
+    <child link="top_plate_mount_b8" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.24000000000000005 0.07999999999999997 0.0127" />
+  </joint>
+  <link name="top_plate_mount_c8" />
+  <joint name="top_plate_mount_c8_joint" type="fixed">
+    <child link="top_plate_mount_c8" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.24000000000000005 -2.7755575615628914e-17 0.0127" />
+  </joint>
+  <link name="top_plate_mount_d8" />
+  <joint name="top_plate_mount_d8_joint" type="fixed">
+    <child link="top_plate_mount_d8" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.24000000000000005 -0.08000000000000002 0.0127" />
+  </joint>
+  <link name="top_plate_mount_e8" />
+  <joint name="top_plate_mount_e8_joint" type="fixed">
+    <child link="top_plate_mount_e8" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.24000000000000005 -0.16000000000000003 0.0127" />
+  </joint>
+  <link name="top_plate_mount_a9" />
+  <joint name="top_plate_mount_a9_joint" type="fixed">
+    <child link="top_plate_mount_a9" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.32 0.15999999999999998 0.0127" />
+  </joint>
+  <link name="top_plate_mount_b9" />
+  <joint name="top_plate_mount_b9_joint" type="fixed">
+    <child link="top_plate_mount_b9" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.32 0.07999999999999997 0.0127" />
+  </joint>
+  <link name="top_plate_mount_c9" />
+  <joint name="top_plate_mount_c9_joint" type="fixed">
+    <child link="top_plate_mount_c9" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.32 -2.7755575615628914e-17 0.0127" />
+  </joint>
+  <link name="top_plate_mount_d9" />
+  <joint name="top_plate_mount_d9_joint" type="fixed">
+    <child link="top_plate_mount_d9" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.32 -0.08000000000000002 0.0127" />
+  </joint>
+  <link name="top_plate_mount_e9" />
+  <joint name="top_plate_mount_e9_joint" type="fixed">
+    <child link="top_plate_mount_e9" />
+    <parent link="top_plate_link" />
+    <origin xyz="-0.32 -0.16000000000000003 0.0127" />
+  </joint>
+  <link name="wireless_charger_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/attachments/wireless_charger.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="clearpath_black" />
+      <origin rpy="0 0 0" xyz="0 0 0" />
+    </visual>
+    <collision>
+      <geometry>
+        <box size="0.170 0.145 0.195" />
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 -0.265 0.18" />
+    </collision>
+  <visual>
+      <origin xyz="-3.9801021e-18 -0.275 0.275" rpy="0 -0 -1.57079633" /><geometry>
+        
+        <mesh filename="meshes/clearpath_sensors_description/meshes/hokuyo_ust.stl" />
+      </geometry>
+      <material name="clearpath_dark_grey" />
+    </visual>
+  </link>
+  <joint name="wireless_charger_wireless_charger_joint" type="fixed">
+    <parent link="chassis_link" />
+    <child link="wireless_charger_link" />
+    <origin rpy="0 -0 0" xyz="0 0 0" />
+  </joint>
+  <link name="fath_pivot_0_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/clearpath_mounts_description/meshes/fath_pivot_mount_base.dae" />
+      </geometry>
+      <origin rpy="0 0 1.5707963267948966" xyz="0 0 0" />
+    </visual>
+    <collision>
+      <geometry>
+        <box size="0.025 0.025 0.03" />
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0.015" />
+    </collision>
+    <collision>
+      <geometry>
+        <cylinder length="0.03" radius="0.04" />
+      </geometry>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 -0.035 0.0225" />
+    </collision>
+  </link>
+  <link name="fath_pivot_0_hinge_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/clearpath_mounts_description/meshes/fath_pivot_mount.dae" />
+      </geometry>
+      <origin rpy="0 0 1.5707963267948966" xyz="0 0 0" />
+    </visual>
+    <collision>
+      <geometry>
+        <box size="0.025 0.025 0.03" />
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0.015" />
+    </collision>
+  </link>
+  <link name="fath_pivot_0_mount" />
+  <joint name="fath_pivot_0_joint" type="fixed">
+    <parent link="top_plate_mount_c1" />
+    <child link="fath_pivot_0_link" />
+    <origin rpy="0.0 0.0 0.0" xyz="0.02 0.0 0.0" />
+  </joint>
+  <joint name="fath_pivot_0_hinge_joint" type="fixed">
+    <parent link="fath_pivot_0_link" />
+    <child link="fath_pivot_0_hinge_link" />
+    <origin rpy="0 0.0 0" xyz="0 0 0.0225" />
+  </joint>
+  <joint name="fath_pivot_0_mount_joint" type="fixed">
+    <parent link="fath_pivot_0_hinge_link" />
+    <child link="fath_pivot_0_mount" />
+    <origin rpy="0 0 0" xyz="0 0 0.0225" />
+  </joint>
+  
+  <link name="lidar2d_0_laser">
+    <inertial>
+      <mass value="1.1" />
+      <origin xyz="0 0 0" />
+      <inertia ixx="0.00307156543804" ixy="0.0" ixz="0.0" iyy="0.0031284904152700005" iyz="0.0" izz="0.00196432421427" />
+    </inertial>
+  </link>
+  <joint name="lidar2d_0_laser_joint" type="fixed">
+    
+    <origin xyz="-3.9801021e-18 -0.275 0.3224" rpy="0 -0 -1.57079633" /><parent link="wireless_charger_link" />
+    <child link="lidar2d_0_laser" />
+  </joint>
+  <joint name="camera_0_joint" type="fixed">
+    <origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0" />
+    <parent link="fath_pivot_0_mount" />
+    <child link="camera_0_bottom_screw_frame" />
+  </joint>
+  <link name="camera_0_bottom_screw_frame" />
+  <joint name="camera_0_link_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0.010600000000000002 0.0175 0.0125" />
+    <parent link="camera_0_bottom_screw_frame" />
+    <child link="camera_0_link" />
+  </joint>
+  <link name="camera_0_link">
+    <visual>
+      
+      <origin rpy="1.5707963267948966 0 1.5707963267948966" xyz="0.0043 -0.0175 0" />
+      <geometry>
+        <mesh filename="meshes/realsense2_description/meshes/d435.obj" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 -0.0175 0" />
+      <geometry>
+        <box size="0.02505 0.09 0.025" />
+      </geometry>
+    </collision>
+    <inertial>
+      
+      <mass value="0.072" />
+      <origin xyz="0 0 0" />
+      <inertia ixx="0.003881243" ixy="0.0" ixz="0.0" iyy="0.000498940" iyz="0.0" izz="0.003879257" />
+    </inertial>
+  </link>
+  
+  <joint name="camera_0_depth_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0" />
+    <parent link="camera_0_link" />
+    <child link="camera_0_depth_frame" />
+  </joint>
+  <link name="camera_0_depth_frame" />
+  <joint name="camera_0_depth_optical_joint" type="fixed">
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+    <parent link="camera_0_depth_frame" />
+    <child link="camera_0_depth_optical_frame" />
+  </joint>
+  <link name="camera_0_depth_optical_frame" />
+  
+  <joint name="camera_0_infra1_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0.0 0" />
+    <parent link="camera_0_link" />
+    <child link="camera_0_infra1_frame" />
+  </joint>
+  <link name="camera_0_infra1_frame" />
+  <joint name="camera_0_infra1_optical_joint" type="fixed">
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+    <parent link="camera_0_infra1_frame" />
+    <child link="camera_0_infra1_optical_frame" />
+  </joint>
+  <link name="camera_0_infra1_optical_frame" />
+  
+  <joint name="camera_0_infra2_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 -0.05 0" />
+    <parent link="camera_0_link" />
+    <child link="camera_0_infra2_frame" />
+  </joint>
+  <link name="camera_0_infra2_frame" />
+  <joint name="camera_0_infra2_optical_joint" type="fixed">
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+    <parent link="camera_0_infra2_frame" />
+    <child link="camera_0_infra2_optical_frame" />
+  </joint>
+  <link name="camera_0_infra2_optical_frame" />
+  
+  <joint name="camera_0_color_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0.015 0" />
+    <parent link="camera_0_link" />
+    <child link="camera_0_color_frame" />
+  </joint>
+  <link name="camera_0_color_frame" />
+  <joint name="camera_0_color_optical_joint" type="fixed">
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+    <parent link="camera_0_color_frame" />
+    <child link="camera_0_color_optical_frame" />
+  </joint>
+  <link name="camera_0_color_optical_frame" />
+  <link name="charger_0_link">
+    <visual>
+      <material name="wiferion_blue">
+        <color rgba="0.06 0.32 0.73 1.0" />
+      </material>
+      <origin xyz="0.015 0 0" />
+      <geometry>
+        <box size="0.03 0.16 0.16" />
+      </geometry>
+    </visual>
+    <collision>
+      <material name="wiferion_blue">
+        <color rgba="0.06 0.32 0.73 1.0" />
+      </material>
+      <origin xyz="0.015 0 0" />
+      <geometry>
+        <box size="0.03 0.16 0.16" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="charger_0_joint" type="fixed">
+    <origin xyz="-1.8369702e-19 -0.337 0.16" rpy="3.14159265 2.65358979e-06 1.57079633" /><child link="charger_0_link" />
+    <parent link="wireless_charger_link" />
+    </joint>
+  <link name="gps_0_link">
+    <visual>
+      <material name="clearpath_white" />
+      <geometry>
+        <mesh filename="meshes/clearpath_sensors_description/meshes/gnss_spherical.stl" />
+      </geometry>
+    </visual>
+    <collision>
+      <material name="clearpath_white" />
+      <origin xyz="0.0000 -0.0000 0.0324" />
+      <geometry>
+        <sphere radius="0.1122" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="gps_0_joint" type="fixed">
+    <parent link="chassis_link" />
+    <child link="gps_0_link" />
+    <origin rpy="0 -0 0" xyz="0.321 0.24 0.7265" />
+  </joint>
+  <link name="gps_1_link">
+    <visual>
+      <material name="clearpath_white" />
+      <geometry>
+        <mesh filename="meshes/clearpath_sensors_description/meshes/gnss_spherical.stl" />
+      </geometry>
+    </visual>
+    <collision>
+      <material name="clearpath_white" />
+      <origin xyz="0.0000 -0.0000 0.0324" />
+      <geometry>
+        <sphere radius="0.1122" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="gps_1_joint" type="fixed">
+    <parent link="chassis_link" />
+    <child link="gps_1_link" />
+    <origin rpy="0 -0 0" xyz="0.321 -0.24 0.7265" />
+  </joint>
+  <link name="arm_0_base_link" />
+  <link name="arm_0_base_link_inertia">
+    <visual>
+      <origin rpy="0 0 3.141592653589793" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/ur_description/meshes/ur5e/visual/base.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 3.141592653589793" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/ur_description/meshes/ur5e/collision/base.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="4.0" />
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <inertia ixx="0.00443333156" ixy="0.0" ixz="0.0" iyy="0.00443333156" iyz="0.0" izz="0.0072" />
+    </inertial>
+  </link>
+  <link name="arm_0_shoulder_link">
+    <visual>
+      <origin rpy="0 0 3.141592653589793" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/ur_description/meshes/ur5e/visual/shoulder.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 3.141592653589793" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/ur_description/meshes/ur5e/collision/shoulder.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="3.761" />
+      <origin rpy="1.570796326794897 0 0" xyz="0.0 -0.00193 -0.02561" />
+      <inertia ixx="0.0070021" ixy="7.3e-07" ixz="-1.053e-05" iyy="0.00648091" iyz="0.00049994" izz="0.00657286" />
+    </inertial>
+  </link>
+  <link name="arm_0_upper_arm_link">
+    <visual>
+      <origin rpy="1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0.138" />
+      <geometry>
+        <mesh filename="meshes/ur_description/meshes/ur5e/visual/upperarm.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0.138" />
+      <geometry>
+        <mesh filename="meshes/ur_description/meshes/ur5e/collision/upperarm.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="8.058" />
+      <origin rpy="0 0 0" xyz="-0.2125 0.0 0.11336" />
+      <inertia ixx="0.01505885" ixy="-5.4e-05" ixz="5.63e-06" iyy="0.33388086" iyz="-1.81e-06" izz="0.33247207" />
+    </inertial>
+  </link>
+  <link name="arm_0_forearm_link">
+    <visual>
+      <origin rpy="1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0.007" />
+      <geometry>
+        <mesh filename="meshes/ur_description/meshes/ur5e/visual/forearm.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0.007" />
+      <geometry>
+        <mesh filename="meshes/ur_description/meshes/ur5e/collision/forearm.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="2.846" />
+      <origin rpy="0 0 0" xyz="-0.2422 0.0 0.0265" />
+      <inertia ixx="0.00399632" ixy="-1.365e-05" ixz="0.00137272" iyy="0.07879254" iyz="-6.6e-06" izz="0.0784851" />
+    </inertial>
+  </link>
+  <link name="arm_0_wrist_1_link">
+    <visual>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 0 -0.127" />
+      <geometry>
+        <mesh filename="meshes/ur_description/meshes/ur5e/visual/wrist1.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 0 -0.127" />
+      <geometry>
+        <mesh filename="meshes/ur_description/meshes/ur5e/collision/wrist1.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="1.37" />
+      <origin rpy="1.570796326794897 0 0" xyz="0.0 -0.01634 -0.0018" />
+      <inertia ixx="0.00165491" ixy="-2.82e-06" ixz="-4.38e-06" iyy="0.00135962" iyz="0.00010157" izz="0.00126279" />
+    </inertial>
+  </link>
+  <link name="arm_0_wrist_2_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 -0.0997" />
+      <geometry>
+        <mesh filename="meshes/ur_description/meshes/ur5e/visual/wrist2.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 -0.0997" />
+      <geometry>
+        <mesh filename="meshes/ur_description/meshes/ur5e/collision/wrist2.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="1.3" />
+      <origin rpy="-1.570796326794897 0 0" xyz="0.0 0.01634 -0.0018" />
+      <inertia ixx="0.00135617" ixy="-2.74e-06" ixz="4.44e-06" iyy="0.00127827" iyz="-5.048e-05" izz="0.00096614" />
+    </inertial>
+  </link>
+  <link name="arm_0_wrist_3_link">
+    <visual>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 -0.0005 -0.0989" />
+      <geometry>
+        <mesh filename="meshes/ur_description/meshes/ur5e/visual/wrist3.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 -0.0005 -0.0989" />
+      <geometry>
+        <mesh filename="meshes/ur_description/meshes/ur5e/collision/wrist3.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.365" />
+      <origin rpy="0 0 0" xyz="0.0 0.0 -0.001159" />
+      <inertia ixx="0.00018694" ixy="6e-08" ixz="-1.7e-07" iyy="0.00018908" iyz="-9.2e-07" izz="0.00025756" />
+    </inertial>
+  </link>
+  
+  <joint name="arm_0_base_joint" type="fixed">
+    <origin rpy="0.0 0.0 3.14159" xyz="0.0 0.0 0.05" />
+    <parent link="top_plate_mount_e9" />
+    <child link="arm_0_base_link" />
+  </joint>
+  
+  <joint name="arm_0_base_link-base_link_inertia" type="fixed">
+    <parent link="arm_0_base_link" />
+    <child link="arm_0_base_link_inertia" />
+    
+    <origin rpy="0 0 3.141592653589793" xyz="0 0 0" />
+  </joint>
+  <joint name="arm_0_shoulder_pan_joint" type="revolute">
+    <parent link="arm_0_base_link_inertia" />
+    <child link="arm_0_shoulder_link" />
+    <origin rpy="0 0 0" xyz="0 0 0.1625" />
+    <axis xyz="0 0 1" />
+    <limit effort="150.0" lower="-6.283185307179586" upper="6.283185307179586" velocity="3.141592653589793" />
+    <dynamics damping="0" friction="0" />
+  </joint>
+  <joint name="arm_0_shoulder_lift_joint" type="revolute">
+    <parent link="arm_0_shoulder_link" />
+    <child link="arm_0_upper_arm_link" />
+    <origin rpy="1.570796327 0 0" xyz="0 0 0" />
+    <axis xyz="0 0 1" />
+    <limit effort="150.0" lower="-6.283185307179586" upper="6.283185307179586" velocity="3.141592653589793" />
+    <dynamics damping="0" friction="0" />
+  </joint>
+  <joint name="arm_0_elbow_joint" type="revolute">
+    <parent link="arm_0_upper_arm_link" />
+    <child link="arm_0_forearm_link" />
+    <origin rpy="0 0 0" xyz="-0.425 0 0" />
+    <axis xyz="0 0 1" />
+    <limit effort="150.0" lower="-3.141592653589793" upper="3.141592653589793" velocity="3.141592653589793" />
+    <dynamics damping="0" friction="0" />
+  </joint>
+  <joint name="arm_0_wrist_1_joint" type="revolute">
+    <parent link="arm_0_forearm_link" />
+    <child link="arm_0_wrist_1_link" />
+    <origin rpy="0 0 0" xyz="-0.3922 0 0.1333" />
+    <axis xyz="0 0 1" />
+    <limit effort="28.0" lower="-6.283185307179586" upper="6.283185307179586" velocity="3.141592653589793" />
+    <dynamics damping="0" friction="0" />
+  </joint>
+  <joint name="arm_0_wrist_2_joint" type="revolute">
+    <parent link="arm_0_wrist_1_link" />
+    <child link="arm_0_wrist_2_link" />
+    <origin rpy="1.570796327 0 0" xyz="0 -0.0997 -2.044881182297852e-11" />
+    <axis xyz="0 0 1" />
+    <limit effort="28.0" lower="-6.283185307179586" upper="6.283185307179586" velocity="3.141592653589793" />
+    <dynamics damping="0" friction="0" />
+  </joint>
+  <joint name="arm_0_wrist_3_joint" type="revolute">
+    <parent link="arm_0_wrist_2_link" />
+    <child link="arm_0_wrist_3_link" />
+    <origin rpy="1.570796326589793 3.141592653589793 3.141592653589793" xyz="0 0.0996 -2.042830148012698e-11" />
+    <axis xyz="0 0 1" />
+    <limit effort="28.0" lower="-6.283185307179586" upper="6.283185307179586" velocity="3.141592653589793" />
+    <dynamics damping="0" friction="0" />
+  </joint>
+  <link name="arm_0_ft_frame" />
+  <joint name="arm_0_wrist_3_link-ft_frame" type="fixed">
+    <parent link="arm_0_wrist_3_link" />
+    <child link="arm_0_ft_frame" />
+    <origin rpy="3.141592653589793 0 0" xyz="0 0 0" />
+  </joint>
+  
+  <link name="arm_0_base" />
+  <joint name="arm_0_base_link-base_fixed_joint" type="fixed">
+    
+    <origin rpy="0 0 3.141592653589793" xyz="0 0 0" />
+    <parent link="arm_0_base_link" />
+    <child link="arm_0_base" />
+  </joint>
+  
+  <link name="arm_0_flange" />
+  <joint name="arm_0_wrist_3-flange" type="fixed">
+    <parent link="arm_0_wrist_3_link" />
+    <child link="arm_0_flange" />
+    <origin rpy="0 -1.5707963267948966 -1.5707963267948966" xyz="0 0 0" />
+  </joint>
+  
+  <link name="arm_0_tool0" />
+  <joint name="arm_0_flange-tool0" type="fixed">
+    
+    <origin rpy="1.5707963267948966 0 1.5707963267948966" xyz="0 0 0" />
+    <parent link="arm_0_flange" />
+    <child link="arm_0_tool0" />
+  </joint>
+  
+  <link name="arm_0_gripper_robotiq_85_base_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/visual/robotiq_base.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/collision/robotiq_base.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.0 2.274e-05 0.03232288" />
+      <mass value="6.6320197e-01" />
+      <inertia ixx="5.1617816e-04" ixy="2.936e-8" ixz="0.0" iyy="5.8802208e-04" iyz="-3.2296e-7" izz="3.9462776e-04" />
+    </inertial>
+  </link>
+  <link name="arm_0_gripper_robotiq_85_left_knuckle_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/visual/left_knuckle.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/collision/left_knuckle.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.01213197 0.0002 -0.00058647" />
+      <mass value="1.384773208e-02" />
+      <inertia ixx="3.5232e-7" ixy="0.0" ixz="1.1744e-7" iyy="2.31944e-6" iyz="0" izz="2.23136e-6" />
+    </inertial>
+  </link>
+  <link name="arm_0_gripper_robotiq_85_right_knuckle_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/visual/right_knuckle.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/collision/right_knuckle.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.01213197 0.0002 -0.00058647" />
+      <mass value="1.384773208e-02" />
+      <inertia ixx="3.5232e-7" ixy="0.0" ixz="-1.1744e-7" iyy="2.31944e-6" iyz="0.0" izz="2.23136e-6" />
+    </inertial>
+  </link>
+  <link name="arm_0_gripper_robotiq_85_left_finger_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/visual/left_finger.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/collision/left_finger.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.00346899 -0.00079447 0.01867121" />
+      <mass value="4.260376752e-02" />
+      <inertia ixx="1.385792000000000e-05" ixy="0.0" ixz="-2.17264e-06" iyy="1.183208e-05" iyz="0.0" izz="5.19672e-06" />
+    </inertial>
+  </link>
+  <link name="arm_0_gripper_robotiq_85_right_finger_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/visual/right_finger.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/collision/right_finger.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.00346899 -5.53e-06 0.01867121" />
+      <mass value="4.260376752000000e-02" />
+      <inertia ixx="1.385792e-05" ixy="0.0" ixz="2.17264e-06" iyy="1.183208e-05" iyz="0.0" izz="5.19672e-06" />
+    </inertial>
+  </link>
+  <link name="arm_0_gripper_robotiq_85_left_inner_knuckle_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/visual/left_inner_knuckle.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/collision/left_inner_knuckle.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.01897699 0.00015001 0.02247101" />
+      <mass value="2.969376448e-02" />
+      <inertia ixx="9.57136e-06" ixy="0.0" ixz="-3.93424e-06" iyy="8.69056e-06" iyz="0.0" izz="8.19144e-06" />
+    </inertial>
+  </link>
+  <link name="arm_0_gripper_robotiq_85_right_inner_knuckle_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/visual/right_inner_knuckle.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/collision/right_inner_knuckle.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.01926824 5.001e-05 0.02222178" />
+      <mass value="2.969376448e-02" />
+      <inertia ixx="9.42456e-06" ixy="0.0" ixz="3.9636e-06" iyy="8.69056e-06" iyz="0.0" izz="8.33824e-06" />
+    </inertial>
+  </link>
+  <link name="arm_0_gripper_robotiq_85_left_finger_tip_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/visual/left_finger_tip.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/collision/left_finger_tip.stl" />
+      </geometry>
+      <surface>
+        <friction>
+          <ode>
+            <mu1>100000.0</mu1>
+            <mu2>100000.0</mu2>
+          </ode>
+        </friction>
+        <contact>
+          <ode>
+            <kp>1e+5</kp>
+            <kd>1</kd>
+            <soft_cfm>0</soft_cfm>
+            <soft_erp>0.2</soft_erp>
+            <minDepth>0.002</minDepth>
+            <maxVel>0</maxVel>
+          </ode>
+        </contact>
+      </surface>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.01456706 -0.0008 0.01649701" />
+      <mass value="4.268588744e-02" />
+      <inertia ixx="1.048152e-05" ixy="0.0" ixz="3.5232e-6" iyy="1.197888e-05" iyz="0.0" izz="4.22784e-06" />
+    </inertial>
+  </link>
+  <link name="arm_0_gripper_robotiq_85_right_finger_tip_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/visual/right_finger_tip.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/robotiq_description/meshes/collision/right_finger_tip.stl" />
+      </geometry>
+      <surface>
+        <friction>
+          <ode>
+            <mu1>100000.0</mu1>
+            <mu2>100000.0</mu2>
+          </ode>
+        </friction>
+        <contact>
+          <ode>
+            <kp>1e+5</kp>
+            <kd>1</kd>
+            <soft_cfm>0</soft_cfm>
+            <soft_erp>0.2</soft_erp>
+            <minDepth>0.002</minDepth>
+            <maxVel>0</maxVel>
+          </ode>
+        </contact>
+      </surface>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.01456706 5e-05 0.01649701" />
+      <mass value="4.268588744e-02" />
+      <inertia ixx="1.048152e-05" ixy="0.0" ixz="-3.5232e-06" iyy="1.197888e-05" iyz="0.0" izz="4.22784e-06" />
+    </inertial>
+  </link>
+  <joint name="arm_0_gripper_robotiq_85_base_joint" type="fixed">
+    <parent link="arm_0_tool0" />
+    <child link="arm_0_gripper_robotiq_85_base_link" />
+    <origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0" />
+  </joint>
+  <joint name="arm_0_gripper_robotiq_85_left_knuckle_joint" type="revolute">
+    <parent link="arm_0_gripper_robotiq_85_base_link" />
+    <child link="arm_0_gripper_robotiq_85_left_knuckle_link" />
+    <axis xyz="0 -1 0" />
+    <origin rpy="0 0 0" xyz="0.03060114 0.0 0.05490452" />
+    <limit effort="50" lower="0.0" upper="0.8" velocity="0.5" />
+  </joint>
+  <joint name="arm_0_gripper_robotiq_85_right_knuckle_joint" type="revolute">
+    <parent link="arm_0_gripper_robotiq_85_base_link" />
+    <child link="arm_0_gripper_robotiq_85_right_knuckle_link" />
+    <axis xyz="0 -1 0" />
+    <origin rpy="0 0 0" xyz="-0.03060114 0.0 0.05490452" />
+    <limit effort="50" lower="-0.8" upper="0.0" velocity="0.5" />
+    <mimic joint="arm_0_gripper_robotiq_85_left_knuckle_joint" multiplier="-1" />
+  </joint>
+  <joint name="arm_0_gripper_robotiq_85_left_finger_joint" type="fixed">
+    <parent link="arm_0_gripper_robotiq_85_left_knuckle_link" />
+    <child link="arm_0_gripper_robotiq_85_left_finger_link" />
+    <origin rpy="0 0 0" xyz="0.03152616 0.0 -0.00376347" />
+  </joint>
+  <joint name="arm_0_gripper_robotiq_85_right_finger_joint" type="fixed">
+    <parent link="arm_0_gripper_robotiq_85_right_knuckle_link" />
+    <child link="arm_0_gripper_robotiq_85_right_finger_link" />
+    <origin rpy="0 0 0" xyz="-0.03152616 0.0 -0.00376347" />
+  </joint>
+  <joint name="arm_0_gripper_robotiq_85_left_inner_knuckle_joint" type="revolute">
+    <parent link="arm_0_gripper_robotiq_85_base_link" />
+    <child link="arm_0_gripper_robotiq_85_left_inner_knuckle_link" />
+    <axis xyz="0 -1 0" />
+    <origin rpy="0 0 0" xyz="0.0127 0.0 0.06142" />
+    <mimic joint="arm_0_gripper_robotiq_85_left_knuckle_joint" />
+  <limit lower="0" upper="0.8" effort="50" velocity="0.5" /></joint>
+  <joint name="arm_0_gripper_robotiq_85_right_inner_knuckle_joint" type="revolute">
+    <parent link="arm_0_gripper_robotiq_85_base_link" />
+    <child link="arm_0_gripper_robotiq_85_right_inner_knuckle_link" />
+    <axis xyz="0 -1 0" />
+    <origin rpy="0 0 0" xyz="-0.0127 0.0 0.06142" />
+    <mimic joint="arm_0_gripper_robotiq_85_left_knuckle_joint" multiplier="-1" />
+  <limit lower="-0.8" upper="0" effort="50" velocity="0.5" /></joint>
+  <joint name="arm_0_gripper_robotiq_85_left_finger_tip_joint" type="revolute">
+    <parent link="arm_0_gripper_robotiq_85_left_finger_link" />
+    <child link="arm_0_gripper_robotiq_85_left_finger_tip_link" />
+    <axis xyz="0 -1 0" />
+    <origin rpy="0 0 0" xyz="0.00563134 0.0 0.04718515" />
+    <mimic joint="arm_0_gripper_robotiq_85_left_knuckle_joint" multiplier="-1" />
+  <limit lower="-0.8" upper="0" effort="50" velocity="0.5" /></joint>
+  <joint name="arm_0_gripper_robotiq_85_right_finger_tip_joint" type="revolute">
+    <parent link="arm_0_gripper_robotiq_85_right_finger_link" />
+    <child link="arm_0_gripper_robotiq_85_right_finger_tip_link" />
+    <axis xyz="0 -1 0" />
+    <origin rpy="0 0 0" xyz="-0.00563134 0.0 0.04718515" />
+    <mimic joint="arm_0_gripper_robotiq_85_left_knuckle_joint" />
+  <limit lower="0" upper="0.8" effort="50" velocity="0.5" /></joint>
+  
+  
+  <link name="arch_link">
+    <visual>
+      <material name="clearpath_black" />
+      <geometry>
+        <mesh filename="meshes/mtu32_description/meshes/sensor_arch.STL" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0.235 0.17" />
+      <geometry>
+        <box size="0.17 0.05 0.145" />
+         #antenna box
+    
+      </geometry>
+    </collision>
+  </link>
+  
+  <joint name="arch_joint" type="fixed">
+    <child link="arch_link" />
+    <parent link="chassis_link" />
+    <origin rpy="0 -0 0" xyz="0 0 0" />
+  </joint>
+  
+  <link name="estop_link">
+    <visual>
+      <material name="clearpath_yellow" />
+      <geometry>
+        <mesh filename="meshes/mtu32_description/meshes/duro_estop.STL" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.32 0 0.4" />
+      <geometry>
+        <box size="0.12 0.59 0.3" />
+         #main sensor arch box
+    
+      </geometry>
+    </collision>
+  </link>
+  
+  <joint name="estop_joint" type="fixed">
+    <child link="estop_link" />
+    <parent link="chassis_link" />
+    <origin rpy="0 -0 0" xyz="0 0 0" />
+  </joint>
+  
+  <link name="button_link">
+    <visual>
+      <material name="clearpath_red" />
+      <geometry>
+        <mesh filename="meshes/mtu32_description/meshes/button.STL" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.2 0 0.31" />
+      <geometry>
+        <box size="0.12 0.42 0.12" />
+         #cable protection box
+    
+      </geometry>
+    </collision>
+  </link>
+  
+  <joint name="button_joint" type="fixed">
+    <child link="button_link" />
+    <parent link="chassis_link" />
+    <origin rpy="0 -0 0" xyz="0 0 0" />
+  </joint>
+  
+  <link name="eth_link">
+    <collision>
+      <origin rpy="0 0 0" xyz="-0.2 -0.1 0.29226" />
+      <geometry>
+        <box size="0.1 0.1 0.1" />
+         #am ethernet connection protection box
+    
+      </geometry>
+    </collision>
+  </link>
+  
+  <joint name="eth_joint" type="fixed">
+    <child link="eth_link" />
+    <parent link="chassis_link" />
+    <origin rpy="0 -0 0" xyz="0 0 0" />
+  </joint>
+</robot>

@@ -1,0 +1,49 @@
+# Clearpath Jackal (model code j100) configuration, shared by every robot assigned this model
+# (ROBOT_MODEL=j100, see .env's ROBOT_MODEL_<i>). Sibling files robot.a300/a200/r100.yaml.tmpl cover the other
+# supported models.
+# The double-underscore placeholders (namespace, serial, domain, middleware) are filled in per robot by
+# robot/entrypoint.sh and scripts/gen_urdf.sh; the middleware is the one selected by FLEET_RMW in .env, the
+# domain by ROS_DOMAIN_ID. clearpath_generator_common's `generate_bash` turns this into /etc/clearpath/setup.bash
+# (see entrypoint.sh), exactly as it would on a real Clearpath robot.
+serial_number: j100-0000
+version: 0
+system:
+  hosts:
+    - hostname: cpr-j100-0000
+      ip: 192.168.131.1
+  ros2:
+    namespace: j100_0000
+    domain_id: 0
+    middleware:
+      implementation: rmw_fastrtps_cpp  
+    # The shared colcon workspace (see docker-compose.yml); generate_bash then sources it from setup.bash.
+    # Must be the *install* dir, not .../install/setup.bash or the workspace root: installed
+    # clearpath_generator_common 2.9.15 builds the path with `workspace.strip('setup.bash')`, which (being
+    # Python's character-set strip, not a substring removal) mangles most other spellings of this path.
+    workspaces:
+      - /home/robot/colcon_ws/install
+platform:
+  controller: ps4
+  attachments:
+    - name: front_fender
+      type: j100.fender
+    - name: rear_fender
+      type: j100.fender
+      rpy: [0.0, 0.0, 3.1415]
+  mcu:
+    protocol: proton
+sensors:
+  # Jackal has no top plate; mount the D435i straight on the chassis instead. xyz/rpy are an approximate,
+  # visually-checked placement, not a hardware-accurate mount point.
+  camera:
+    - model: intel_realsense
+      urdf_enabled: true
+      launch_enabled: false
+      parent: chassis_link
+      xyz: [0.2, 0.0, 0.15]
+      rpy: [0.0, 0.0, 0.0]
+      ros_parameters:
+        intel_realsense:
+          camera_name: camera_0
+          device_type: d435i
+          serial_no: "0"

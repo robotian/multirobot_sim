@@ -1,0 +1,297 @@
+serial_number: a300-00037
+version: 0
+system:
+  username: robot
+  hosts:
+    - hostname: cpr-a300-00037
+      ip: 192.168.131.1
+    - hostname: cpr-a200-0284
+      ip: 192.168.130.20
+    - hostname: cpr-j100-0921 
+      ip: 192.168.130.38   
+    - hostname: robotian-LattePanda-Sigma
+      ip: 192.168.130.85 
+    - hostname: mae-18630-l.sabu.mtu.edu
+      ip: 192.168.130.63
+    - hostname: desmond-Alienware-m16-R1
+      ip: 192.168.130.80
+    - hostname: base-station-LattePanda-Sigma
+      ip: 192.168.130.65
+  ros2:
+    namespace: a300_00037  
+    domain_id: 0
+    middleware:
+      implementation: rmw_fastrtps_cpp  #rmw_zenoh_cpp
+      # discovery: server
+      # servers:
+      #   - hostname: cpr-a200-0284
+      #     port: 11811
+      #     enabled: false
+      #   - hostname: cpr-a300-00036
+      #     port: 11811 
+      #     enabled: true
+      #   - hostname: cpr-j100-0921
+      #     port: 11811
+      #     enabled: false
+      #   - hostname: robotian-LattePanda-Sigma
+      #     port: 11811
+      #     enabled: false
+      #   - hostname: mae-18630-l.sabu.mtu.edu
+      #     port: 11811 
+      #     enabled: false
+      #   - hostname: desmond-Alienware-m16-R1
+      #     port: 11811
+      #     enabled: false
+      #   - hostname: base-station-LattePanda-Sigma
+      #     port: 11811
+      #     enabled: false
+#      profile: /etc/clearpath/fastdds_profile3.xml
+    workspaces:
+    - "/home/robot/colcon_ws/install/setup.bash"
+    # - "/home/robot/mocap4r2_ws/install/setup.bash"
+platform:
+  mcu:
+    protocol: proton
+  enable_ekf: true
+  controller: ps4
+  battery:
+    model: S_24V20_U1
+    configuration: S1P2
+  can_adapters:
+    - can_dev: usbcan0 
+      type: serial
+      serial_dev: /dev/usbcan
+      baud: s5
+  can_bridges:
+    - interface: usbcan0
+      topic_rx: sensors/charger_0/usbcan0/rx
+      topic_tx: sensors/charger_0/usbcan0/tx
+  attachments:
+    - name: front_bumper
+      type: a300.bumper
+      parent: front_bumper_mount
+    - name: rear_bumper
+      type: a300.bumper
+      parent: rear_bumper_mount
+    - name: top_plate
+      type: a300.top_plate
+      model: pacs
+      parent: default_mount
+      xyz: [0.0, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0] 
+      enabled: true
+    - name: wireless_charger
+      type: a300.wireless_charger 
+      model: default
+      parent: base_link 
+      xyz: [0.0, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+      enabled: true
+  extras:
+    ros_parameters:      
+      ekf_node:
+        two_d_mode: True 
+        odom0_differential: False 
+        odom0_pose_rejection_threshold: 5.0
+        odom0_twist_rejection_threshold: 3.0
+    urdf: 
+      package: mtu32_description 
+      path: urdf/robot_description.urdf.xacro
+    launch:
+      - package: mtu32_bringup
+        path: launch/intel_realsense.launch.py  # single camera 
+      #  path: launch/intel_realsense_dual.launch.py # multiple cameras
+      - package: mtu32_bringup
+        path: launch/swift_nav_dual.launch.py    
+      - package: mtu32_bringup
+        path: launch/bringup_main.launch.py
+mounts:
+  fath_pivot:
+    - parent: top_plate_mount_c1 
+      xyz: [0.02, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+      angle: 0.0
+sensors:
+  charger:
+    - model: wiferion
+      urdf_enabled: true 
+      launch_enabled: true
+      parent: wireless_charger_face
+      xyz: [-0.003, 0.0, 0.01]
+      rpy: [0.0, 3.14159, 0.0]
+      ros_parameters:
+        wiferion:
+          canbus_dev: usbcan0
+          launch_gateway: false
+  imu:
+    - model: microstrain_imu
+      urdf_enabled: true
+      launch_enabled: true
+      parent: top_plate_mount_c2
+      xyz: [0.0, 0.0, 0.01]
+      rpy: [3.14159, 0.0, 0.0]
+      ros_parameters:
+        microstrain_inertial_driver:
+          imu_frame_id: imu_0_link
+          port: /dev/microstrain_main
+          use_enu_frame: true
+          imu_mag_data_rate: 100
+  gps:
+    - model: swiftnav_duro
+      urdf_enabled: true
+      launch_enabled: false  
+      parent: base_link
+      # xyz: [0.32479, 0.21329, 0.44735]
+      xyz: [0.321, 0.24, 0.7265]
+      rpy: [0.0, 0.0, 0.0]
+      ros_parameters:
+        duro_node:
+          gps_receiver_frame_id: gps_0_link
+          ip_address: 192.168.131.31
+          ip_port: 55555
+          imu_frame_id: gps_0_link
+    - model: swiftnav_duro
+      urdf_enabled: true
+      launch_enabled: false
+      parent: base_link
+      # xyz: [0.32479, 0.21329, 0.44735]
+      xyz: [0.321, -0.24, 0.7265]
+      rpy: [0.0, 0.0, 0.0]
+      ros_parameters:
+        duro_node:
+          gps_receiver_frame_id: gps_1_link
+          ip_address: 192.168.131.32
+          ip_port: 55555
+          imu_frame_id: gps_1_link
+  lidar2d:
+    - model: hokuyo_ust
+      urdf_enabled: true
+      launch_enabled: true
+      parent: wireless_charger_lidar_mount
+      xyz: [0.0, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+      ros_parameters:
+        urg_node:
+          laser_frame_id: lidar2d_0_laser
+          ip_address: 192.168.131.20
+          ip_port: 10940
+          angle_min: -2.356
+          angle_max: 2.356
+  camera:
+    - model: intel_realsense  # clearpath_config does not support Realsense D405 model
+      urdf_enabled: true
+      launch_enabled: true
+      parent: fath_pivot_0_mount # base_link
+      xyz: [0.0, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+      ros_parameters: 
+        intel_realsense:
+          camera_name: camera_0
+          device_type: d435
+          serial_no: "838212070468"
+          enable_color: true
+          rgb_camera.color_profile: 848,480,30
+          enable_depth: true
+          depth_module.depth_profile: 848,480,30
+          pointcloud.enable: true
+          clip_distance: 0.0
+manipulators:
+  moveit:
+    enable: false
+  arms:
+    - model: universal_robots
+      parent: top_plate_mount_e9
+      xyz: [0.0, 0.0, 0.05]
+      rpy: [0.0, 0.0, 3.14159]
+      ur_type: ur5e
+      robot_ip: 192.168.131.40
+      gripper:
+        model: robotiq_2f_85
+
+# manipulators:
+#   moveit:
+#     enable: false
+#   arms:
+#     - model: kinova_gen3_lite   #kinova_gen3_7dof
+#       parent: top_plate_mount_e9
+#       # xyz: [0.0, 0.0, 0.0646]
+#       xyz: [0.0, 0.0, 0.05]
+#       rpy: [0.0, 0.0, 3.14159]
+#       ip: 192.168.2.10
+#       port: 10000
+#       poses:
+#         # - name: retract
+#         #   joints: [
+#         #       -0.03457795096137062, #arm_0_joint_1
+#         #       -0.2534945862558464, #arm_0_joint_2
+#         #       2.675513896479462, #arm_0_joint_3
+#         #       -1.5369470167077717, #arm_0_joint_4
+#         #       -0.2270675061267724, #arm_0_joint_5
+#         #       -1.5172358962156594, #arm_0_joint_6
+#         #     ]
+#         - name: drop          
+#           #joints: [-1.305077831135586, -0.09983125662270975, 1.7280400101975353,  -1.565498234122293, -1.323842464176285, 0.2656540471609301]
+#           joints: [-1.7123268271338494, 0.12557976330603243, 1.636511424589256,  -1.5684058734004411, -1.6449344704849587, 1.3874696436760219] 
+#         - name: cut_init 
+#           joints: [-0.645260038342241, -1.9158850459396068, 0.9610250425812236, -0.6283142776090488, -1.7287790479900778, -1.3575438205738148]
+#         - name: look_forward
+#           joints: [-2.4893112492940705, -1.3493125771928531, -1.8191631253272642, 0.8624603944221925, 1.9388484927611405, -1.8697795881168484]
+#         - name: image_detection
+#           joints: [1.5652, -0.7312, 0.3538, 1.5668, 0.4303, -1.5816]
+#       gripper:
+#         model: kinova_2f_lite  #robotiq_2f_85
+#         xyz: [0.0, 0.0, 0.0]
+#         rpy: [0.0, 0.0, 0.0]
+#         poses:
+#           - name: open_default
+#             joints: [0.1]
+# links:
+#   box:
+#     - name: top_plate_arm_collision
+#       parent: top_plate_mount_c5
+#       xyz: [0.0, 0.0, 0.06] 
+#       rpy: [0.0, 0.0, 0.0]
+#       size: [0.6, 0.42, 0.12]
+# manipulators:
+#   moveit:
+#     enable: true
+#   arms:
+#     - model: kinova_gen3_7dof
+#       parent: top_plate_mount_e9
+#       xyz: [0.0, 0.0, 0.0046]
+#       rpy: [0.0, 0.0, 3.14159]
+#       # ip: 192.168.2.10
+#       ip: 192.168.1.10
+#       port: 10000
+#       vision: true
+#       poses:
+#         - name: ready
+#           joints: [0.0, -0.9, 0.0, 2.0, 0.0, 1.0, -1.571]
+#         - name: retract # suggest home pose for gen3
+#           joints: [0.0, -0.35, 0.0, 2.548, 0.0, 0.873, -1.571]
+#         - name: home_0 # suggest home pose for gen3
+#           joints: [0.0, 0.0, 0.0, 1.571, 0.0, 1.571, -1.571]
+#         - name: pre_cut_1 # suggest pre-cut pose for gen3
+#           joints: [0.0, 0.0, -1.571, 1.571, 0.0, 1.571, -1.571]
+#         - name: pre_cut_2  # suggest pre-cut pose for gen3
+#           joints: [2.464, -2.284, -1.723, -1.388, 0.776, -1.130, 3.106]
+#         - name: pre_cut_3 # suggest pre-cut pose for gen3
+#           joints: [1.842, -2.314, -1.812, -1.288, 0.829, -0.640, 3.106]
+#         - name: forward
+#           joints: [0.0, 0.7, 0.0, 2.3, 0.0, -1.5, -1.571]
+#         - name: straight
+#           joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.571]
+#         - name: stow
+#           joints: [2.225, 1.3, 0.0, 1.75, -2.4, -1.65, -1.5]
+#         - name: tag_view
+#           joints: [-0.611, -0.14, 3.02, 2.36, -0.908, -0.925, -1.065]
+#         - name: tag_detection
+#           joints: [1.44862, -0.471239, 2.32129, 1.0821, 0.349066, 1.64061, -2.37365]
+#         - name: lavender_detection
+#           joints: [1.08645, -0.812, 2.4122, 0.3637, 0.57356, 1.96156, -2.2936]
+#         - name: lavender_detection_1
+#           joints: [-1.4744, 0.8730, -1.3364,  0.1925, 1.2177, 2.0766, 1.4105]
+#       # gripper:
+#       #   model: robotiq_2f_85
+#       #   xyz: [0.0, 0.0, 0.0]
+#       #   rpy: [0.0, 0.0, 0.0]        

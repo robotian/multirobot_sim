@@ -1,0 +1,251 @@
+serial_number: a200-0284
+version: 0
+system:
+  username: robot
+  hosts:
+    - hostname: cpr-a200-0284
+      ip: 192.168.130.20
+    - hostname: cpr-a300-00036
+      ip: 192.168.130.5
+    - hostname: cpr-j100-0921 
+      ip: 192.168.130.38   
+    - hostname: robotian-LattePanda-Sigma
+      ip: 192.168.130.85
+    - hostname: mae-18630-l.sabu.mtu.edu
+      ip: 192.168.130.63
+    - hostname: desmond-Alienware-m16-R1
+      ip: 192.168.130.80
+    - hostname: base-station-LattePanda-Sigma
+      ip: 192.168.130.67
+  ros2: 
+    namespace: a200_0284
+    domain_id: 1
+    middleware:
+      implementation: rmw_fastrtps_cpp
+      # discovery: server
+      # servers:
+      #   - hostname: cpr-a200-0284
+      #     port: 11811
+      #     enabled: true
+      #   - hostname: cpr-a300-00036
+      #     port: 11811 
+      #     enabled: false
+      #   - hostname: cpr-j100-0921
+      #     port: 11811
+      #     enabled: false
+      #   - hostname: robotian-LattePanda-Sigma
+      #     port: 11811
+      #     enabled: false
+      #   - hostname: mae-18630-l.sabu.mtu.edu
+      #     port: 11811 
+      #     enabled: false
+      #   - hostname: desmond-Alienware-m16-R1
+      #     port: 11811
+      #     enabled: false
+      #   - hostname: base-station-LattePanda-Sigma
+      #     port: 11811
+          # enabled: false
+    workspaces:
+      - "/home/robot/colcon_ws/install/setup.bash"
+platform:
+  enable_ekf: true
+  controller: ps4
+  attachments:
+    - name: front_bumper
+      type: a200.bumper
+      parent: front_bumper_mount
+    - name: rear_bumper
+      type: a200.bumper
+      parent: rear_bumper_mount
+    - name: top_plate
+      type: a200.top_plate
+      xyz: [0.0, 0.0, 0.02]
+  extras:
+    # urdf:
+    #   package: gen3_gripper_description
+    #   path: urdf/gen3_custom_gripper.xacro
+    # urdf:
+    #   package: mtu32_description
+    #   path: urdf/extras_combined.urdf.xacro # NOTE: this urdf includes extra object required for collision detection
+    launch:
+      - path: launch/bringup_main.launch.py
+        package: mtu32_bringup
+    ros_parameters:
+      ekf_node:
+        two_d_mode: True
+        imu0: 'sensors/imu_0/data'
+        imu0_config: [False, False, False, False, False, False, False, False, False, True, True, True, True, True, True]
+        imu0_differential: False
+        imu0_queue_size: 10
+        imu0_remove_gravitational_acceleration: true
+      platform_velocity_controller:
+        wheel_radius: 0.157
+        left_wheel_radius_multiplier: 1.01
+        right_wheel_radius_multiplier: 0.96
+        wheel_separation_multiplier: 1.875
+        linear.x.max_velocity: 1.0
+        linear.x.min_velocity: -1.0
+#        linear.x.max_acceleration: 2.5
+#        linear.x.min_acceleration: -2.5
+        angular.z.max_velocity: 1.0 
+        angular.z.min_velocity: -1.0
+#        angular.z.max_acceleration: 2.5
+#        angular.z.min_acceleration: -2.5  
+sensors:
+  imu:
+  - model: microstrain_imu
+    urdf_enabled: true
+    launch_enabled: true
+    parent: default_mount
+    xyz: [0.22, 0.0, 0.0]
+    rpy: [0.0, 0.0, 0.0]
+    ros_parameters:
+      microstrain_inertial_driver:
+        #imu_frame_id: imu_0_link
+        port: /dev/microstrain  # a custom udev rule in /etc/udev/rule.d/99-microstrain
+        baudrate: 115200
+        publish_imu: true
+        imu_data_rate: 100
+        imu_data_raw_rate: 100
+        use_enu_frame: true
+        imu_mag_data_rate: 100
+        device_setup: false
+  camera:
+     - model: intel_realsense  # clearpath_config does not support Realsense D405 model
+       urdf_enabled: true
+       launch_enabled: true
+       parent: front_camera_mount_link # base_link
+       xyz: [0.0, 0.0, 0.0]
+       rpy: [0.0, 0.0, 0.0]
+       ros_parameters: 
+         intel_realsense:
+           camera_name: camera_0
+           device_type: d435
+           serial_no: "838212070468"
+           enable_color: true
+           rgb_camera.color_profile: 640,480,30
+           enable_depth: true
+           depth_module.depth_profile: 640,480,15
+           pointcloud.enable: true
+#       ros_parameters:
+#         intel_realsense:
+#           camera_name: camera_1
+#           device_type: d405
+#           serial_no: "218622279005"
+#           enable_color: true
+# #          rgb_camera.color_profile: 640,480,30
+#           enable_depth: true
+# #          depth_module.depth_profile: 640,480,15
+#           pointcloud.enable: false
+  gps:
+    - model: swiftnav_duro
+      urdf_enabled: true
+      launch_enabled: true
+      parent: rail_link
+      xyz: [0.01,0.3,0.0]
+      rps: [0.0,0.0,0.0]
+    - model: swiftnav_duro
+      urdf_enabled: true
+      launch_enabled: true
+      parent: rail_link
+      xyz: [0.01,-0.3,0.0]
+      rps: [0.0,0.0,0.0]
+  lidar2d:
+    - model: sick_lms1xx
+      urdf_enabled: true
+      launch_enabled: true
+      parent: top_plate_base_link # front_0_mount
+      xyz: [0.312, 0.0, 0.0735]
+      rpy: [3.14159, 0.0, 0.0]
+      ros_parameters:
+        lms1xx:
+          frame_id: lidar2d_0_laser
+          host: 192.168.131.20
+          port: 2111 
+manipulators:
+  moveit:
+    enable: false
+  arms:
+    - model: kinova_gen3_7dof
+      parent: arm_mount_plate_link
+      xyz: [0.0, 0.0, 0.0046]
+      rpy: [0.0, 0.0, 3.14159]
+      # ip: 192.168.2.10
+      ip: 192.168.1.10
+      port: 10000
+      vision: true
+      gripper:
+        model: robotiq_2f_85
+      poses:
+        - name: ready
+          joints: [0.0, -0.9, 0.0, 2.0, 0.0, 1.0, -1.571]
+        - name: retract # suggest home pose for gen3
+          joints: [0.0, -0.35, 0.0, 2.548, 0.0, 0.873, -1.571]
+        - name: home_0 # suggest home pose for gen3
+          joints: [0.0, 0.0, 0.0, 1.571, 0.0, 1.571, -1.571]
+        - name: pre_cut_1 # suggest pre-cut pose for gen3
+          joints: [0.0, 0.0, -1.571, 1.571, 0.0, 1.571, -1.571]
+        - name: pre_cut_2  # suggest pre-cut pose for gen3
+          joints: [2.464, -2.284, -1.723, -1.388, 0.776, -1.130, 3.106]
+        - name: pre_cut_3 # suggest pre-cut pose for gen3
+          joints: [1.842, -2.314, -1.812, -1.288, 0.829, -0.640, 3.106]
+        - name: forward
+          joints: [0.0, 0.7, 0.0, 2.3, 0.0, -1.5, -1.571]
+        - name: straight
+          joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.571]
+        - name: stow
+          joints: [2.225, 1.3, 0.0, 1.75, -2.4, -1.65, -1.5]
+        - name: tag_view
+          joints: [-0.611, -0.14, 3.02, 2.36, -0.908, -0.925, -1.065]
+        - name: tag_detection
+          joints: [1.44862, -0.471239, 2.32129, 1.0821, 0.349066, 1.64061, -2.37365]
+        - name: lavender_detection
+          joints: [1.08645, -0.812, 2.4122, 0.3637, 0.57356, 1.96156, -2.2936]
+        - name: lavender_detection_1
+          joints: [-1.4744, 0.8730, -1.3364,  0.1925, 1.2177, 2.0766, 1.4105]
+        - name: drop
+          joints: [1.525, 0.057, 0.331, 1.382, -0.019, 1.706, -1.288]
+links:
+  frame: 
+    - name: top_plate_base 
+      parent: top_plate_link
+      xyz: [0.0, 0.0, 0.0065]
+      rpy: [0.0, 0.0, 0.0]   
+    - name: top_plate_user_rail_front 
+      parent: top_plate_user_rail_link
+      xyz: [0.27, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]   
+    - name: front_camera_mount 
+      parent: front_camera_rail_link
+      xyz: [0.04765, 0.0, -0.0225]
+      rpy: [0.0, 0.0, 0.0] 
+  box:
+    - name: rail_post_left
+      parent: top_plate_base_link
+      xyz: [0.235, 0.239, 0.11]
+      rpy: [0.0, 0.0, 0.0]
+      size: [0.04, 0.02, 0.22]
+    - name: rail_post_right
+      parent: top_plate_base_link
+      xyz: [0.235, -0.239, 0.11]
+      rpy: [0.0, 0.0, 0.0]
+      size: [0.04, 0.02, 0.22]
+    - name: rail
+      parent: top_plate_base_link
+      xyz: [0.235, 0.0, 0.23]
+      rpy: [0.0, 0.0, 0.0]
+      size: [0.04, 0.6, 0.02]
+    - name: arm_mount_plate 
+      parent: top_plate_base_link
+      xyz: [-0.214, -0.225, 0.0025]
+      size: [0.13, 0.13, 0.005]
+    - name: front_camera_rail
+      parent: top_plate_user_rail_front_link
+      xyz: [0.0275, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+      size: [0.055, 0.02, 0.04]
+    # - name: basket
+    #   parent: arm_base_link
+    #   xyz: [-0.11, -0.32, 0.16]
+    #   size: [0.30,0.38,0.32]
+    

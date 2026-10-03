@@ -1,0 +1,50 @@
+mdl 1.4;
+
+import ::OmniPBR::OmniPBR;
+import ::base::mono_mode;
+import ::tex::gamma_mode;
+import ::state::normal;
+
+export material acacialeaves(*)
+ = OmniPBR::OmniPBR(
+    diffuse_color_constant: color(0.200000003f, 0.200000003f, 0.200000003f),
+    diffuse_texture: texture_2d("./textures/acacialeaves_basecolor.png" /* tag 2859, version 84331781 */, ::tex::gamma_srgb),
+    albedo_desaturation: 0.f,
+    albedo_add: 0.f,
+    albedo_brightness: 1.f,
+    diffuse_tint: color(1.f, 1.f, 1.f),
+    reflection_roughness_constant: 0.5f,
+    reflection_roughness_texture_influence: 1.f,
+    reflectionroughness_texture: texture_2d("./textures/acacialeaves_roughness.png" /* tag 2862, version 3816381608 */, ::tex::gamma_linear),
+    metallic_constant: 0.f,
+    metallic_texture_influence: 0.f,
+    metallic_texture: texture_2d(),
+    specular_level: 0.5f,
+    enable_ORM_texture: false,
+    ORM_texture: texture_2d(),
+    ao_to_diffuse: 0.f,
+    ao_texture: texture_2d(),
+    enable_emission: false,
+    emissive_color: color(1.f, 0.100000001f, 0.100000001f),
+    emissive_color_texture: texture_2d(),
+    emissive_mask_texture: texture_2d(),
+    emissive_intensity: 40.f,
+    enable_opacity: true,
+    enable_opacity_texture: true,
+    opacity_constant: 1.f,
+    opacity_texture: texture_2d("./textures/acacialeaves_opacity.png" /* tag 2865, version 2820614997 */, ::tex::gamma_linear),
+    opacity_mode: base::mono_average,
+    opacity_threshold: 0.f,
+    bump_factor: 3.f,
+    normalmap_texture: texture_2d("./textures/acacialeaves_normal.png" /* tag 2868, version 3389229659 */, ::tex::gamma_linear),
+    detail_bump_factor: 0.300000012f,
+    detail_normalmap_texture: texture_2d(),
+    project_uvw: false,
+    world_or_object: false,
+    uv_space_index: 0,
+    texture_translate: float2(0.f),
+    texture_rotate: 0.f,
+    texture_scale: float2(1.f),
+    detail_texture_translate: float2(0.f),
+    detail_texture_rotate: 0.f,
+    detail_texture_scale: float2(1.f));

@@ -1,0 +1,8 @@
+sim/assets/**/*.usd filter=lfs diff=lfs merge=lfs -text
+sim/assets/**/*.png filter=lfs diff=lfs merge=lfs -text
+sim/assets/**/*.jpg filter=lfs diff=lfs merge=lfs -text
+sim/assets/**/*.hdr filter=lfs diff=lfs merge=lfs -text
+sim/assets/**/*.dae filter=lfs diff=lfs merge=lfs -text
+sim/assets/**/*.obj filter=lfs diff=lfs merge=lfs -text
+sim/assets/**/*.stl filter=lfs diff=lfs merge=lfs -text
+sim/assets/**/*.STL filter=lfs diff=lfs merge=lfs -text

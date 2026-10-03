@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A simulated fleet of Clearpath robots in Isaac Sim 6.0, driven over ROS 2 Jazzy. Isaac Sim runs in one container (WebRTC streaming or a headed window); each robot is its own ROS 2 container standing in for the robot's onboard computer. Robots are either a generic model (`a300`/`a200`/`j100`/`r100`, with a RealSense D435i) or one of MTU's real robots from `robot_data/<id>/robot.yaml` (`j100_0921`, `j100_0922`, `a200_0284`, `a200_0333`, `a300_00036`, ...), chosen per slot by `ROBOT_MODEL_<i>` in `.env`.
 
-There is no build system, test suite or linter: Docker Compose plus scripts. Git: `main`, remote `origin` = github.com/robotian/multirobot_sim. `colcon_ws/src/` holds git submodules; `mtu32_husky` and `mocap_fake_localizer` track a `sim` branch of their own repos, so commit/push there first, then commit the submodule pointer here. `sim/assets/`, `sim/generated/`, `robot_data/` and `sim/colcon_ws/` are gitignored. `.env` is tracked (no secrets, but holds this machine's LAN IP in `ISAACSIM_HOST`).
+There is no build system, test suite or linter: Docker Compose plus scripts. Git: `main`, remote `origin` = github.com/robotian/multirobot_sim. `colcon_ws/src/` holds git submodules; `mtu32_husky` and `mocap_fake_localizer` track a `sim` branch of their own repos, so commit/push there first, then commit the submodule pointer here. `sim/generated/`, `robot_data/` and the colcon `build/`/`install/`/`log/` dirs (also under `sim/colcon_ws/`) are gitignored; `sim/assets/` is tracked, its binaries (usd, png, jpg, hdr, dae, obj, stl) through Git LFS (`.gitattributes`, run `git lfs install` once per machine). `.env` is tracked (no secrets, but holds this machine's LAN IP in `ISAACSIM_HOST`).
 
 ## Commands
 
@@ -54,6 +54,13 @@ scripts/foxglove_layout.sh [ns...]        # foxglove/<ns>.json layout with the r
 - **ROS workspace** (`colcon_ws/`): MTU's `sim_robot_upstart.launch.py` (MoveIt, `cut_stem`, perception), `moveit_sim_bridge` (the arm's execution path, since there is no ros2_control), Nav2 and dual-GPS localization. See `colcon_ws/CLAUDE.md`.
 - **Web UI** (`tools/sim_ui/`): stdlib-only, binds 127.0.0.1, POSTs require `Content-Type: application/json`. See `tools/sim_ui/CLAUDE.md`.
 - **Real robots**: adding or debugging one of MTU's robots → skill `add-real-robot` (`.claude/skills/add-real-robot/SKILL.md`).
+
+##Important
+- The contents in colcon_ws/src folder should be identical across the robot models. 
+- The colcon_ws/src will be deployed to real robots. It should work in real robots too.
+
+
+
 
 ## Gotchas
 

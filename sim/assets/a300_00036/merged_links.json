@@ -1,0 +1,8 @@
+{
+ "imu_0_base_link": "top_plate_link",
+ "imu_0_link": "top_plate_link",
+ "lidar2d_0_link": "wireless_charger_link",
+ "top_plate_mount_c2": "top_plate_link",
+ "wireless_charger_face": "wireless_charger_link",
+ "wireless_charger_lidar_mount": "wireless_charger_link"
+}

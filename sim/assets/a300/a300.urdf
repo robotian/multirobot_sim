@@ -1,0 +1,605 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="a300">
+  <material name="clearpath_dark_grey">
+    <color rgba="0.2 0.2 0.2 1.0" />
+  </material>
+  <material name="clearpath_medium_grey">
+    <color rgba="0.6 0.6 0.6 1.0" />
+  </material>
+  <material name="clearpath_light_grey">
+    <color rgba="0.8 0.8 0.8 1.0" />
+  </material>
+  <material name="clearpath_yellow">
+    <color rgba="0.8 0.8 0.0 1.0" />
+  </material>
+  <material name="clearpath_black">
+    <color rgba="0.15 0.15 0.15 1.0" />
+  </material>
+  <material name="clearpath_white">
+    <color rgba="1.0 1.0 1.0 1.0" />
+  </material>
+  <material name="clearpath_red">
+    <color rgba="1.0 0.0 0.0 1.0" />
+  </material>
+  <material name="clearpath_aluminum">
+    <color rgba="0.5 0.5 0.5 1" />
+  </material>
+  <material name="clearpath_plastic">
+    <color rgba="0.1 0.1 0.1   1" />
+  </material>
+  
+  <link name="base_link" />
+  
+  <link name="chassis_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/chassis.dae" />
+      </geometry>
+    </visual>
+    <visual>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/livery.dae" />
+      </geometry>
+    </visual>
+    <visual>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/status_lights.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <material name="clearpath_yellow" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/chassis_collision.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="70" />
+      <origin rpy="0 0 0" xyz="0 0 0.1147795" />
+      <inertia ixx="1.1408911178058334" ixy="0" ixz="0" iyy="4.621734451139166" iyz="0" izz="5.147823333333332" />
+    </inertial>
+  </link>
+  <joint name="chassis_joint" type="fixed">
+    <child link="chassis_link" />
+    <parent link="base_link" />
+    <origin rpy="0 0 0" xyz="0 0 0" />
+  </joint>
+  <link name="chassis_left_suspension_mount" />
+  <link name="chassis_right_suspension_mount" />
+  <joint name="chassis_left_suspension_mount_joint" type="fixed">
+    <child link="chassis_left_suspension_mount" />
+    <parent link="chassis_link" />
+    <origin rpy="0 0 0" xyz="0.0 0.192 0.03763" />
+  </joint>
+  <joint name="chassis_right_suspension_mount_joint" type="fixed">
+    <child link="chassis_right_suspension_mount" />
+    <parent link="chassis_link" />
+    <origin rpy="0 0 0" xyz="0.0 -0.192 0.03763" />
+  </joint>
+  
+  <link name="front_bumper_mount" />
+  <link name="rear_bumper_mount" />
+  <joint name="front_bumper_mount_joint" type="fixed">
+    <child link="front_bumper_mount" />
+    <parent link="chassis_link" />
+    <origin rpy="0 0 0" xyz="0.3685 0.0 0.01805" />
+  </joint>
+  <joint name="rear_bumper_mount_joint" type="fixed">
+    <child link="rear_bumper_mount" />
+    <parent link="chassis_link" />
+    <origin rpy="0 0 3.141592653589793" xyz="-0.3685 0.0 0.01805" />
+  </joint>
+  
+  <link name="default_mount" />
+  <joint name="default_mount_joint" type="fixed">
+    <child link="default_mount" />
+    <parent link="chassis_link" />
+    <origin xyz="0.0 0.0 0.229559" />
+  </joint>
+  
+  <link name="left_suspension_beam_spacer_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_spacer.stl" />
+      </geometry>
+      <origin rpy="0 0 0" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_spacer.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="left_suspension_beam_spacer_joint" type="fixed">
+    <parent link="chassis_left_suspension_mount" />
+    <child link="left_suspension_beam_spacer_link" />
+  </joint>
+  
+  <link name="left_suspension_beam_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_beam.stl" />
+      </geometry>
+      <origin rpy="0 0 0" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_beam.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="left_suspension_beam_joint" type="fixed">
+    <parent link="left_suspension_beam_spacer_link" />
+    <child link="left_suspension_beam_link" />
+    <origin xyz="0 0.0159 0" />
+  </joint>
+  
+  <link name="left_suspension_beam_front_mount" />
+  <link name="left_suspension_beam_rear_mount" />
+  <joint name="left_suspension_beam_front_mount_joint" type="fixed">
+    <parent link="left_suspension_beam_link" />
+    <child link="left_suspension_beam_front_mount" />
+    <origin rpy="0 0 0" xyz="0.256 0.0095 -0.0085" />
+  </joint>
+  <joint name="left_suspension_beam_rear_mount_joint" type="fixed">
+    <parent link="left_suspension_beam_link" />
+    <child link="left_suspension_beam_rear_mount" />
+    <origin rpy="0 0 0" xyz="-0.256 0.0095 -0.0085" />
+  </joint>
+  
+  <link name="right_suspension_beam_spacer_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_spacer.stl" />
+      </geometry>
+      <origin rpy="0 0 3.141592653589793" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_spacer.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="right_suspension_beam_spacer_joint" type="fixed">
+    <parent link="chassis_right_suspension_mount" />
+    <child link="right_suspension_beam_spacer_link" />
+  </joint>
+  
+  <link name="right_suspension_beam_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_beam.stl" />
+      </geometry>
+      <origin rpy="0 0 3.141592653589793" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/suspension_beam.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="right_suspension_beam_joint" type="fixed">
+    <parent link="right_suspension_beam_spacer_link" />
+    <child link="right_suspension_beam_link" />
+    <origin xyz="0 -0.0159 0" />
+  </joint>
+  
+  <link name="right_suspension_beam_front_mount" />
+  <link name="right_suspension_beam_rear_mount" />
+  <joint name="right_suspension_beam_front_mount_joint" type="fixed">
+    <parent link="right_suspension_beam_link" />
+    <child link="right_suspension_beam_front_mount" />
+    <origin rpy="0 0 0" xyz="0.256 0.0095 -0.0085" />
+  </joint>
+  <joint name="right_suspension_beam_rear_mount_joint" type="fixed">
+    <parent link="right_suspension_beam_link" />
+    <child link="right_suspension_beam_rear_mount" />
+    <origin rpy="0 0 0" xyz="-0.256 0.0095 -0.0085" />
+  </joint>
+  <link name="front_left_motor_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+      <origin rpy="0 0 3.141592653589793" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="front_left_motor_joint" type="fixed">
+    <parent link="left_suspension_beam_front_mount" />
+    <child link="front_left_motor_link" />
+    <origin rpy="0 0 0" />
+  </joint>
+  <link name="front_left_motor_mount" />
+  <joint name="front_left_motor_mount_joint" type="fixed">
+    <parent link="front_left_motor_link" />
+    <child link="front_left_motor_mount" />
+    <origin xyz="0 0.0655 0" />
+  </joint>
+  <link name="front_right_motor_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+      <origin rpy="0 0 0" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="front_right_motor_joint" type="fixed">
+    <parent link="right_suspension_beam_front_mount" />
+    <child link="front_right_motor_link" />
+    <origin rpy="0 0 0" />
+  </joint>
+  <link name="front_right_motor_mount" />
+  <joint name="front_right_motor_mount_joint" type="fixed">
+    <parent link="front_right_motor_link" />
+    <child link="front_right_motor_mount" />
+    <origin xyz="0 -0.0655 0" />
+  </joint>
+  <link name="front_left_wheel_link">
+    <inertial>
+      <mass value="2.5" />
+      <origin xyz="0 0 0" />
+      <inertia ixx="0.019758025" ixy="0" ixz="0" iyy="0.0340725125" iyz="0" izz="0.019758025" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/wheels/outdoor_left.stl" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 0 0" />
+      <geometry>
+        <cylinder length="0.1143" radius="0.1651" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="front_left_wheel_joint" type="continuous">
+    <parent link="front_left_motor_mount" />
+    <child link="front_left_wheel_link" />
+    <axis rpy="0 0 0" xyz="0 1 0" />
+  </joint>
+  <link name="front_right_wheel_link">
+    <inertial>
+      <mass value="2.5" />
+      <origin xyz="0 0 0" />
+      <inertia ixx="0.019758025" ixy="0" ixz="0" iyy="0.0340725125" iyz="0" izz="0.019758025" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 3.141592653589793" xyz="0 0 0" />
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/wheels/outdoor_right.stl" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 0 0" />
+      <geometry>
+        <cylinder length="0.1143" radius="0.1651" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="front_right_wheel_joint" type="continuous">
+    <parent link="front_right_motor_mount" />
+    <child link="front_right_wheel_link" />
+    <axis rpy="0 0 0" xyz="0 1 0" />
+  </joint>
+  <link name="rear_left_motor_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+      <origin rpy="0 0 3.141592653589793" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="rear_left_motor_joint" type="fixed">
+    <parent link="left_suspension_beam_rear_mount" />
+    <child link="rear_left_motor_link" />
+    <origin rpy="0 0 0" />
+  </joint>
+  <link name="rear_left_motor_mount" />
+  <joint name="rear_left_motor_mount_joint" type="fixed">
+    <parent link="rear_left_motor_link" />
+    <child link="rear_left_motor_mount" />
+    <origin xyz="0 0.0655 0" />
+  </joint>
+  <link name="rear_right_motor_link">
+    <visual>
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+      <origin rpy="0 0 0" />
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/motor.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="rear_right_motor_joint" type="fixed">
+    <parent link="right_suspension_beam_rear_mount" />
+    <child link="rear_right_motor_link" />
+    <origin rpy="0 0 0" />
+  </joint>
+  <link name="rear_right_motor_mount" />
+  <joint name="rear_right_motor_mount_joint" type="fixed">
+    <parent link="rear_right_motor_link" />
+    <child link="rear_right_motor_mount" />
+    <origin xyz="0 -0.0655 0" />
+  </joint>
+  <link name="rear_left_wheel_link">
+    <inertial>
+      <mass value="2.5" />
+      <origin xyz="0 0 0" />
+      <inertia ixx="0.019758025" ixy="0" ixz="0" iyy="0.0340725125" iyz="0" izz="0.019758025" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/wheels/outdoor_left.stl" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 0 0" />
+      <geometry>
+        <cylinder length="0.1143" radius="0.1651" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="rear_left_wheel_joint" type="continuous">
+    <parent link="rear_left_motor_mount" />
+    <child link="rear_left_wheel_link" />
+    <axis rpy="0 0 0" xyz="0 1 0" />
+  </joint>
+  <link name="rear_right_wheel_link">
+    <inertial>
+      <mass value="2.5" />
+      <origin xyz="0 0 0" />
+      <inertia ixx="0.019758025" ixy="0" ixz="0" iyy="0.0340725125" iyz="0" izz="0.019758025" />
+    </inertial>
+    <visual>
+      <origin rpy="0 0 3.141592653589793" xyz="0 0 0" />
+      <material name="clearpath_dark_grey" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/drivetrain/wheels/outdoor_right.stl" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="1.5707963267948966 0 0" xyz="0 0 0" />
+      <geometry>
+        <cylinder length="0.1143" radius="0.1651" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="rear_right_wheel_joint" type="continuous">
+    <parent link="rear_right_motor_mount" />
+    <child link="rear_right_wheel_link" />
+    <axis rpy="0 0 0" xyz="0 1 0" />
+  </joint>
+  
+  <link name="base_footprint" />
+  <joint name="base_footprint_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0.1651" />
+    <parent link="chassis_link" />
+    <child link="base_footprint" />
+  </joint>
+  
+  
+  <link name="front_bumper_link">
+    <visual>
+      <origin xyz="-0.368500 0 -0.018050" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/attachments/bumper.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.368500 0 -0.018050" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/attachments/bumper_collision.stl" />
+      </geometry>
+    </collision>
+  </link>
+  
+  <joint name="front_bumper_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0" />
+    <parent link="front_bumper_mount" />
+    <child link="front_bumper_link" />
+  </joint>
+  
+  <link name="rear_bumper_link">
+    <visual>
+      <origin xyz="-0.368500 0 -0.018050" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/attachments/bumper.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.368500 0 -0.018050" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/attachments/bumper_collision.stl" />
+      </geometry>
+    </collision>
+  </link>
+  
+  <joint name="rear_bumper_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0" />
+    <parent link="rear_bumper_mount" />
+    <child link="rear_bumper_link" />
+  </joint>
+  
+  <link name="top_plate_link">
+    <visual>
+      <origin xyz="0.0 0.0 -0.229559" />
+      <geometry>
+        <mesh filename="meshes/clearpath_platform_description/meshes/a300/attachments/top_plate.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0 0.0 0.00635" />
+      <geometry>
+        <box size="0.74 0.42 0.0127" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="top_plate_joint" type="fixed">
+    <parent link="default_mount" />
+    <child link="top_plate_link" />
+    <origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0" />
+  </joint>
+  
+  <link name="top_plate_default_mount" />
+  <joint name="top_plate_default_joint" type="fixed">
+    <parent link="top_plate_link" />
+    <child link="top_plate_default_mount" />
+    <origin xyz="0.0 0.0 0.0127" />
+  </joint>
+  
+  <link name="top_plate_front_mount" />
+  <joint name="top_plate_front_joint" type="fixed">
+    <parent link="top_plate_default_mount" />
+    <child link="top_plate_front_mount" />
+    <origin xyz="0.37 0 0" />
+  </joint>
+  
+  <link name="top_plate_rear_mount" />
+  <joint name="top_plate_rear_joint" type="fixed">
+    <parent link="top_plate_default_mount" />
+    <child link="top_plate_rear_mount" />
+    <origin xyz="-0.37 0 0" />
+  </joint>
+  
+  
+  
+  
+  <joint name="camera_0_joint" type="fixed">
+    <origin rpy="0.0 0.0 0.0" xyz="0.35 0.0 0.05" />
+    <parent link="top_plate_link" />
+    <child link="camera_0_bottom_screw_frame" />
+  </joint>
+  <link name="camera_0_bottom_screw_frame" />
+  <joint name="camera_0_link_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0.010600000000000002 0.0175 0.0125" />
+    <parent link="camera_0_bottom_screw_frame" />
+    <child link="camera_0_link" />
+  </joint>
+  <link name="camera_0_link">
+    <visual>
+      
+      <origin rpy="1.5707963267948966 0 1.5707963267948966" xyz="0.0043 -0.0175 0" />
+      <geometry>
+        <mesh filename="meshes/realsense2_description/meshes/d435.obj" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 -0.0175 0" />
+      <geometry>
+        <box size="0.02505 0.09 0.025" />
+      </geometry>
+    </collision>
+    <inertial>
+      
+      <mass value="0.072" />
+      <origin xyz="0 0 0" />
+      <inertia ixx="0.003881243" ixy="0.0" ixz="0.0" iyy="0.000498940" iyz="0.0" izz="0.003879257" />
+    </inertial>
+  </link>
+  
+  <joint name="camera_0_depth_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0" />
+    <parent link="camera_0_link" />
+    <child link="camera_0_depth_frame" />
+  </joint>
+  <link name="camera_0_depth_frame" />
+  <joint name="camera_0_depth_optical_joint" type="fixed">
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+    <parent link="camera_0_depth_frame" />
+    <child link="camera_0_depth_optical_frame" />
+  </joint>
+  <link name="camera_0_depth_optical_frame" />
+  
+  <joint name="camera_0_infra1_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0.0 0" />
+    <parent link="camera_0_link" />
+    <child link="camera_0_infra1_frame" />
+  </joint>
+  <link name="camera_0_infra1_frame" />
+  <joint name="camera_0_infra1_optical_joint" type="fixed">
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+    <parent link="camera_0_infra1_frame" />
+    <child link="camera_0_infra1_optical_frame" />
+  </joint>
+  <link name="camera_0_infra1_optical_frame" />
+  
+  <joint name="camera_0_infra2_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 -0.05 0" />
+    <parent link="camera_0_link" />
+    <child link="camera_0_infra2_frame" />
+  </joint>
+  <link name="camera_0_infra2_frame" />
+  <joint name="camera_0_infra2_optical_joint" type="fixed">
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+    <parent link="camera_0_infra2_frame" />
+    <child link="camera_0_infra2_optical_frame" />
+  </joint>
+  <link name="camera_0_infra2_optical_frame" />
+  
+  <joint name="camera_0_color_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0.015 0" />
+    <parent link="camera_0_link" />
+    <child link="camera_0_color_frame" />
+  </joint>
+  <link name="camera_0_color_frame" />
+  <joint name="camera_0_color_optical_joint" type="fixed">
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+    <parent link="camera_0_color_frame" />
+    <child link="camera_0_color_optical_frame" />
+  </joint>
+  <link name="camera_0_color_optical_frame" />
+  <link name="camera_0_accel_frame" />
+  <link name="camera_0_accel_optical_frame" />
+  <link name="camera_0_gyro_frame" />
+  <link name="camera_0_gyro_optical_frame" />
+  <joint name="camera_0_accel_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="-0.01174 -0.00552 0.0051" />
+    <parent link="camera_0_link" />
+    <child link="camera_0_accel_frame" />
+  </joint>
+  <joint name="camera_0_accel_optical_joint" type="fixed">
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+    <parent link="camera_0_accel_frame" />
+    <child link="camera_0_accel_optical_frame" />
+  </joint>
+  <joint name="camera_0_gyro_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="-0.01174 -0.00552 0.0051" />
+    <parent link="camera_0_link" />
+    <child link="camera_0_gyro_frame" />
+  </joint>
+  <joint name="camera_0_gyro_optical_joint" type="fixed">
+    <origin rpy="-1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0" />
+    <parent link="camera_0_gyro_frame" />
+    <child link="camera_0_gyro_optical_frame" />
+  </joint>
+  </robot>

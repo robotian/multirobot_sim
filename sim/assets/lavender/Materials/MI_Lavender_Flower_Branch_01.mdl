@@ -1,0 +1,257 @@
+mdl 1.6;
+
+import ::math::*;
+import ::state::*;
+import ::tex::*;
+import ::anno::*;
+import ::scene::*;
+using OmniUe4Function import *;
+using OmniUe4Subsurface import *;
+
+export annotation sampler_color();
+export annotation sampler_normal();
+export annotation sampler_grayscale();
+export annotation sampler_alpha();
+export annotation sampler_masks();
+export annotation sampler_distancefield();
+export annotation dither_masked_off();
+export annotation world_space_normal();
+
+export material MI_Lavender_Flower_Branch_01(
+	float Flatness_S_ = 0.75
+	[[
+		anno::display_name("Flatness (S)"),
+		anno::ui_order(32),
+		anno::in_group("03 - Normal Detail")
+	]],
+	float Brightnessdots = 3.0
+	[[
+		anno::display_name("Brightness dots"),
+		anno::ui_order(4),
+		anno::in_group("01 - Albedo")
+	]],
+	float4 TintColor = float4(0.28643,0.196965,0.458333,1.0)
+	[[
+		anno::display_name("Tint Color"),
+		anno::in_group("01 - Albedo")
+	]],
+	float ContrastFlower = 4.0
+	[[
+		anno::display_name("Contrast Flower"),
+		anno::ui_order(4),
+		anno::in_group("01 - Albedo")
+	]],
+	float4 FresnelColor = float4(0.624939,0.429742,1.0,1.0)
+	[[
+		anno::display_name("Fresnel Color"),
+		anno::ui_order(1),
+		anno::in_group("01 - Fresnel (on Albedo)")
+	]],
+	float FresnelExponentIn = 0.3
+	[[
+		anno::display_name("Fresnel ExponentIn"),
+		anno::ui_order(2),
+		anno::in_group("01 - Fresnel (on Albedo)")
+	]],
+	float FresnelBaseReflectFractionIn = -3.9
+	[[
+		anno::display_name("Fresnel BaseReflectFractionIn"),
+		anno::ui_order(3),
+		anno::in_group("01 - Fresnel (on Albedo)")
+	]],
+	float Metallic = 0.5
+	[[
+		anno::display_name("Metallic"),
+		anno::in_group("02 - Reflectivity")
+	]],
+	float3 SubsurfaceColor = float3(0.55, 0.35, 0.72)
+	[[
+		anno::display_name("Subsurface Color"),
+		anno::description("Tint of light transmitted through the thin petal geometry from behind -- 0 disables translucency entirely."),
+		anno::in_group("07 - Subsurface")
+	]],
+	float SubsurfaceOpacity = 0.6
+	[[
+		anno::display_name("Subsurface Opacity"),
+		anno::description("1.0 = fully opaque (no light passes through). Lower values let more light transmit through the petal."),
+		anno::in_group("07 - Subsurface")
+	]],
+	float Roughness = 0.8
+	[[
+		anno::display_name("Roughness"),
+		anno::ui_order(1),
+		anno::in_group("02 - Reflectivity")
+	]],
+	float WindSpeedMultiplier = 1.0
+	[[
+		anno::display_name("Wind Speed Multiplier")
+	]],
+	float WindSpeed_S_ = 1.0
+	[[
+		anno::display_name("WindSpeed (S)"),
+		anno::ui_order(5),
+		anno::in_group("05 - Wind (if activated, this override the values from the Material Collection Parameter)")
+	]],
+	float TilingWindTurbulence = 5.0
+	[[
+		anno::display_name("Tiling Wind Turbulence"),
+		anno::ui_order(1),
+		anno::in_group("05 - Wind (if activated, this override the values from the Material Collection Parameter)")
+	]],
+	float WPOIntensity = 2.0
+	[[
+		anno::display_name("WPO Intensity"),
+		anno::ui_order(2),
+		anno::in_group("05 - Wind (if activated, this override the values from the Material Collection Parameter)")
+	]],
+	int NumberInstances = 0
+	[[
+		anno::hidden()
+	]],
+	float WindIntensityMultiplier = 1.5
+	[[
+		anno::display_name("Wind Intensity Multiplier")
+	]],
+	float WindWeight = 0.0
+	[[
+		anno::display_name("Wind Weight"),
+		anno::ui_order(3),
+		anno::in_group("05 - Wind (if activated, this override the values from the Material Collection Parameter)")
+	]],
+	float WindIntensity = 1.0
+	[[
+		anno::display_name("Wind Intensity"),
+		anno::ui_order(4),
+		anno::in_group("05 - Wind (if activated, this override the values from the Material Collection Parameter)")
+	]],
+	float ObjectRadius_S_ = 0.4
+	[[
+		anno::display_name("Object Radius (S)"),
+		anno::ui_order(32),
+		anno::in_group("06 - Object Size (for Wind)")
+	]],
+	float Contrast_S_ = 2.0
+	[[
+		anno::display_name("Contrast (S)"),
+		anno::ui_order(32),
+		anno::in_group("06 - Object Size (for Wind)")
+	]],
+	int MaxTexCoordIndex = 3
+	[[
+		anno::hidden()
+	]])
+[[
+	distill_off()
+]]
+ = 
+	let {
+	float3 Local11 = math::normalize(float3(float4(0.0,1.0,0.0,1.0).x,float4(0.0,1.0,0.0,1.0).y,float4(0.0,1.0,0.0,1.0).z));
+	float Local12 = (WindSpeedMultiplier * WindSpeed_S_);
+	float Local13 = (Local12 / 10.0);
+	float Local14 = (state::animation_time() * Local13);
+	float Local15 = (Local14 * -0.5);
+	float Local16 = (float4(0.0,1.0,0.0,1.0).w * Local15);
+	float3 Local17 = (Local11 * Local16);
+	float3 Local18 = ((::convert_to_left_hand(state::transform_point(state::coordinate_internal,state::coordinate_world,state::position()), true)*state::meters_per_scene_unit()*100.0) / 1024.0);
+	float3 Local19 = (Local17 + Local18);
+	float3 Local20 = (Local19 + 0.5);
+	float3 Local21 = math::frac(Local20);
+	float3 Local22 = (Local21 * 2.0);
+	float3 Local23 = (Local22 + -1.0);
+	float3 Local24 = math::abs(Local23);
+	float3 Local25 = (Local24 * 2.0);
+	float3 Local26 = (3.0 - Local25);
+	float3 Local27 = (Local26 * Local24);
+	float3 Local28 = (Local27 * Local24);
+	float Local29 = math::dot(Local11, Local28);
+	float3 Local30 = ((::convert_to_left_hand(state::transform_point(state::coordinate_internal,state::coordinate_world,state::position()), true)*state::meters_per_scene_unit()*100.0) / 200.0);
+	float3 Local31 = (Local16 + Local30);
+	float3 Local32 = (Local31 + 0.5);
+	float3 Local33 = math::frac(Local32);
+	float3 Local34 = (Local33 * 2.0);
+	float3 Local35 = (Local34 + -1.0);
+	float3 Local36 = math::abs(Local35);
+	float3 Local37 = (Local36 * 2.0);
+	float3 Local38 = (3.0 - Local37);
+	float3 Local39 = (Local38 * Local36);
+	float3 Local40 = (Local39 * Local36);
+	float3 Local41 = (Local40 - 0.0);
+	float Local42 = math::length(Local41);
+	float Local43 = (Local29 + Local42);
+	float Local44 = (Local43 * 6.283185);
+	float3 Local45 = math::cross(Local11,float3(0.0,0.0,1.0));
+	float Local46 = math::frac(Local14);
+	float Local47 = (TilingWindTurbulence / 1000.0);
+	float2 Local48 = (float2((::convert_to_left_hand(state::transform_point(state::coordinate_internal,state::coordinate_world,state::position()), true)*state::meters_per_scene_unit()*100.0).x,(::convert_to_left_hand(state::transform_point(state::coordinate_internal,state::coordinate_world,state::position()), true)*state::meters_per_scene_unit()*100.0).y) * Local47);
+	float2 Local49 = (float2(Local46,Local46) + Local48);
+	float4 Local50 = ::greyscale_texture_lookup(tex::lookup_float4(texture_2d("./Textures/LowResBlurredNoise.png",::tex::gamma_linear),float2(Local49.x,1.0-Local49.y),tex::wrap_repeat,tex::wrap_repeat));
+	float Local51 = (WPOIntensity * Local50.x);
+	float Local52 = (Local50.x + Local51);
+	float Local53 = math::min(math::max(::per_instance_random(texture_2d("./Textures/PerlinNoiseGradientTexture.png",tex::gamma_linear), NumberInstances),0.5),10.0);
+	float Local54 = (Local53 * WindIntensityMultiplier);
+	float Local55 = (1.0 - Local54);
+	float Local56 = math::lerp(Local52,2.5,Local55);
+	float3 Local57 = (Local56 + float3(0.0,0.0,-10.0));
+	float3 Local58 = ::rotate_about_axis(float4(Local45.x,Local45.y,Local45.z,Local44),Local57,float3(Local56,Local56,Local56));
+	float3 Local59 = (Local58 * WindWeight);
+	float3 Local60 = (Local59 * Local50.x);
+	float3 Local61 = (Local60 + Local56);
+	float Local62 = (WindIntensityMultiplier * WindIntensity);
+	float3 Local63 = (Local61 * Local62);
+	float3 Local64 = ((::convert_to_left_hand(state::transform_point(state::coordinate_internal,state::coordinate_world,state::position()), true)*state::meters_per_scene_unit()*100.0) - ::object_world_position(true));
+	float Local65 = (::object_radius() * ObjectRadius_S_);
+	float Local66 = (Local64.z / Local65);
+	float Local67 = math::min(math::max(Local66,-1.0),1.0);
+	float Local68 = (1.0 + Local67);
+	float Local69 = (Local68 * 0.5);
+	float Local70 = math::pow(math::max(Local69,float(0.000001)),Contrast_S_);
+	float3 Local71 = math::lerp(float3(0.0,0.0,0.0),Local63,Local70);
+
+	float3 WorldPositionOffset_mdl = Local71;
+	float2 CustomizedUV0_mdl = float2(state::texture_coordinate(math::min(0,MaxTexCoordIndex)).x,1.0-state::texture_coordinate(math::min(0,MaxTexCoordIndex)).y);
+
+	float4 Local0 = ::unpack_normal_map(tex::lookup_float4(texture_2d("./Textures/T_Lavender_Flower_02_Normal.png",::tex::gamma_linear),float2(CustomizedUV0_mdl.x,1.0-CustomizedUV0_mdl.y),tex::wrap_repeat,tex::wrap_repeat));
+	float3 Local1 = math::lerp(float3(Local0.x,Local0.y,Local0.z),float3(0.0,0.0,1.0),Flatness_S_);
+
+	float3 Normal_mdl = Local1;
+
+	float4 Local2 = tex::lookup_float4(texture_2d("./Textures/T_Lavender_Flower_Mask.png",::tex::gamma_linear),float2(CustomizedUV0_mdl.x,1.0-CustomizedUV0_mdl.y),tex::wrap_repeat,tex::wrap_repeat);
+	float3 Local3 = (float3(Local2.x,Local2.y,Local2.z) * Brightnessdots);
+	float4 Local4 = tex::lookup_float4(texture_2d("./Textures/T_Lavender_Flower_Albedo.png",::tex::gamma_srgb),float2(CustomizedUV0_mdl.x,1.0-CustomizedUV0_mdl.y),tex::wrap_repeat,tex::wrap_repeat);
+	float3 Local6 = math::pow(math::max(float3(CustomizedUV0_mdl.y,CustomizedUV0_mdl.y,CustomizedUV0_mdl.y),float3(0.000001)),float3(ContrastFlower,ContrastFlower,ContrastFlower));
+	float3 Local7 = math::lerp(float3(Local4.x,Local4.y,Local4.z),float3(TintColor.x,TintColor.y,TintColor.z),Local6);
+	float3 Local8 = (Local3 + Local7);
+	float Local9 = ::fresnel(FresnelExponentIn, FresnelBaseReflectFractionIn, ::pixel_normal_world_space(true));
+	float3 Local10 = math::lerp(Local8,float3(FresnelColor.x,FresnelColor.y,FresnelColor.z),Local9);
+
+	float3 EmissiveColor_mdl = float3(0.0,0.0,0.0);
+	// Opacity here isn't camera-facing transparency (that's OpacityMask_mdl, still 1.0/solid below) -- inside
+	// OmniUe4Subsurface it only controls how the BSDF's own fixed 50% "subsurface" weight splits between a
+	// subsurface reflection lobe and a real df::diffuse_transmission_bsdf lobe (transmit weight = (1-opacity)*
+	// 0.5). At the old hardcoded 1.0, that transmit weight was always exactly zero -- no light ever passed
+	// through -- and SubsurfaceColor_mdl was hardcoded black, which wasted the other half too (a subsurface
+	// reflection lobe tinted pure black). Wiring both to real exposed parameters fixes the energy loss and
+	// gives real light-through-thin-petal translucency, tunable per-instance like TintColor.
+	float Opacity_mdl = SubsurfaceOpacity;
+	float OpacityMask_mdl = 1.0;
+	float3 BaseColor_mdl = Local10;
+	float Metallic_mdl = Metallic;
+	float Specular_mdl = 0.5;
+	float Roughness_mdl = Roughness;
+	float3 SubsurfaceColor_mdl = SubsurfaceColor;
+	float SurfaceThickness_mdl = 0.01;
+	float Displacement_mdl = 0.0;
+
+	} in
+		::OmniUe4Subsurface(
+			base_color: BaseColor_mdl,
+			metallic: Metallic_mdl,
+			roughness: Roughness_mdl,
+			specular: Specular_mdl,
+			normal: Normal_mdl,
+			opacity: Opacity_mdl,
+			emissive_color: EmissiveColor_mdl,
+			displacement: WorldPositionOffset_mdl,
+			opacity_mask: OpacityMask_mdl,
+			subsurface_color: SubsurfaceColor_mdl,
+			two_sided: true);

@@ -1,0 +1,9 @@
+{
+ "axle_link": "chassis_link",
+ "front_cover_link": "chassis_link",
+ "front_lights_link": "chassis_link",
+ "left_side_cover_link": "chassis_link",
+ "rear_cover_link": "chassis_link",
+ "rear_lights_link": "chassis_link",
+ "right_side_cover_link": "chassis_link"
+}
