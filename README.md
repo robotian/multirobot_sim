@@ -438,7 +438,7 @@ The plant is a Nanite mesh exported from Unreal, shipped with its own real MDL s
 
 1. **Real shaders.** Each material's existing shader prim (which already carried the correct `TintColor`/`ColorFresnel`/... values from the Unreal export) now points at its real `.mdl` module in `Materials/`, instead of nothing.
 2. **`doubleSided`.** All 5 mesh sections had `doubleSided=False`; for blade-thin foliage geometry like this, that silently culls/darkens roughly half of all viewing angles. Set to `True`.
-3. **Subsurface translucency.** The shaders are built on NVIDIA's `OmniUe4Subsurface` module, which has a real `diffuse_transmission_bsdf` lobe for light passing through thin geometry — but every material hard-coded `subsurface_color = 0` (black) and `opacity = 1.0` in its `.mdl` source, which disabled transmission entirely *and* wasted half its shading budget on a black reflection lobe. `MI_Stem_01.mdl` and `MI_Lavender_Flower_Branch_01.mdl` now expose this as two real, tunable parameters — **Subsurface Color** and **Subsurface Opacity** — under a new "07 - Subsurface" parameter group. `MI_Leaf_01`/`MI_Leaf_high_01` still have it hard-coded off; the same fix would apply there too if it matters.
+3. **Subsurface translucency.** The shaders are built on NVIDIA's `OmniUe4Subsurface` module, which has a real `diffuse_transmission_bsdf` lobe for light passing through thin geometry — but every material hard-coded `subsurface_color = 0` (black) and `opacity = 1.0` in its `.mdl` source, which disabled transmission entirely *and* wasted half its shading budget on a black reflection lobe. `MI_Stem_01.mdl`, `MI_Lavender_Flower_Branch_01.mdl` and `MI_Leaf_01.mdl` now expose this as two real, tunable parameters — **Subsurface Color** and **Subsurface Opacity** — under a new "07 - Subsurface" parameter group. With the subsurface colour left black, `MI_Leaf_01` (the dense leaves at the base of each clump) rendered at half its albedo and looked much darker than the stems. `MI_Leaf_high_01` still has it hard-coded off.
 
 | Close-up | In the scene |
 |---|---|
@@ -464,7 +464,12 @@ Current tuned values, as a reference starting point:
 | `MI_Lavender_Flower_Branch_01` | Subsurface Color | `(0.55, 0.35, 0.72)` |
 | `MI_Lavender_Flower_Branch_01` | Subsurface Opacity | `0.6` |
 | `MI_Stem_01` | Subsurface Color | `(0.55, 0.80, 0.35)` |
-| `MI_Stem_01` | Subsurface Opacity | `0.6` |
+| `MI_Stem_01` | Subsurface Opacity | `0.25` (was `0.6`, stems too bright) |
+| `MI_Leaf_01` | Base Color | `(1.5, 1.5, 1.5)` (was `(1, 1, 1)`) |
+| `MI_Leaf_01` | Subsurface Color | `(0.45, 0.60, 0.42)` (was hard-coded black) |
+| `MI_Leaf_01` | Subsurface Opacity | `0.25` |
+
+The values are authored on the shader prims in `SM_Lavender_Nanite_01.usd`; the `.mdl` defaults only apply where the USD sets nothing. The file before the 2026-10-03 stem and leaf change is `SM_Lavender_Nanite_01.usd.bak-20261003` (and `Materials/MI_Leaf_01.mdl.bak-20261003`). The lavender asset is shared, so these changes apply to both the built-in `lavender` scene and `lavender_farm.usd`.
 
 ## Known limitations
 
