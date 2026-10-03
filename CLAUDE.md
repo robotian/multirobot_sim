@@ -19,6 +19,7 @@ scripts/fleet.sh spawn [N] [--poses JSON] # spawn N robots (models ROBOT_MODEL_<
 scripts/fleet.sh [N|down]                 # scene + spawn N / stop everything (same as scripts/stop_sim.sh)
 scripts/fleet_ctl.py state|wait-scene|spawn|clear|reset   # host side of the spawn protocol (fleet.sh and the web UI use it)
 scripts/colcon_build.sh [colcon args...]  # colcon build ~/colcon_ws (as `robot`) in every running robot container
+scripts/make_farm_scene.py                # sim/scene/lavender_farm.usd from the farm DB's object_data (use: SIM_SCENE=lavender_farm.usd)
 python3 tools/sim_ui/server.py            # web UI on http://127.0.0.1:8090 (start/stop/reset, spawn at poses, arm moves, Cut stem)
 SIM_MODE=headed scripts/fleet.sh          # Isaac's desktop window instead of WebRTC (needs x11_auth.sh; ~3 min to start)
 docker compose logs -f isaac-sim          # sim's own lines are prefixed [fleet]
