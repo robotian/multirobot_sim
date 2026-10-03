@@ -286,7 +286,7 @@ function drawMap() {
   for (let gy = Math.ceil(y0); gy <= y1; gy++) { g.globalAlpha = gy % 5 ? 0.25 : 0.7; g.beginPath(); g.moveTo(0, Y(gy)); g.lineTo(W, Y(gy)); g.stroke(); }
   g.globalAlpha = 1; g.fillText('x →', W - 26, Y(0) - 3); g.fillText('y ↑', X(0) + 3, 10);
   g.fillStyle = '#9b7fd0';
-  rows.forEach(([a, b, y]) => g.fillRect(X(a), Y(y) - 0.6 * s, (b - a) * s, 1.2 * s));
+  rows.forEach(([a, b, y, w = 1.2]) => g.fillRect(X(a), Y(y) - w / 2 * s, (b - a) * s, w * s));
   const robot = (x, y, yaw, color, label, sel) => {
     const r = 0.45 * s, t = yaw * Math.PI / 180;
     g.save(); g.translate(X(x), Y(y)); g.rotate(-t);

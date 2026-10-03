@@ -1413,7 +1413,9 @@ def build_file_world(stage, name):
     if not any(p.HasAPI(UsdLux.LightAPI) for p in prims):
         log(f"scene {name}: no light in it, adding the default lights")
         add_lights(stage)
-    return {"lavender_rows": []}
+    # rows recorded by scripts/make_farm_scene.py ([x_min, x_max, y, width]), for the web UI's spawn map
+    rows = layer.customLayerData.get("lavender_rows") or []
+    return {"lavender_rows": [[float(v) for v in r] for r in rows]}
 
 
 def build_world(stage):
