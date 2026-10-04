@@ -45,6 +45,13 @@ SRDF = "/etc/clearpath/robot.srdf"  # written at container boot; sim_robot_upsta
 SRDF_WAIT_S = 120
 LAUNCH_CMD = ("source /home/robot/colcon_ws/install/setup.bash && "
               f"exec ros2 launch mtu32_bringup sim_robot_upstart.launch.py > {LAUNCH_LOG} 2>&1")
+# RViz from clearpath_viz (colcon_ws/src/clearpath_desktop), opened on the host display through the container's X11
+# mount; one window per view and robot. The launch exits when its rviz2 window is closed.
+RVIZ_VIEWS = ("navigation", "moveit", "robot")
+RVIZ_MATCH = r"clearpath_viz view_(navigation|moveit|robot)\.launch\.py"
+RVIZ_CMD = ("source /home/robot/colcon_ws/install/setup.bash && "
+            "exec ros2 launch clearpath_viz view_{view}.launch.py namespace:=$ROBOT_NAMESPACE "
+            "use_sim_time:=${{USE_SIM_TIME:-false}} > /tmp/rviz_{view}.log 2>&1")
 
 
 def sh(argv, timeout=30):
@@ -220,10 +227,13 @@ def robots():
         r["launch"] = False
         r["move_group"] = False
         r["cut_stem_action"] = False
+        r["rviz"] = []
         if r["state"] == "running":
             code, _ = sh(["docker", "exec", r["name"], "pgrep", "-f", "sim_robot_upstart.launch.py"], timeout=10)
             r["launch"] = code == 0
             r["cutting"] = sh(["docker", "exec", r["name"], "pgrep", "-f", CUT_MATCH], timeout=10)[0] == 0
+            _, out = sh(["docker", "exec", r["name"], "pgrep", "-af", RVIZ_MATCH], timeout=10)
+            r["rviz"] = sorted(set(re.findall(r"view_(navigation|moveit|robot)\.launch\.py", out)))
             # Check move_group availability (only check if launch is running)
             if r["launch"]:
                 code, _ = in_robot(r["name"], "ros2 node list 2>/dev/null | grep -q move_group", timeout=5)
@@ -410,6 +420,37 @@ def act_launch_stop(body):
     return start_job(f"{robot}: restart_ros", lambda j: j.run(["docker", "exec", robot, "restart_ros"]) == 0)
 
 
+def act_rviz_start(body):
+    robot = running_robot(body.get("robot"))
+    view = body.get("view")
+    if view not in RVIZ_VIEWS:
+        raise ValueError(f"view must be one of {RVIZ_VIEWS}")
+
+    def fn(j):
+        if sh(["docker", "exec", robot, "pgrep", "-f", f"clearpath_viz view_{view}.launch.py"])[0] == 0:
+            j.log(f"view_{view} is already open")
+            return True
+        if in_robot(robot, "source /home/robot/colcon_ws/install/setup.bash && ros2 pkg prefix clearpath_viz")[0] != 0:
+            j.log("clearpath_viz is not built: scripts/colcon_build.sh --packages-select clearpath_viz")
+            return False
+        env = dict(os.environ)
+        display = host_display()
+        if display:
+            env["DISPLAY"] = display
+            j.run(["scripts/x11_auth.sh"], env=env)  # /tmp/.docker.xauth, mounted into the robot containers
+        if j.run(["docker", "exec", "-d", robot, "bash", "-c", RVIZ_CMD.format(view=view)]) != 0:
+            return False
+        time.sleep(3)  # no display / bad package: the launch exits within a second or two
+        if sh(["docker", "exec", robot, "pgrep", "-f", f"clearpath_viz view_{view}.launch.py"])[0] != 0:
+            j.log("the launch exited right away; end of its log:")
+            j.log(in_robot(robot, f"tail -n 15 /tmp/rviz_{view}.log")[1].rstrip())
+            return False
+        j.log(f"started; output in {robot}:/tmp/rviz_{view}.log")
+        return True
+
+    return start_job(f"{robot}: rviz {view}", fn)
+
+
 def act_cutstem_start(body):
     robot = running_robot(body.get("robot"))
 
@@ -501,6 +542,7 @@ POST = {
     "/api/launch/stop": act_launch_stop,
     "/api/arm/goto": act_arm_goto,
     "/api/cutstem/start": act_cutstem_start,
+    "/api/rviz/start": act_rviz_start,
     "/api/cutstem/stop": act_cutstem_stop,
 }
 GET = {

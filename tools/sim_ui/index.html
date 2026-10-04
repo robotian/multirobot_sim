@@ -322,7 +322,7 @@ function renderRobots() {
   // sig cleared too: the same robots coming back (e.g. respawned) would otherwise match it and never be drawn
   if (!status.robots.length) { box.innerHTML = '<span class="muted">no robot containers</span>'; delete box.dataset.sig; return; }
   // Only rebuild when the set/state of robots changes, so inputs being edited aren't wiped every poll.
-  const sig = JSON.stringify(status.robots.map(r => [r.name, r.state, r.launch, r.cutting, r.move_group, r.cut_stem_action]));
+  const sig = JSON.stringify(status.robots.map(r => [r.name, r.state, r.launch, r.cutting, r.move_group, r.cut_stem_action, r.rviz]));
   if (box.dataset.sig === sig) return;
   box.dataset.sig = sig;
   box.innerHTML = status.robots.map(r => {
@@ -343,6 +343,12 @@ function renderRobots() {
           title="Ctrl+C on the goal client: cancels the running cut_stem goal">Stop cutting</button>
         <button class="ghost" onclick="showLaunchLog('${esc(r.name)}')">Launch log</button>
         <button class="ghost" onclick="showJoints('${esc(r.name)}')">Joints</button></div>
+      <div class="row"><span class="muted">RViz</span>
+        ${[['navigation', 'Navigation'], ['moveit', 'MoveIt'], ['robot', 'Robot']].map(([v, label]) => {
+          const on = (r.rviz || []).includes(v);
+          return `<button class="ghost" onclick="post('/api/rviz/start',{robot:'${esc(r.name)}',view:'${v}'})" ${on ? 'disabled' : ''}
+            title="ros2 launch clearpath_viz view_${v}.launch.py namespace:=${esc(r.name)}${on ? ' (open; close its window to stop it)' : ''}">${label}${on ? ' (open)' : ''}</button>`;
+        }).join('')}</div>
       <details data-robot="${esc(r.name)}" ${open.has(r.name) || r.launch ? 'open' : ''} ontoggle="this.open && loadStates('${esc(r.name)}')">
         <summary>Arm</summary>
         <div class="row">
