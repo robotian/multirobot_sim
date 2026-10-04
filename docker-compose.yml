@@ -36,6 +36,9 @@ x-robot: &robot
     DISPLAY: ${DISPLAY:-:0}
     XAUTHORITY: /tmp/.docker.xauth
     QT_X11_NO_MITSHM: "1"
+    # uid/gid for the containers' `robot` user (owner of colcon_ws); empty = the owner of this checkout
+    HOST_UID: ${HOST_UID:-}
+    HOST_GID: ${HOST_GID:-}
   volumes: &robot-volumes
     - /tmp/.X11-unix:/tmp/.X11-unix
     - /tmp/.docker.xauth:/tmp/.docker.xauth
@@ -60,12 +63,15 @@ x-robot: &robot
     - /dev/dri:/dev/dri
 
 services:
-  # One-shot: named volumes are created root-owned, Isaac Sim runs as uid 1234.
+  # One-shot: named volumes are created root-owned, Isaac Sim runs as uid 1234. ./sim/generated (gitignored, so
+  # missing in a fresh clone) is written by both the sim (uid 1234) and the host user (fleet_ctl.py's spawn
+  # requests in fleet/), so it and fleet/ are made world-writable whoever created them.
   volume-init:
     image: alpine:3.16.3
     user: root
-    command: chown -R 1234:1234 /cache /ov-data /logs /config /compute
+    command: sh -c 'chown -R 1234:1234 /cache /ov-data /logs /config /compute && mkdir -p /generated/fleet && chmod a+rwx /generated /generated/fleet'
     volumes:
+      - ./sim/generated:/generated
       - isaac-cache:/cache
       - isaac-ov-data:/ov-data
       - isaac-logs:/logs

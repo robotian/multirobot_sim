@@ -18,50 +18,80 @@ A configurable number (0–8, three if `.env` doesn't say otherwise) of Clearpat
 
 ## Requirements
 
-- Linux with an NVIDIA GPU, a recent driver and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/) (tested on an RTX 4080 SUPER)
-- Docker with the Compose plugin
-- Access to the Isaac Sim image `nvcr.io/nvidia/isaac-sim:6.0.0` (`docker login nvcr.io` with an NGC API key)
-- An X11 desktop (for `camera_view` and RViz windows) and `xauth`
-- The Isaac Sim WebRTC Streaming Client (NVIDIA's desktop app, see the Isaac Sim livestream docs) to see the simulation
+- **Linux with an NVIDIA RTX GPU** (ray-tracing cores required). Developed on an RTX 4080 SUPER, NVIDIA's recommended minimum for Isaac Sim 6.0; it also runs, more slowly, on a TITAN RTX (Turing).
+- **NVIDIA driver 580 or newer.** Isaac Sim 6.0 recommends 580.95.05 and refuses drivers older than 550.90.07 (the log then says `rtx driver verification failed` and the sim never gets to the scene). On Ubuntu: `ubuntu-drivers list`, then e.g. `sudo apt install nvidia-driver-580` and reboot.
+- **The [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/)**: `docker run --rm --gpus all ubuntu nvidia-smi` must list your GPU(s).
+- **Docker with the Compose plugin, version 2.24 or newer** (`docker compose version`; `docker-compose.yml` uses an optional `env_file`).
+- **Git LFS** (`sudo apt install git-lfs`): every binary under `sim/assets/` (meshes, textures, USD) is stored in LFS. Without it you get 130-byte text placeholders, and the sim runs with invisible robots and missing textures.
+- Access to the Isaac Sim image `nvcr.io/nvidia/isaac-sim:6.0.0`. If the build can't pull it, `docker login nvcr.io` with an NGC API key.
+- An X11 desktop and `xauth`, for `camera_view`, RViz and `SIM_MODE=headed`.
+- To view the sim in the default `SIM_MODE=stream`: the Isaac Sim WebRTC Streaming Client (NVIDIA's desktop app, see the Isaac Sim livestream docs).
 
-## Quick start
+## Quick start (fresh clone)
 
 ```bash
-# 0. Get the code, including the ROS packages in colcon_ws/src (several are git submodules)
+# 0. Get the code, with the LFS files and the ROS packages in colcon_ws/src (several are git submodules)
+git lfs install                       # once per machine, BEFORE cloning
 git clone --recurse-submodules https://github.com/robotian/multirobot_sim.git
-cd multirobot_sim          # existing clone instead: git submodule update --init --recursive
+cd multirobot_sim
+# Cloned without LFS or submodules? Fix it in place:
+#   git lfs install && git lfs pull && git submodule update --init --recursive
+head -c 40 sim/assets/sky/farm_field_puresky_2k.hdr   # must NOT print "version https://git-lfs..."
 
-# 1. Log in to NVIDIA's registry once (NGC API key); the Isaac Sim base image is pulled during the build
-docker login nvcr.io
-
-# 2. Build both images: clearpath-robot:jazzy (every robot + the zenoh router) and a300-isaac-sim:6.0.0
+# 1. Build both images: clearpath-robot:jazzy (every robot + the zenoh router) and a300-isaac-sim:6.0.0
 docker compose build
 
-# 3. Generate the robot descriptions (URDF + meshes -> sim/assets/); needs the robot image from step 2
-scripts/gen_urdf.sh
+# 2. Optional, only for status_server: its database password (db.env is gitignored)
+echo "PGPASSWORD=<status_server database password>" > db.env
+
+# 3. Review .env (tracked; it holds the last committer's settings). Check at least:
+#    ISAACSIM_HOST  127.0.0.1, or this machine's LAN IP for a remote WebRTC client
+#    SIM_MODE       stream (WebRTC) or headed (Isaac's own window on this display)
+#    NUM_ROBOTS / ROBOT_MODEL_<i>   use the generic a300/a200/j100/r100 unless you have robot_data/ (see below)
+#    SIM_SCENE      empty = ground plane (fastest), lavender_farm.usd = the real field
 
 # 4. Allow the containers to open windows on your display (once per login)
 scripts/x11_auth.sh
 
-# 5. Start the sim with the scene (no robots yet), then spawn the robots chosen in .env (NUM_ROBOTS,
-#    ROBOT_MODEL_<i>; see "Number of robots") into it and start their containers -- or do both with `scripts/fleet.sh`
-scripts/fleet.sh scene      # waits until the scene is ready (~40 s streaming, ~3 min headed)
-scripts/fleet.sh spawn 2    # 2 robots at the default poses; --poses '[{"x":0,"y":0,"yaw":90}, ...]' to choose them
+# 5. Start the sim, then spawn the robots from .env and start their containers
+scripts/fleet.sh            # = fleet.sh scene + fleet.sh spawn; waits for each step
 docker compose logs -f isaac-sim     # the sim's own lines start with [fleet]
 
-# 6. Build the shared ROS workspace colcon_ws/src in the running robot containers (first time, and after editing packages)
+# 6. Check that it works, then drive
+docker exec a300_0000 bash -c 'python3 /scripts/drive_test.py'   # odom should match the commanded 0.5 m/s
+docker exec -it a300_0000 teleop
+
+# 7. Build the shared ROS workspace colcon_ws/src in the running robot containers (first time, and after editing packages)
 scripts/colcon_build.sh
 ```
 
-Notes:
+`scripts/gen_urdf.sh` is **not** part of a fresh start: its output, `sim/assets/`, is in git. Run it only after changing a robot description (see *Rebuilding after a change*).
+
+What to expect on the **first start**:
+
+- **It is slow.** Isaac Sim compiles its RTX shaders and imports every robot model from URDF to USD. The headed app takes ~3 min to start, the first scene build several minutes more. Both are cached (shaders in the `isaac-cache` Docker volume, imports in `sim/generated/`), so later starts are much faster.
+- **Starts can crash inside the NVIDIA driver** (exit code 139, backtrace in `libnvidia-rtcore`, `libnvidia-gpucomp` or `libnvidia-glvkspirv`) while it compiles RTX shaders. On a fresh TITAN RTX machine the first 3 starts all crashed. Later ones mostly worked once the shader cache was warm, but a restart still crashed now and then. Run `scripts/fleet.sh` again. Don't delete the `clearpath-fleet_isaac-cache` volume, or the cache starts over.
+- **Viewing it:** with `SIM_MODE=stream`, open the WebRTC Streaming Client and connect to `ISAACSIM_HOST`. Don't connect in the middle of a MoveIt move: connecting stalls the sim for a few seconds.
+
+### Real robots need `robot_data/`
+
+`ROBOT_MODEL_<i>` values containing `_` (`j100_0921`, `a300_00037`, ...) are MTU's real robots. Their own `robot.yaml` files live in `robot_data/<id>/robot.yaml`, which is **not in git** (private robot data). Their sim models are in `sim/assets/`, so the sim spawns them anyway, but their robot container exits immediately with `sed: can't read /opt/clearpath/robot.<id>.yaml.tmpl`. Either copy `robot_data/` from a machine that has it, or use the generic models. See *Adding a real robot configuration file*.
+
+### File permissions
+
+The containers write into the checkout, and both cases are handled automatically:
+
+- **`sim/generated/`** (import cache, spawn requests, sim state; gitignored, so missing in a fresh clone) is written by Isaac Sim as uid 1234 and by your host user. Before every sim start, compose's one-shot `volume-init` service creates it and `sim/generated/fleet/` and makes both world-writable.
+- **`colcon_ws/`** is built by the containers' `robot` user. At start, each robot container gives `robot` the uid/gid of whoever owns the checkout, read from the bind-mounted `scripts/` folder. It then chowns `colcon_ws` to that user, so it stays yours whatever your uid. The robot log says `[entrypoint] robot user -> uid ...` when it changes. Set `HOST_UID`/`HOST_GID` in `.env` to choose different ids.
+
+### Notes
 
 - **Use `scripts/fleet.sh`, not a bare `docker compose up -d`, to start and to change the robots:** the sim only spawns robots when it gets a spawn request (which `fleet.sh spawn` and the web UI write), and the script keeps the per-slot container names and hostnames in `.env` in sync and removes robot containers you no longer want. A bare `docker compose up -d` starts the sim and robot containers but spawns no robots unless a request from before is still there.
-- `robot_data/` (the real MTU robots' own `robot.yaml` files) is not in git. Without them `gen_urdf.sh` still generates the four generic models (`a300`, `a200`, `j100`, `r100`); real-robot ids such as `j100_0921` only work once their `robot_data/<id>/robot.yaml` is present (see *Adding a real robot configuration file*).
-- The first start is slow: Isaac Sim compiles shaders and imports the URDF to USD. Later starts reuse the caches. `sim/assets/` (the generated robot models and the scene assets) is in git, its binaries through Git LFS: run `git lfs install` once per machine before cloning. `sim/generated/` (the USD cache) is not; the first start creates it.
-- Then open the WebRTC Streaming Client and connect to `ISAACSIM_HOST` (from `.env`; use `127.0.0.1` when it runs on the same machine).
+- Start and spawn separately when you want: `scripts/fleet.sh scene` (waits until the scene is ready), then `scripts/fleet.sh spawn 2` (2 robots at the default poses; `--poses '[{"x":0,"y":0,"yaw":90}, ...]'` to choose them).
+- **Performance:** set the CPU power profile to performance while simulating (`powerprofilesctl set performance`); on the TITAN RTX machine it made the sim ~30% faster. See also *Faster streaming*.
 - Optional: `python3 tools/sim_ui/server.py` serves a local web UI on <http://127.0.0.1:8090> to start/stop/reset the sim, spawn robots at poses you choose (number fields or a click on its top-down map), run `sim_robot_upstart`, move the arm and start/stop `cut_stem`. **Start** loads the scene only; pick the robots and their poses, then **Spawn**.
 
-Stop everything with `scripts/stop_sim.sh` (plain `docker compose down` misses robot services outside the active `NUM_ROBOTS` profile).
+Stop everything with `scripts/stop_sim.sh` or `scripts/fleet.sh down` (plain `docker compose down` misses robot services outside the active `NUM_ROBOTS` profile).
 
 ### Rebuilding after a change
 
@@ -211,7 +241,7 @@ Plain `docker exec <container> <ros command>` has no ROS environment. Use one of
 
 ### ROS workspace
 
-Every robot container has a `robot` user (uid/gid 1000, matching the typical host user, so files are writable from both sides without extra chown steps) whose home directory has a `colcon_ws/src`. That directory is bind-mounted from `./colcon_ws` on the host into **every** robot container at `/home/robot/colcon_ws` — the same host folder, not a copy per robot — so a change made from inside one robot's container (or straight on the host) is immediately visible in all of them.
+Every robot container has a `robot` user (uid/gid of the host user who owns the checkout, so files are writable from both sides; see *File permissions*) whose home directory has a `colcon_ws/src`. That directory is bind-mounted from `./colcon_ws` on the host into **every** robot container at `/home/robot/colcon_ws` — the same host folder, not a copy per robot — so a change made from inside one robot's container (or straight on the host) is immediately visible in all of them.
 
 ```bash
 docker exec -it -u robot a300_0000 bash    # ROS + colcon_ws are already sourced, see below
@@ -330,7 +360,7 @@ What follows from the switch:
 
 Edit `.env`, then `docker restart a300-isaac-sim` for sim variables, or `scripts/fleet.sh` for anything about the robots (count, models, middleware).
 
-"Default" below is the fallback in `docker-compose.yml`, used only if a variable is missing from `.env` entirely. This repo's checked-in `.env` sets most of them explicitly, currently: `NUM_ROBOTS=3`, real robots in `ROBOT_MODEL_0..3`, `FLEET_RMW=rmw_fastrtps_cpp`, `SIM_RATE_HZ=22`, `SIM_MODE=headed`, `FLEET_SETTINGS` = async rendering (see below) — a state tuned in earlier testing on this machine, not a recommendation for yours.
+"Default" below is the fallback in `docker-compose.yml`, used only if a variable is missing from `.env` entirely. The checked-in `.env` sets most of them explicitly. Its values are whatever its last committer used on their machine (robot models, `SIM_MODE`, `ISAACSIM_HOST`, rates), not a recommendation for yours: review it before the first start (*Quick start*, step 3).
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -560,6 +590,11 @@ See `CLAUDE.md` and the per-directory `CLAUDE.md` files for more detail on how t
 
 ### Sim start and crashes
 
+- **`rtx driver verification failed` / `The currently installed NVIDIA graphics driver is unsupported`, and no `[fleet]` line ever appears:** the driver is too old for Isaac Sim 6.0; install 580 or newer (see *Requirements*).
+- **Exit code 139 at start or restart, crash in `libnvidia-rtcore`, `libnvidia-gpucomp` or `libnvidia-glvkspirv`:** the driver crashed while compiling RTX shaders. Start again. It is most frequent while the cache in the `isaac-cache` volume is cold (the first starts on a machine).
+- **`Couldn't process file:/sim/assets/...jpg, it might not have written completely`, invisible robots or an untextured scene:** the LFS files are placeholders. `git lfs install && git lfs pull`, then restart the sim once with `FORCE_REIMPORT=1 scripts/fleet.sh` (the imports cached in `sim/generated/` were made from the placeholders).
+- **`Permission denied: '/sim/generated'` and `import of <model> failed` for every model:** the sim can't write `sim/generated/`. `volume-init` normally prepares it (see *File permissions*); check `docker compose logs volume-init`, or run `chmod a+rwx sim/generated sim/generated/fleet`.
+
 - **Sim hangs at ~35 s (no `[fleet]` line, log silent) or exits 139 right after "simulation running":** start-up is flaky (about 1 in 10 starts). Run `docker restart a300-isaac-sim` again; it has always cleared it.
 - **Investigating a crash:** `docker logs` is lost once compose recreates the sim, so save it right after the crash (`docker logs a300-isaac-sim > crash.log 2>&1`). Kit's minidumps are in the `isaac-ov-data` volume (`Kit/Isaac-Sim Full/6.0/*.dmp.zip`, only the latest is kept). The line just before the crash is usually the real cause. Example: `authoring to an instance proxy is not allowed` turned out to be the cause of a lidar segfault, not the ray count.
 - **The PC freezes, or the sim dies inside `libnvidia-rtcore`/`libnvidia-gpucomp`:** check the kernel log first (`journalctl -k -b -1 | grep -i -e xid -e 'bad page'`). Three robots with `ROBOT_LOOKS=full` triggered this when robots were added to an already-playing scene. It hasn't been seen since the scene loads stopped and plays only after spawning. If it recurs, try `ROBOT_LOOKS=0` or fewer robots.
@@ -569,6 +604,9 @@ See `CLAUDE.md` and the per-directory `CLAUDE.md` files for more detail on how t
 - **Foliage renders red:** a vegetation asset was copied without its `materials/` and `textures/` folders.
 
 ### Robots and spawning
+
+- **A real robot's container exits right away with `sed: can't read /opt/clearpath/robot.<id>.yaml.tmpl`:** its `robot_data/<id>/robot.yaml` is missing; see *Real robots need `robot_data/`*.
+- **Your own `colcon_ws/src` files became read-only (owned by another user):** a robot container built from an image older than the uid matching (see *File permissions*) chowned them to uid 1000. Rebuild with `docker compose build robot0`, then `scripts/fleet.sh`: the next robot start chowns them back to you.
 
 - **A changed `robot/entrypoint.sh` or `robot/bin/*` has no effect:** both are baked into the image. Run `docker compose build robot0`, then recreate with `scripts/fleet.sh N`.
 - **A changed colcon package has no effect:** run `scripts/colcon_build.sh --packages-select <pkg>`, then restart its launch (a running node keeps the old binary).

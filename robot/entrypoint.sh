@@ -72,6 +72,16 @@ fi
 # yet (a fresh clone's empty colcon_ws) so setup.bash below never fails to source it.
 mkdir -p /home/robot/colcon_ws/install
 [ -f /home/robot/colcon_ws/install/setup.bash ] || echo '# nothing built in colcon_ws yet' > /home/robot/colcon_ws/install/setup.bash
+# `robot` takes the uid/gid of the host user who owns the checkout, so the bind-mounted colcon_ws stays theirs
+# whatever their uid (the image's 1000 only fits the typical single-user desktop). Read from ./scripts, which is
+# mounted read-only and never chowned; HOST_UID/HOST_GID override. usermod skips it once done (docker restart).
+host_uid="${HOST_UID:-$(stat -c %u /scripts 2>/dev/null || echo 1000)}"
+host_gid="${HOST_GID:-$(stat -c %g /scripts 2>/dev/null || echo 1000)}"
+if [[ "$host_uid" != 0 && ( "$(id -u robot)" != "$host_uid" || "$(id -g robot)" != "$host_gid" ) ]]; then
+    groupmod -o -g "$host_gid" robot
+    usermod -o -u "$host_uid" -g "$host_gid" robot
+    echo "[entrypoint] robot user -> uid $host_uid gid $host_gid (owner of the host checkout)"
+fi
 chown -R robot:robot /home/robot/colcon_ws
 
 source /opt/ros/jazzy/setup.bash  # only to make `ros2 run` available for the next line
