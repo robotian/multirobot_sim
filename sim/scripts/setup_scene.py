@@ -76,6 +76,9 @@ PHYSICS_HZ = int(os.environ.get("PHYSICS_HZ", "60"))
 # false: messages are stamped with wall-clock time and there is no /clock.
 USE_SIM_TIME = os.environ.get("USE_SIM_TIME", "true").lower() == "true"
 FORCE_REIMPORT = os.environ.get("FORCE_REIMPORT", "0") == "1"
+# 1: every robot publishes its exact world pose as ref_pose + TF ref_frame -> base_link_ref (REF_POSE_SCRIPT), the
+# sim's stand-in for the lab's motion capture (mocap_fake_localizer's natnet_ref_pose on a real robot).
+REF_POSE = os.environ.get("SIM_REF_POSE", "1") == "1"
 # Which D435i streams to publish. Each one costs main-thread time in the sim, so trim if the frame rate suffers.
 # "none" turns the cameras off (no render products at all), which is what gives the streamed viewport its full frame rate.
 CAM_STREAMS = set(filter(None, os.environ.get("CAMERA_STREAMS", "color,depth").split(","))) - {"none", "off"}
@@ -631,6 +634,81 @@ def cleanup(db):
 """
 
 # cmd_vel as geometry_msgs/TwistStamped, like the real Clearpath (Jazzy) platform: isaacsim.ros2.bridge's
+# Reference pose (SIM_REF_POSE): base_link's exact pose in the Isaac world frame, published like the lab's motion
+# capture client (mocap_fake_localizer's natnet_ref_pose.py) does on a real robot: nav_msgs/Odometry on ref_pose,
+# frame ref_frame -> base_link_ref, plus the same pose on the robot's own tf. ref_frame is the world frame (the GPS
+# datum's origin), unlike the ground_truth TF branch, which starts at zero at the spawn pose. Same in-process rclpy
+# mechanism as GPS_READ_SCRIPT. base_link sits at localPos/localQuat on the chassis (articulation root) body, read
+# once at spawn: the chassis is what PhysX moves, while base_link can be a plain parent Xform that stays put.
+REF_POSE_SCRIPT = """
+import omni.usd
+import rclpy
+from geometry_msgs.msg import TransformStamped
+from nav_msgs.msg import Odometry
+from pxr import Gf, UsdGeom
+from rclpy.node import Node
+from tf2_msgs.msg import TFMessage
+
+
+def _stamp(seconds):  # builtin_interfaces/Time from the graph's Stamp node (sim or wall time, see USE_SIM_TIME)
+    from builtin_interfaces.msg import Time
+    ns = int(round(float(seconds) * 1e9))
+    return Time(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
+
+
+def setup(db):
+    db.per_instance_state.node = None
+
+
+def compute(db):
+    state = db.per_instance_state
+    if state.node is None:
+        if not rclpy.ok():
+            rclpy.init()
+        ns = str(db.inputs.namespace)
+        state.node = Node("ref_pose_sim", namespace=ns)
+        state.pub = state.node.create_publisher(Odometry, f"/{ns}/ref_pose", 10)
+        state.tf = state.node.create_publisher(TFMessage, f"/{ns}/tf", 100)
+        p, q = [float(v) for v in db.inputs.localPos], [float(v) for v in db.inputs.localQuat]
+        state.local = Gf.Matrix4d().SetTransform(Gf.Rotation(Gf.Quatd(q[0], q[1], q[2], q[3])), Gf.Vec3d(*p))
+        import fleet_nodes  # destroyed by a respawn (cleanup() doesn't run when the graph is deleted)
+        fleet_nodes.track(ns, state)
+
+    prim = omni.usd.get_context().get_stage().GetPrimAtPath(str(db.inputs.chassisPath))
+    m = state.local * UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0)  # base_link -> world (row vectors)
+    t = m.ExtractTranslation()
+    q = m.ExtractRotationQuat().GetNormalized()
+    qi = q.GetImaginary()
+
+    msg = Odometry()
+    msg.header.stamp = _stamp(db.inputs.stamp)
+    msg.header.frame_id = str(db.inputs.refFrame)
+    msg.child_frame_id = str(db.inputs.childFrame)
+    pos, rot = msg.pose.pose.position, msg.pose.pose.orientation
+    pos.x, pos.y, pos.z = float(t[0]), float(t[1]), float(t[2])
+    rot.x, rot.y, rot.z, rot.w = float(qi[0]), float(qi[1]), float(qi[2]), float(q.GetReal())
+    cov = [0.0] * 36
+    for i in range(6):
+        cov[i * 7] = 1e-6  # exact
+    msg.pose.covariance = cov
+    msg.twist.covariance[0] = -1.0  # no twist
+    state.pub.publish(msg)
+
+    tf = TransformStamped()
+    tf.header = msg.header
+    tf.child_frame_id = msg.child_frame_id
+    tf.transform.translation.x, tf.transform.translation.y, tf.transform.translation.z = pos.x, pos.y, pos.z
+    tf.transform.rotation = rot
+    state.tf.publish(TFMessage(transforms=[tf]))
+
+
+def cleanup(db):
+    state = db.per_instance_state
+    if state.node is not None:
+        state.node.destroy_node()
+        state.node = None
+"""
+
 # ROS2SubscribeTwist only takes plain Twist and has no stamped option, so this ScriptNode subscribes with an
 # in-process rclpy node (same mechanism and reasoning as GPS_READ_SCRIPT) and exposes the same outputs
 # (linearVelocity/angularVelocity, holding the last message like the bridge node did), so the drive graph is
@@ -2016,6 +2094,35 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
         ]
         create_attributes += [(f"{node}.inputs:stamp", "double")]
         connections += [("Tick.outputs:tick", f"{node}.inputs:execIn"), (stamp, f"{node}.inputs:stamp")]
+
+    # --- Reference pose (SIM_REF_POSE): see REF_POSE_SCRIPT. base_link's pose on the chassis body, read now (spawn).
+    if REF_POSE:
+        chassis_world = UsdGeom.Xformable(stage.GetPrimAtPath(chassis)).ComputeLocalToWorldTransform(0)
+        base_world = UsdGeom.Xformable(stage.GetPrimAtPath(find_prim(stage, root, "base_link"))) \
+            .ComputeLocalToWorldTransform(0)
+        rel = base_world * chassis_world.GetInverse()
+        rel_t, rel_q = rel.ExtractTranslation(), rel.ExtractRotationQuat()
+        rel_im = rel_q.GetImaginary()
+        nodes += [("RefPose", "omni.graph.scriptnode.ScriptNode")]
+        create_attributes += [
+            ("RefPose.inputs:chassisPath", "token"),
+            ("RefPose.inputs:namespace", "token"),
+            ("RefPose.inputs:refFrame", "token"),
+            ("RefPose.inputs:childFrame", "token"),
+            ("RefPose.inputs:localPos", "double[3]"),
+            ("RefPose.inputs:localQuat", "double[4]"),
+            ("RefPose.inputs:stamp", "double"),
+        ]
+        values += [
+            ("RefPose.inputs:chassisPath", chassis),
+            ("RefPose.inputs:namespace", ns),
+            ("RefPose.inputs:refFrame", "ref_frame"),
+            ("RefPose.inputs:childFrame", "base_link_ref"),
+            ("RefPose.inputs:localPos", [rel_t[0], rel_t[1], rel_t[2]]),
+            ("RefPose.inputs:localQuat", [rel_q.GetReal(), rel_im[0], rel_im[1], rel_im[2]]),
+            ("RefPose.inputs:script", REF_POSE_SCRIPT),
+        ]
+        connections += [("Tick.outputs:tick", "RefPose.inputs:execIn"), (stamp, "RefPose.inputs:stamp")]
 
     # --- Arm + gripper (real MTU robots only): a second IsaacArticulationController, position-mode, targeting
     # the same chassis articulation root as the wheel drive above. jointNames/positionCommand are wired
