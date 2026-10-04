@@ -134,7 +134,7 @@ def connect(config: dict, dbname_override: str | None):
         port=db['port'],
         dbname=dbname,
         user=db['user'],
-        password=db['password'],
+        password=db.get('password') or None,
         connect_timeout=db.get('connect_timeout', 5),
     )
     conn.autocommit = True

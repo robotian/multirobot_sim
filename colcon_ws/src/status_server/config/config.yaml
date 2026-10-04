@@ -97,4 +97,5 @@ database:
   connect_timeout: 5 # Seconds to wait for a connection before giving up (psycopg connect_timeout).
   dbname: test_lavender_farming
   user: admin
-  password: Robotlab@2019
+  # Not stored here. Empty = libpq reads PGPASSWORD or ~/.pgpass (see README "database").
+  password: ''

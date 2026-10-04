@@ -14,3 +14,5 @@ foxglove/
 # sim/assets/ is tracked, its binaries through Git LFS (.gitattributes); hand-made backups of them are not
 sim/assets/**/*.orig
 sim/assets/**/*.bak-*
+# Secrets passed to the robot containers (docker-compose.yml env_file), e.g. PGPASSWORD
+db.env

@@ -8,7 +8,7 @@ with the connection settings of colcon_ws/src/status_server/config/config.yaml (
 so it is replaced by localhost here), writes them to sim/generated/farm/plants.json and runs
 sim/scripts/build_farm_scene.py with Isaac Sim's USD libraries in the a300-isaac-sim image (no GPU, no Kit; the
 running sim is not touched). Use the result with SIM_SCENE=lavender_farm.usd in .env or the web UI's Scene picker.
-Needs psycopg and pyyaml on the host.
+Needs psycopg and pyyaml on the host, and the database password in PGPASSWORD or ~/.pgpass.
 """
 import argparse
 import datetime
@@ -33,7 +33,7 @@ def fetch_plants(args):
     host = args.host or ("localhost" if db["host"] == "host.docker.internal" else db["host"])
     dbname = args.dbname or db["dbname"]
     with psycopg.connect(host=host, port=args.port or db["port"], dbname=dbname, user=db["user"],
-                         password=db["password"], connect_timeout=db.get("connect_timeout", 5)) as conn:
+                         password=db.get("password") or None, connect_timeout=db.get("connect_timeout", 5)) as conn:
         rows = conn.execute("SELECT object_id, row_id, x_coord, y_coord FROM public.object_data "
                             "WHERE x_coord IS NOT NULL AND y_coord IS NOT NULL "
                             "ORDER BY row_id, object_id").fetchall()

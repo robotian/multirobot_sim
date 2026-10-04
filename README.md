@@ -417,7 +417,7 @@ Requirements:
 - The `a300-isaac-sim:6.0.0` image is built.
 - `sim/assets/` is populated: lavender, ground cover, sky, trees, shrubs and rocks.
 
-The script reads the connection settings from `colcon_ws/src/status_server/config/config.yaml`, using `localhost` in place of `host.docker.internal`. It saves the plant list to `sim/generated/farm/plants.json`, then runs `sim/scripts/build_farm_scene.py` with Isaac's USD libraries in a throwaway container. That needs no GPU, takes a few seconds and doesn't touch a running sim.
+The script reads the connection settings from `colcon_ws/src/status_server/config/config.yaml`, using `localhost` in place of `host.docker.internal`, and the password from `PGPASSWORD` or `~/.pgpass` (config.yaml holds none; the robot containers get it from the untracked `db.env`). It saves the plant list to `sim/generated/farm/plants.json`, then runs `sim/scripts/build_farm_scene.py` with Isaac's USD libraries in a throwaway container. That needs no GPU, takes a few seconds and doesn't touch a running sim.
 
 **Use it:** set `SIM_SCENE=lavender_farm.usd` in `.env` or pick it in the web UI's *Scene* picker, then restart the sim (`scripts/fleet.sh`, or `docker restart a300-isaac-sim` if `SIM_SCENE` was already set). To try it once without editing `.env`, prefix the commands with the variable. Use the same prefix for the spawn, or compose recreates the sim from `.env`:
 

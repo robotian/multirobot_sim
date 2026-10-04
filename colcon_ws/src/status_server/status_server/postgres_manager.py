@@ -60,7 +60,7 @@ class PostgresConnectionManager:
                 port=self.db_config.port,
                 dbname=self.db_config.dbname,
                 user=self.db_config.user,
-                password=self.db_config.password,
+                password=self.db_config.password or None,  # None: libpq falls back to PGPASSWORD / ~/.pgpass
                 connect_timeout=self.db_config.connect_timeout,
             )
             self.conn.autocommit = True

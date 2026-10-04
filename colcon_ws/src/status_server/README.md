@@ -158,7 +158,7 @@ Consumer: `postgres_manager.py`
 | `connect_timeout` | int | `5` | Seconds to wait for a connection before giving up. Without it psycopg falls back to the OS TCP timeout, which can block a node for minutes if the host is unreachable. |
 | `dbname` | str | `test_lavender_farming` | Database name. |
 | `user` | str | `admin` | Login user. |
-| `password` | str | — | Login password. Currently stored in plaintext in `config.yaml`; move to a secret or environment variable before any non-dev deployment. |
+| `password` | str | `''` | Leave empty: the password is not kept in git. With it empty, libpq reads `PGPASSWORD` from the environment or `~/.pgpass` (`host:port:dbname:user:password`, mode 0600). On a robot, set either for the user that runs the node; in the sim, put `PGPASSWORD=...` in the untracked `db.env` at the repo root (loaded into every robot container). |
 
 ## Clearance geometry
 

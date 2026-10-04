@@ -164,7 +164,7 @@ def load(config_path: str, dbname: str | None) -> tuple[dict[int, Node], list[Ed
 
     conn = psycopg.connect(
         host=db['host'], port=db['port'], dbname=name,
-        user=db['user'], password=db['password'],
+        user=db['user'], password=db.get('password') or None,
         connect_timeout=db.get('connect_timeout', 5),
     )
     conn.autocommit = True
