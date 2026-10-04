@@ -9,6 +9,6 @@ params=/etc/clearpath/platform/config/localization.yaml
 [ -f "$params" ] || { echo "ekf: $params missing (generate_params failed?)"; exit 1; }
 exec ros2 run robot_localization ekf_node --ros-args \
     -r __ns:=/"$ns" -r __node:=ekf_node \
-    --params-file "$params" -p publish_tf:=true \
+    --params-file "$params" -p publish_tf:=true -p use_sim_time:="${USE_SIM_TIME:-false}" \
     -r odometry/filtered:=platform/odom/filtered \
     -r /tf:=/"$ns"/tf -r /tf_static:=/"$ns"/tf_static -r /diagnostics:=diagnostics

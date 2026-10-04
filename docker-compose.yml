@@ -27,6 +27,8 @@ x-robot: &robot
   depends_on: [isaac-sim, zenoh-router]
   environment: &robot-env
     <<: *rmw-env
+    # true: ROS nodes run on the sim's /clock (robot/bin/* pass use_sim_time, sim_robot_upstart defaults to it)
+    USE_SIM_TIME: ${USE_SIM_TIME:-true}
     DISPLAY: ${DISPLAY:-:0}
     XAUTHORITY: /tmp/.docker.xauth
     QT_X11_NO_MITSHM: "1"
@@ -130,6 +132,8 @@ services:
       FLEET_VIEWPORT_RES: ${FLEET_VIEWPORT_RES:-}
       ROBOT_LOOKS: ${ROBOT_LOOKS:-full}
       FLEET_SNAPSHOT: ${FLEET_SNAPSHOT:-}
+      # true: publish /clock and stamp every message with simulation time; false: wall-clock stamps, no /clock
+      USE_SIM_TIME: ${USE_SIM_TIME:-true}
       # stream (default): headless + WebRTC; headed: the full Isaac Sim desktop app in a window on the host
       # display (run scripts/x11_auth.sh once per login first). See docker/isaac-entrypoint.sh.
       SIM_MODE: ${SIM_MODE:-stream}

@@ -276,6 +276,16 @@ All topics live under the robot's namespace (`a300_0000`, `j100_0001`, …, what
 
 `ros2 run` ignores `ROS_NAMESPACE`, so custom tools must set the namespace with `--ros-args -r __ns:=/$ROBOT_NAMESPACE`, as the `teleop` and `camera_view` wrappers do.
 
+### Simulation time
+
+With several robots the sim runs slower than real time (3 robots: real-time factor ~0.5). With `USE_SIM_TIME=true` (the default in `.env`) the sim publishes `/clock` (one for the whole fleet) and stamps every message with simulation time, and every ROS node in the robot containers runs with `use_sim_time`, so controllers, timeouts and trajectories run at the sim's pace instead of the wall clock's:
+
+- the boot services (`robot_state`, `ekf`, `foxglove`) and the `teleop`/`rviz` wrappers pass `use_sim_time:=$USE_SIM_TIME`;
+- `sim_robot_upstart.launch.py` (and `sim_nav2`/`sim_swift_nav_dual`) default `use_sim_time` to `$USE_SIM_TIME` (unset, i.e. `false`, on a real robot) and set it for every node they start; the Nav2 launches overwrite the `use_sim_time: false` some `config/<platform>/nav2*.yaml` hardcode;
+- your own nodes need `-p use_sim_time:=true` (rclpy: `parameter_overrides=[Parameter("use_sim_time", value=True)]`) and should time things with the node clock, not `time.time()`/`steady_clock`, as `moveit_sim_bridge` and `grid_cutter_action_server` do.
+
+Simulation time is physics time (1/30 s per frame at the default 60 Hz physics, whatever `SIM_RATE_HZ` is), starts at 0 when the sim starts, pauses while the timeline is stopped (spawning, *Reset scene*) and never jumps back. `ros2 topic hz` and `ros2 bag` report wall-clock rates. `USE_SIM_TIME=false` brings back wall-clock stamps with no `/clock`; it is passed to the sim and the robots, so recreate both (`scripts/fleet.sh down && scripts/fleet.sh N`).
+
 ## Middleware
 
 `FLEET_RMW` in `.env` selects the ROS 2 middleware for every container:
@@ -339,6 +349,7 @@ Edit `.env`, then `docker restart a300-isaac-sim` for sim variables, or `scripts
 | `CAMERA_ON_DEMAND` | `1` | a camera renders only while one of its topics has a subscriber (after 5 s at each play/spawn/reset, so its topics are advertised); `0`: every camera renders every frame. See *Faster streaming* |
 | `SIM_RATE_HZ` | `20` | frames per second of simulated time; keep it close to the frame rate the sim reaches (see *Faster streaming*). Prefer a value that divides `PHYSICS_HZ` (20, 15, 12, 10, 30): Kit runs `floor(PHYSICS_HZ / SIM_RATE_HZ)` physics steps per frame, so otherwise simulated time and physics drift apart |
 | `PHYSICS_HZ` | `60` | physics steps per second of simulated time |
+| `USE_SIM_TIME` | `true` | the sim publishes `/clock` and stamps messages with simulation time; ROS nodes in the robot containers use it (see *Simulation time*). `false`: wall-clock stamps |
 | `SIM_MODE` | `stream` | `stream` (WebRTC) or `headed` (Isaac's desktop window on this machine's X display; needs `scripts/x11_auth.sh`) |
 | `FLEET_DEBUG` | `0` | `1` logs real-time factor, render fps and robot pose every few seconds |
 | `FORCE_REIMPORT` | `0` | `1` re-imports the URDF into USD |
@@ -489,6 +500,7 @@ The values are authored on the shader prims in `SM_Lavender_Nanite_01.usd`; the 
 ## Known limitations
 
 - **Frame rate:** the sim renders the robots' cameras and the scene (including the lavender plants) through a path tracer, so the real-time factor is the limit. Zenoh adds about 3–4 fps of cost over FastDDS; the lavender rows (~1.26M triangles per plant) cost a similar amount.
+- **Simulation time and third-party loops:** `moveit_servo` integrates its output on a wall-clock loop, so in a sim at real-time factor 0.5 a servo command moves the arm about twice as far per simulated second; `grid_cutter_action_server` closes the loop on the arm's TF, so it still converges. `/clock` ticks once per sim frame (~15-25 Hz), so a node's timer faster than that fires in bursts.
 - **One router:** all zenoh sessions share a single `zenoh-router`. A real fleet would have a router per robot; that topology is not simulated.
 - **Raw images:** colour and depth are published uncompressed (about 30 MB/s per robot at 20 Hz), which is fine on the local machine but heavy for Wi-Fi Foxglove clients.
 - **Not tested against real robots:** interoperability with the real robots' zenoh router (`ZENOH_ROUTER`) has not been tried.
@@ -564,7 +576,8 @@ See `CLAUDE.md` and the per-directory `CLAUDE.md` files for more detail on how t
 - **A real robot's container sees none of the sim's topics:** its `robot.yaml` uses a different `domain_id` or middleware than the fleet. `entrypoint.sh` rewrites `domain_id` (look for `[entrypoint] <id>: robot.yaml domain_id 1 -> 0` in the log), but not `middleware.implementation`.
 - **A background service (`robot_state`, `ekf`, `foxglove`, `pruner_stub`) seems dead:** its restart loop swallows errors. Read `/tmp/<service>.log` in the container. For example, `robot_state_publisher` crash-looped unnoticed on a URDF with a dangling joint.
 - **Robots tip over or wheelie while driving:** links without `<inertial>` get mass from their collider at 1000 kg/m³ (a Jackal weighed 75 kg instead of 18 kg). Check `Articulation.get_link_masses()`, and set `massless_density`/`frame_mass` for the robot in `sim/config/model_params.yaml` (applied before the timeline plays; a mass change at runtime is ignored).
-- **The commanded speed and the wall-clock speed disagree:** Kit runs `floor(PHYSICS_HZ / SIM_RATE_HZ)` physics steps per frame, and `FLEET_DEBUG`'s rtf is timeline-based, so it overstates the physical real-time factor. Use a `SIM_RATE_HZ` that divides `PHYSICS_HZ` evenly (20, 15, 12, 10, 30). Measure velocity from the pose: PhysX's reported angular velocity reads ~0.02-0.03 rad/s high.
+- **The commanded speed and the wall-clock speed disagree:** expected whenever the sim runs slower than real time; measure in simulation time (the message stamps with `USE_SIM_TIME=true`, as `drive_test.py`/`calibrate_velocity.py` do). Kit runs `floor(PHYSICS_HZ / SIM_RATE_HZ)` physics steps per frame, and `FLEET_DEBUG`'s rtf is timeline-based, so it overstates the physical real-time factor; `/clock` follows physics time, so it is not affected. Measure velocity from the pose: PhysX's reported angular velocity reads ~0.02-0.03 rad/s high.
+- **A node ignores the sim's pace, or TF lookups fail with "extrapolation into the future" / "the timestamp on the message is earlier than all the data in the transform cache":** the node runs on wall time while the messages carry simulation time. Check `ros2 param get /<ns>/<node> use_sim_time`.
 - **Camera images of `j100_0921`/`a200_0333` are upside-down:** that is the real camera mount. Rotate the image 180°.
 - **A custom Foxglove client can't connect:** foxglove_bridge 3.x speaks the `foxglove.sdk.v1` subprotocol, not `foxglove.websocket.v1`.
 

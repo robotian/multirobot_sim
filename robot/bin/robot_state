@@ -91,4 +91,4 @@ open("/tmp/robot_description.yaml", "w").write("/**:\n  ros__parameters:\n    ro
 PY
 exec ros2 run robot_state_publisher robot_state_publisher --ros-args \
     -r __ns:=/"$ns" -r joint_states:=platform/joint_states -r /tf:=tf -r /tf_static:=tf_static \
-    --params-file /tmp/robot_description.yaml
+    --params-file /tmp/robot_description.yaml -p use_sim_time:="${USE_SIM_TIME:-false}"

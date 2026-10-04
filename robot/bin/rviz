@@ -3,4 +3,5 @@
 # namespaced TF topics remapped onto /tf and /tf_static.
 ns="${ROBOT_NAMESPACE:?}"
 sed "s/__NS__/$ns/g" /opt/clearpath/robot.rviz.tmpl > /tmp/robot.rviz
-exec ros2 run rviz2 rviz2 -d /tmp/robot.rviz --ros-args -r /tf:=/"$ns"/tf -r /tf_static:=/"$ns"/tf_static "$@"
+exec ros2 run rviz2 rviz2 -d /tmp/robot.rviz --ros-args -r /tf:=/"$ns"/tf -r /tf_static:=/"$ns"/tf_static \
+    -p use_sim_time:="${USE_SIM_TIME:-false}" "$@"

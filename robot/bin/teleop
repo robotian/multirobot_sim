@@ -3,4 +3,4 @@
 # cmd_vel then resolves to /<ROBOT_NAMESPACE>/cmd_vel, which the sim subscribes to as geometry_msgs/TwistStamped
 # (like the real Clearpath platform), hence stamped:=true.
 exec ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r __ns:=/"${ROBOT_NAMESPACE:?}" \
-    -p stamped:=true -p frame_id:=base_link "$@"
+    -p stamped:=true -p frame_id:=base_link -p use_sim_time:="${USE_SIM_TIME:-false}" "$@"

@@ -8,10 +8,12 @@
 Ramps cmd_vel at LOW acceleration (--lin-acc/--ang-acc; some robots tip with high acceleration) to each level,
 holds it, and compares the speed the robot actually achieved with the commanded one, for linear x ('lin'), sideways
 y ('lat', omnidirectional Ridgeback only) and yaw rate ('ang'). The achieved speed comes from the pose in
-platform/odom: distance (or yaw) over the hold window divided by SIM time. Sim time is (number of odom messages) x
-(physics time per frame), because the odom stamps are wall-clock and the sim usually runs slower than real time.
-Physics time per frame is floor(PHYSICS_HZ / SIM_RATE_HZ) / PHYSICS_HZ (Kit runs a whole number of fixed PhysX steps
-per frame: 2 steps = 1/30 s at 22 Hz frames and 60 Hz physics, NOT 1/22 s), see --physics-hz / --sim-rate-hz.
+platform/odom: distance (or yaw) over the hold window divided by SIM time. With USE_SIM_TIME=true the odom stamps are
+sim time (the sim's /clock) and are used directly, and ramp/hold times are sim seconds too. Otherwise the stamps are
+wall-clock and the sim usually runs slower than real time, so sim time is (number of odom messages) x (physics time
+per frame), where physics time per frame is floor(PHYSICS_HZ / SIM_RATE_HZ) / PHYSICS_HZ (Kit runs a whole number of
+fixed PhysX steps per frame: 2 steps = 1/30 s at 22 Hz frames and 60 Hz physics, NOT 1/22 s), see --physics-hz /
+--sim-rate-hz.
 
 A robot with an arm is first put into its SRDF 'stow' group state (/etc/clearpath/robot.srdf), which keeps the centre
 of mass low (less tipping). Exit status 1 if any level is off by more than --tolerance (default 10%).
@@ -19,10 +21,10 @@ of mass low (less tipping). Exit status 1 if any level is off by more than --tol
 import argparse
 import math
 import os
-import time
 import xml.etree.ElementTree as ET
 
 import rclpy
+from rclpy.parameter import Parameter
 from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import JointState
@@ -43,9 +45,10 @@ ns = args.ns
 frame_dt = max(1, int(args.physics_hz // args.sim_rate_hz)) / args.physics_hz
 
 rclpy.init()
-node = rclpy.create_node("calibrate_velocity")
+sim_time = os.environ.get("USE_SIM_TIME", "false") == "true"
+node = rclpy.create_node("calibrate_velocity", parameter_overrides=[Parameter("use_sim_time", value=sim_time)])
 pub = node.create_publisher(TwistStamped, f"/{ns}/cmd_vel", 10)
-poses = []  # (x, y, yaw, pitch_deg, roll_deg) per odom message
+poses = []  # (x, y, yaw, pitch_deg, roll_deg, stamp) per odom message
 joints = {}
 
 
@@ -54,16 +57,21 @@ def on_odom(m):
     yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
     pitch = math.degrees(math.asin(max(-1.0, min(1.0, 2 * (q.w * q.y - q.z * q.x)))))
     roll = math.degrees(math.atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y)))
-    poses.append((p.x, p.y, yaw, pitch, roll))
+    poses.append((p.x, p.y, yaw, pitch, roll, m.header.stamp.sec + m.header.stamp.nanosec * 1e-9))
 
 
 node.create_subscription(Odometry, f"/{ns}/platform/odom", on_odom, 100)
 node.create_subscription(JointState, f"/{ns}/platform/joint_states", lambda m: joints.update(zip(m.name, m.position)), 10)
 
 
+def now():
+    """Seconds on the node's clock (the sim's /clock with use_sim_time)."""
+    return node.get_clock().now().nanoseconds * 1e-9
+
+
 def spin(seconds):
-    end = time.time() + seconds
-    while time.time() < end:
+    end = now() + seconds
+    while now() < end:
         rclpy.spin_once(node, timeout_sec=0.01)
 
 
@@ -84,9 +92,9 @@ def stow_arm():
     while cmd_pub.get_subscription_count() == 0:
         spin(0.2)
     start = {n: joints[n] for n in target}
-    t0 = time.time()
-    while time.time() - t0 < 10.0:
-        f = min(1.0, (time.time() - t0) / 6.0)
+    t0 = now()
+    while now() - t0 < 10.0:
+        f = min(1.0, (now() - t0) / 6.0)
         f = 0.5 - 0.5 * math.cos(math.pi * f)
         m = JointState()
         m.name = list(target)
@@ -115,15 +123,15 @@ def run_level(kind, target):
     acc = args.ang_acc if kind == "ang" else args.lin_acc
     ramp = abs(target) / acc
     n0 = len(poses)
-    t0 = time.time()
-    while time.time() - t0 < ramp + args.hold:
-        t = time.time() - t0
+    t0 = now()
+    while now() - t0 < ramp + args.hold:
+        t = now() - t0
         twist(kind, math.copysign(min(abs(target), acc * t), target))
         spin(0.05)
     seg = poses[n0:]
     a = int(len(seg) * (ramp + 0.4 * args.hold) / (ramp + args.hold))
     window = seg[a:]
-    dt = (len(window) - 1) * frame_dt
+    dt = window[-1][5] - window[0][5] if sim_time else (len(window) - 1) * frame_dt
     x0, y0, yaw0 = window[0][:3]
     x1, y1 = window[-1][:2]
     if kind == "ang":
@@ -147,7 +155,7 @@ def run_level(kind, target):
     return got, tilt
 
 
-while not poses:
+while not poses or now() == 0.0:  # with use_sim_time, now() is 0 until the first /clock message
     rclpy.spin_once(node, timeout_sec=0.5)
 while pub.get_subscription_count() == 0:
     spin(0.2)
@@ -156,8 +164,9 @@ if not args.no_stow:
 
 unit = {"lin": "m/s", "lat": "m/s", "ang": "rad/s"}
 bad = 0
-print(f"[{ns}] frame dt {frame_dt:.4f} s (physics {args.physics_hz:g} Hz, sim rate {args.sim_rate_hz:g} Hz); "
-      f"hold {args.hold:g} s, tolerance {args.tolerance:.0%}")
+time_base = ("sim time from the odom stamps" if sim_time else
+             f"frame dt {frame_dt:.4f} s (physics {args.physics_hz:g} Hz, sim rate {args.sim_rate_hz:g} Hz)")
+print(f"[{ns}] {time_base}; hold {args.hold:g} s, tolerance {args.tolerance:.0%}")
 print(f"{'mode':5} {'command':>9} {'achieved':>9} {'ratio':>7} {'max tilt':>9}")
 sign = 1
 for kind in args.modes:

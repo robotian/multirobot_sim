@@ -47,16 +47,6 @@
 
 using namespace std::chrono_literals;
 
-namespace
-{
-using SteadyClock = std::chrono::steady_clock;
-
-SteadyClock::time_point make_deadline(double seconds)
-{
-  return SteadyClock::now() +
-         std::chrono::duration_cast<SteadyClock::duration>(std::chrono::duration<double>(seconds));
-}
-}  // namespace
 
 enum class PatchStatus { Pending, Active, Cut, Failed };
 
@@ -614,11 +604,23 @@ private:
            };
   }
 
-  static void interruptible_sleep(std::chrono::milliseconds total, const StopFn & stop)
+  // Timeouts and pauses run on the node's clock: ROS time, i.e. the simulator's /clock with use_sim_time, else wall
+  // time. In a sim slower than real time they then last as long as the robot needs to move, not as long in wall time.
+  rclcpp::Time deadline_in(double seconds)
   {
-    const auto end = SteadyClock::now() + total;
-    while (SteadyClock::now() < end && !stop()) {
-      std::this_thread::sleep_for(20ms);
+    return this->now() + rclcpp::Duration::from_seconds(seconds);
+  }
+
+  void ros_sleep(double seconds)
+  {
+    this->get_clock()->sleep_for(rclcpp::Duration::from_seconds(seconds));
+  }
+
+  void interruptible_sleep(double seconds, const StopFn & stop)
+  {
+    const auto end = deadline_in(seconds);
+    while (this->now() < end && !stop() && rclcpp::ok()) {
+      ros_sleep(0.02);
     }
   }
 
@@ -678,13 +680,13 @@ private:
 
   bool servo_to_pose(double tx, double ty, double tz, const StopFn & stop)
   {
-    const auto deadline = make_deadline(cfg_.servo_timeout);
+    const auto deadline = deadline_in(cfg_.servo_timeout);
     ServoStream stream(*this);
     double dist = -1.0;
 
     while (rclcpp::ok()) {
       if (stop()) {return false;}
-      if (SteadyClock::now() > deadline) {
+      if (this->now() > deadline) {
         RCLCPP_ERROR(
           this->get_logger(),
           "servo_to_pose timed out after %.1fs (target %.3f %.3f %.3f, last distance %.4f m).",
@@ -695,7 +697,7 @@ private:
       double cx, cy, cz;
       if (!get_ee_position(cx, cy, cz)) {
         set_twist(0.0, 0.0, 0.0);
-        std::this_thread::sleep_for(20ms);
+        ros_sleep(0.02);
         continue;
       }
 
@@ -712,7 +714,7 @@ private:
         vx *= s; vy *= s; vz *= s;
       }
       set_twist(vx, vy, vz);
-      std::this_thread::sleep_for(20ms);
+      ros_sleep(0.02);
     }
     return false;
   }
@@ -742,7 +744,7 @@ private:
       }
 
       if (attempt < cfg_.moveit_attempts) {
-        interruptible_sleep(500ms, stop);
+        interruptible_sleep(0.5, stop);
       }
     }
     RCLCPP_ERROR(
@@ -755,7 +757,7 @@ private:
   {
     if (cfg_.drop_joints.empty()) {return trigger_named_pose(cfg_.drop_pose, stop);}
     stop_servo();
-    std::this_thread::sleep_for(100ms);
+    ros_sleep(0.1);
     move_group_->clearPoseTargets();
     if (!move_group_->setJointValueTarget(cfg_.drop_joints)) {
       RCLCPP_ERROR(this->get_logger(), "drop_joint_positions is outside the joint limits.");
@@ -767,7 +769,7 @@ private:
   bool trigger_named_pose(const std::string & pose_name, const StopFn & stop)
   {
     stop_servo();
-    std::this_thread::sleep_for(100ms);
+    ros_sleep(0.1);
 
     move_group_->clearPoseTargets();
     if (!move_group_->setNamedTarget(pose_name)) {
@@ -783,7 +785,7 @@ private:
     const std::vector<double> & joints, const std::string & what, const StopFn & stop)
   {
     stop_servo();
-    std::this_thread::sleep_for(100ms);
+    ros_sleep(0.1);
 
     move_group_->clearPoseTargets();
     if (!move_group_->setJointValueTarget(joints)) {
@@ -816,7 +818,7 @@ private:
   bool move_to_cartesian_pose(double x, double y, double z, const StopFn & stop)
   {
     stop_servo();
-    std::this_thread::sleep_for(100ms);
+    ros_sleep(0.1);
 
     // (x, y, z) and grasp_orientation describe the TOOL frame; the planner is given the matching end-effector pose.
     Eigen::Isometry3d base_T_tool = Eigen::Isometry3d::Identity();
@@ -904,7 +906,7 @@ private:
       return std::nullopt;
     }
 
-    const auto deadline = make_deadline(timeout_s);
+    const auto deadline = deadline_in(timeout_s);
 
     auto goal_future = client->async_send_goal(goal, typename Client::SendGoalOptions());
     if (goal_future.wait_for(5s) != std::future_status::ready) {
@@ -923,7 +925,7 @@ private:
         client->async_cancel_goal(handle);
         return std::nullopt;
       }
-      if (SteadyClock::now() > deadline) {
+      if (this->now() > deadline) {
         RCLCPP_ERROR(this->get_logger(), "%s: no result after %.1fs; canceling goal.", name.c_str(), timeout_s);
         client->async_cancel_goal(handle);
         return std::nullopt;
@@ -1250,7 +1252,7 @@ private:
     if (!trigger_drop_pose(stop)) {return false;}
 
     // lower the end effector 5 cm along z before releasing
-    std::this_thread::sleep_for(200ms);  // let TF catch up with the final drop pose
+    ros_sleep(0.2);  // let TF catch up with the final drop pose
     double x, y, z;
     if (!get_ee_position(x, y, z)) {return false;}
 

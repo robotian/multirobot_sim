@@ -71,6 +71,10 @@ CAM_FRAME_SKIP = int(os.environ.get("CAMERA_FRAME_SKIP", "0"))  # 0 = publish ev
 # simulated time in step with wall-clock time.
 SIM_RATE_HZ = float(os.environ.get("SIM_RATE_HZ", "20"))
 PHYSICS_HZ = int(os.environ.get("PHYSICS_HZ", "60"))
+# true: the sim publishes /clock (simulation time, monotonic across Stop/Play) and stamps every message with it, so ROS
+# nodes with use_sim_time (the robot containers get the same USE_SIM_TIME) keep step with a sim slower than real time.
+# false: messages are stamped with wall-clock time and there is no /clock.
+USE_SIM_TIME = os.environ.get("USE_SIM_TIME", "true").lower() == "true"
 FORCE_REIMPORT = os.environ.get("FORCE_REIMPORT", "0") == "1"
 # Which D435i streams to publish. Each one costs main-thread time in the sim, so trim if the frame rate suffers.
 # "none" turns the cameras off (no render products at all), which is what gives the streamed viewport its full frame rate.
@@ -579,6 +583,12 @@ _ORIGIN_ALT = 326.0
 _M_PER_DEG_LAT = 111320.0
 
 
+def _stamp(seconds):  # builtin_interfaces/Time from the graph's Stamp node (sim or wall time, see USE_SIM_TIME)
+    from builtin_interfaces.msg import Time
+    ns = int(round(float(seconds) * 1e9))
+    return Time(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
+
+
 def setup(db):
     db.per_instance_state.node = None
     db.per_instance_state.pub = None
@@ -601,7 +611,7 @@ def compute(db):
     m_per_deg_lon = _M_PER_DEG_LAT * math.cos(math.radians(_ORIGIN_LAT))
 
     msg = NavSatFix()
-    msg.header.stamp = state.node.get_clock().now().to_msg()
+    msg.header.stamp = _stamp(db.inputs.stamp)
     msg.header.frame_id = str(db.inputs.frameId)
     msg.status.status = 0  # STATUS_FIX
     msg.status.service = 1  # SERVICE_GPS
@@ -710,6 +720,12 @@ from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 
 
+def _stamp(seconds):  # builtin_interfaces/Time from the graph's Stamp node (sim or wall time, see USE_SIM_TIME)
+    from builtin_interfaces.msg import Time
+    ns = int(round(float(seconds) * 1e9))
+    return Time(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
+
+
 def setup(db):
     db.per_instance_state.sensor = None
     db.per_instance_state.node = None
@@ -754,7 +770,7 @@ def compute(db):
     n = len(ranges)
 
     msg = LaserScan()
-    msg.header.stamp = state.node.get_clock().now().to_msg()
+    msg.header.stamp = _stamp(db.inputs.stamp)
     msg.header.frame_id = str(db.inputs.frameId)
     msg.angle_min = angle_min
     msg.angle_max = angle_max
@@ -809,6 +825,12 @@ import rclpy
 from pxr import Gf, UsdGeom
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2, PointField
+
+
+def _stamp(seconds):  # builtin_interfaces/Time from the graph's Stamp node (sim or wall time, see USE_SIM_TIME)
+    from builtin_interfaces.msg import Time
+    ns = int(round(float(seconds) * 1e9))
+    return Time(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
 
 
 def setup(db):
@@ -876,7 +898,7 @@ def compute(db):
     state.next_row, state.buf, state.n = 0, bytearray(), 0
 
     msg = PointCloud2()
-    msg.header.stamp = state.node.get_clock().now().to_msg()
+    msg.header.stamp = _stamp(db.inputs.stamp)
     msg.header.frame_id = str(db.inputs.frameId)
     msg.height = 1
     msg.width = n
@@ -1583,7 +1605,8 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
 
     nodes = [
         ("Tick", "omni.graph.action.OnPlaybackTick"),
-        ("SysTime", "isaacsim.core.nodes.IsaacReadSystemTime"),
+        # message timestamps: simulation time (USE_SIM_TIME, the same clock as /clock) or wall-clock time
+        ("Stamp", "isaacsim.core.nodes.IsaacReadSimulationTime" if USE_SIM_TIME else "isaacsim.core.nodes.IsaacReadSystemTime"),
         # --- drive: cmd_vel -> wheel velocities (diff drive for every model; BodyDrive adds Ridgeback's sideways motion below)
         ("CmdVel", "omni.graph.scriptnode.ScriptNode"),  # TwistStamped, see CMD_VEL_SCRIPT
         ("BreakLin", "omni.graph.nodes.BreakVector3"),
@@ -1594,7 +1617,8 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
         ("PubTfOdom", "isaacsim.ros2.bridge.ROS2PublishRawTransformTree"),
         ("PubJoints", "isaacsim.ros2.bridge.ROS2PublishJointState"),
     ]
-    values = [
+    stamp = "Stamp.outputs:simulationTime" if USE_SIM_TIME else "Stamp.outputs:systemTime"
+    values = ([("Stamp.inputs:resetOnStop", False)] if USE_SIM_TIME else []) + [  # monotonic across Stop/Play
         ("CmdVel.inputs:namespace", ns),
         ("CmdVel.inputs:topicName", "cmd_vel"),
         ("CmdVel.inputs:script", CMD_VEL_SCRIPT),
@@ -1738,9 +1762,9 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
         ("VelCtl.outputs:odom_ang", "PubOdom.inputs:angularVelocity"),
         ("Odom.outputs:position", "PubTfOdom.inputs:translation"),
         ("Odom.outputs:orientation", "PubTfOdom.inputs:rotation"),
-        ("SysTime.outputs:systemTime", "PubOdom.inputs:timeStamp"),
-        ("SysTime.outputs:systemTime", "PubTfOdom.inputs:timeStamp"),
-        ("SysTime.outputs:systemTime", "PubJoints.inputs:timeStamp"),
+        (stamp, "PubOdom.inputs:timeStamp"),
+        (stamp, "PubTfOdom.inputs:timeStamp"),
+        (stamp, "PubJoints.inputs:timeStamp"),
     ]
 
     # --- camera: one render product feeds every enabled stream
@@ -1771,7 +1795,7 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
             ]
             connections += [
                 ("Odom.outputs:execOut", "PubTfCamera.inputs:execIn"),
-                ("SysTime.outputs:systemTime", "PubTfCamera.inputs:timeStamp"),
+                (stamp, "PubTfCamera.inputs:timeStamp"),
             ]
         for stream, kind in (("color", "rgb"), ("depth", "depth")):
             if stream not in CAM_STREAMS:
@@ -1787,7 +1811,9 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
                     (f"{name}.inputs:topicName", topic),
                     (f"{name}.inputs:frameId", optical),
                     (f"{name}.inputs:frameSkipCount", CAM_FRAME_SKIP),
-                    (f"{name}.inputs:useSystemTime", True),
+                    (f"{name}.inputs:useSystemTime", not USE_SIM_TIME),
+                    # its sim time otherwise restarts at 0 on Stop/Play (Reset scene), behind /clock and the rest
+                    (f"{name}.inputs:resetSimulationTimeOnStop", False),
                 ] + extra
                 connections += [
                     ("RenderProduct.outputs:execOut", f"{name}.inputs:execIn"),
@@ -1819,7 +1845,9 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
                     (f"{name}.inputs:topicName", topic),
                     (f"{name}.inputs:frameId", "camera_1_depth_optical_frame"),
                     (f"{name}.inputs:frameSkipCount", CAM_FRAME_SKIP),
-                    (f"{name}.inputs:useSystemTime", True),
+                    (f"{name}.inputs:useSystemTime", not USE_SIM_TIME),
+                    # its sim time otherwise restarts at 0 on Stop/Play (Reset scene), behind /clock and the rest
+                    (f"{name}.inputs:resetSimulationTimeOnStop", False),
                 ] + extra
                 connections += [
                     ("RenderProduct1.outputs:execOut", f"{name}.inputs:execIn"),
@@ -1863,7 +1891,7 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
             ("ImuRead.outputs:orientation", "PubImu.inputs:orientation"),
             ("ImuRead.outputs:linearAcceleration", "PubImu.inputs:linearAcceleration"),
             ("ImuRead.outputs:angularVelocity", "PubImu.inputs:angularVelocity"),
-            ("SysTime.outputs:systemTime", "PubImu.inputs:timeStamp"),
+            (stamp, "PubImu.inputs:timeStamp"),
         ]
 
     # --- 2D lidar (real robots with lidar2d_link only): see LIDAR2D_READ_SCRIPT's own comment for the sensor
@@ -1901,7 +1929,8 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
             ("Lidar2dRead.inputs:rangeMax", LIDAR2D_RANGE_MAX),
             ("Lidar2dRead.inputs:script", LIDAR2D_READ_SCRIPT),
         ]
-        connections += [("Tick.outputs:tick", "Lidar2dRead.inputs:execIn")]
+        create_attributes += [("Lidar2dRead.inputs:stamp", "double")]
+        connections += [("Tick.outputs:tick", "Lidar2dRead.inputs:execIn"), (stamp, "Lidar2dRead.inputs:stamp")]
 
     # --- 3D lidar (real robots with lidar3d_link only): see LIDAR3D_READ_SCRIPT. Its rays are cast from the chassis
     # body's pose composed with lidar3d_link's pose relative to it (computed once here; both are rigid parts of one
@@ -1953,7 +1982,8 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
             ("Lidar3dRead.inputs:ticksPerScan", LIDAR3D_TICKS_PER_SCAN),
             ("Lidar3dRead.inputs:script", LIDAR3D_READ_SCRIPT),
         ]
-        connections += [("Tick.outputs:tick", "Lidar3dRead.inputs:execIn")]
+        create_attributes += [("Lidar3dRead.inputs:stamp", "double")]
+        connections += [("Tick.outputs:tick", "Lidar3dRead.inputs:execIn"), (stamp, "Lidar3dRead.inputs:stamp")]
 
     # --- GPS x2 (real MTU robots only): see GPS_READ_SCRIPT's own comment for why this publishes directly via
     # a plain rclpy publisher inside the script, not isaacsim.ros2.bridge.ROS2Publisher (the generic any-
@@ -1984,7 +2014,8 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
             (f"{node}.inputs:namespace", ns),
             (f"{node}.inputs:script", GPS_READ_SCRIPT),
         ]
-        connections += [("Tick.outputs:tick", f"{node}.inputs:execIn")]
+        create_attributes += [(f"{node}.inputs:stamp", "double")]
+        connections += [("Tick.outputs:tick", f"{node}.inputs:execIn"), (stamp, f"{node}.inputs:stamp")]
 
     # --- Arm + gripper (real MTU robots only): a second IsaacArticulationController, position-mode, targeting
     # the same chassis articulation root as the wheel drive above. jointNames/positionCommand are wired
@@ -2019,6 +2050,31 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
     og.Controller.edit(
         {"graph_path": f"/Graphs/{ns}", "evaluator_name": "execution"},
         {keys.CREATE_NODES: nodes, keys.CREATE_ATTRIBUTES: create_attributes, keys.SET_VALUES: values, keys.CONNECT: connections},
+    )
+
+
+def build_clock_graph(og):
+    """USE_SIM_TIME: one /clock for the whole fleet (rclcpp/rclpy subscribe to the absolute /clock whatever the node's
+    namespace). Published every played frame from the same simulation time the robots' messages are stamped with;
+    nothing is published while the timeline is stopped (spawning, Reset scene), so ROS time pauses with the sim.
+    resetOnStop=False keeps it monotonic across Stop/Play: a jump back would make every ROS node drop its TF buffer."""
+    if not USE_SIM_TIME:
+        return
+    keys = og.Controller.Keys
+    og.Controller.edit(
+        {"graph_path": "/Graphs/fleet_clock", "evaluator_name": "execution"},
+        {
+            keys.CREATE_NODES: [
+                ("Tick", "omni.graph.action.OnPlaybackTick"),
+                ("SimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),
+                ("PubClock", "isaacsim.ros2.bridge.ROS2PublishClock"),
+            ],
+            keys.SET_VALUES: [("SimTime.inputs:resetOnStop", False), ("PubClock.inputs:topicName", "/clock")],
+            keys.CONNECT: [
+                ("Tick.outputs:tick", "PubClock.inputs:execIn"),
+                ("SimTime.outputs:simulationTime", "PubClock.inputs:timeStamp"),
+            ],
+        },
     )
 
 
@@ -2517,12 +2573,14 @@ async def main():
         await omni.usd.get_context().new_stage_async()
         stage = omni.usd.get_context().get_stage()
         layout = build_world(stage)
+        build_clock_graph(og)
         aim_viewport()
         set_viewport_resolution()
         for _ in range(10):
             await app.next_update_async()
         # The timeline stays stopped: spawn_fleet plays it once every robot of a request is in the scene.
-        log(f"scene ready ({layout['scene_source']}, stopped), waiting for a spawn request in {FLEET_REQUEST}; "
+        log(f"scene ready ({layout['scene_source']}, stopped, {'sim time on /clock' if USE_SIM_TIME else 'wall-clock stamps'}), "
+            f"waiting for a spawn request in {FLEET_REQUEST}; "
             f"models: {', '.join(models)}")
         write_state(scene="ready", ground=SPAWN_LIMIT, **layout)
         if CAM_ON_DEMAND and CAM_STREAMS:

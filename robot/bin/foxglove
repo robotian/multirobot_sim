@@ -6,5 +6,5 @@
 # panel are served from the ROS packages installed in this image.
 ns="${ROBOT_NAMESPACE:?}"
 exec ros2 run foxglove_bridge foxglove_bridge --ros-args -r __ns:=/"$ns" -r __node:=foxglove_bridge \
-    -p port:=8765 -p address:=0.0.0.0 \
+    -p port:=8765 -p address:=0.0.0.0 -p use_sim_time:="${USE_SIM_TIME:-false}" \
     -p "topic_whitelist:=['^/${ns}/.*', '^/rosout$']"

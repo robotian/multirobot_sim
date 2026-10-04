@@ -173,21 +173,21 @@ class MoveItSimBridge(Node):
         """Block until every named joint is within settle_tolerance of its final trajectory position."""
         tol = self.get_parameter('settle_tolerance').value
         timeout = self.get_parameter('settle_timeout').value
-        start = time.monotonic()
+        start = self._now()
         while True:
             worst = max((abs(self._observed[n] - p) for n, p in zip(names, final_positions) if n in self._observed),
                         default=0.0)
             if worst <= tol:
-                if time.monotonic() - start > 0.2:
+                if self._now() - start > 0.2:
                     self.get_logger().info('arm settled %.1fs after the last trajectory point (residual %.3f rad)' % (
-                        time.monotonic() - start, worst))
+                        self._now() - start, worst))
                 return
-            if time.monotonic() - start > timeout:
+            if self._now() - start > timeout:
                 lag = {n: round(self._observed[n] - p, 2) for n, p in zip(names, final_positions)
                        if n in self._observed and abs(self._observed[n] - p) > tol}
                 self.get_logger().warning('arm did not settle within %.0fs of the last trajectory point: %s' % (timeout, lag))
                 return
-            time.sleep(0.05)
+            self._sleep(0.05)
 
     def _on_robot_description(self, msg):
         if self._gripper_ready.is_set():
@@ -273,10 +273,18 @@ class MoveItSimBridge(Node):
     def _seconds(duration):
         return duration.sec + duration.nanosec * 1e-9
 
+    def _now(self):
+        """Seconds on the node's clock: ROS time, i.e. the simulator's /clock with use_sim_time, else wall time.
+        All pacing and timeouts here use it, so a sim running slower than real time plays a trajectory at its
+        planned speed in simulated time (wall-clock pacing would move the arm too fast relative to the sim)."""
+        return self.get_clock().now().nanoseconds * 1e-9
+
     def _sleep_until(self, start, target_t):
-        sleep_for = start + target_t - time.monotonic()
-        if sleep_for > 0:
-            time.sleep(sleep_for)
+        while self._now() < start + target_t and rclpy.ok():
+            time.sleep(0.005)
+
+    def _sleep(self, seconds):
+        self._sleep_until(self._now(), seconds)
 
     def _execute_trajectory(self, goal_handle):
         trajectory = goal_handle.request.trajectory
@@ -292,7 +300,7 @@ class MoveItSimBridge(Node):
             'trajectory: %d points over %.1fs, first %s, final %s' % (
                 len(points), self._seconds(points[-1].time_from_start),
                 [round(v, 3) for v in points[0].positions], [round(v, 3) for v in points[-1].positions]))
-        start = time.monotonic()
+        start = self._now()
 
         # First waypoint: no prior point to interpolate from, so jump straight to it (matches MoveIt-generated
         # trajectories, whose own first point is normally at time_from_start == 0, i.e. the planning start state).
@@ -338,7 +346,7 @@ class MoveItSimBridge(Node):
         driver, target = self.gripper_joint_names[0], positions[0]
         tol = self.get_parameter('gripper_tolerance').value
         timeout = self.get_parameter('gripper_timeout').value
-        start = time.monotonic()
+        start = self._now()
         last, last_change = self._observed.get(driver), start
         reached = stalled = False
         while True:
@@ -347,16 +355,16 @@ class MoveItSimBridge(Node):
                 reached = True
                 break
             if current is not None and last is not None and abs(current - last) > 1e-3:
-                last_change = time.monotonic()
+                last_change = self._now()
             last = current
-            if time.monotonic() - last_change > 0.5 and time.monotonic() - start > 0.5:
+            if self._now() - last_change > 0.5 and self._now() - start > 0.5:
                 stalled = True  # not moving any more (e.g. closed on an object)
                 break
-            if time.monotonic() - start > timeout:
+            if self._now() - start > timeout:
                 break
-            time.sleep(0.02)
+            self._sleep(0.02)
         self.get_logger().info('gripper -> %.3f: %s after %.2fs (driver at %s)' % (
-            position, 'reached' if reached else ('stalled' if stalled else 'timed out'), time.monotonic() - start,
+            position, 'reached' if reached else ('stalled' if stalled else 'timed out'), self._now() - start,
             'unknown' if current is None else '%.3f' % current))
         goal_handle.succeed()
         result = GripperCommand.Result()
