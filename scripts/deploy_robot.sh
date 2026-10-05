@@ -18,7 +18,9 @@
 #
 # Layout on the robot (see scripts/CLAUDE.md, "Deploying to a real robot"):
 #   ~/robot_ws    the robot's own packages (drivers, arm, cameras: whatever differs per robot), built by hand;
-#                 a COLCON_IGNORE in each package this repo provides
+#                 a COLCON_IGNORE in each package the robot should take from this repo. A package the
+#                 robot's workspaces still build is the robot's: this repo's copy isn't built there (e.g.
+#                 swiftnav_ros2_driver: here a messages-only stand-in for the sim, there Swift Navigation's driver)
 #   ~/colcon_ws   exactly this repo's colcon_ws/src (rsync --delete: nothing else belongs there), built here
 # Both are listed in the robot's /etc/clearpath/robot.yaml system.ros2.workspaces, robot_ws first; the build
 # sources every workspace listed before ~/colcon_ws as its underlay. ~/colcon_ws/DEPLOYED records the commit.
@@ -163,17 +165,22 @@ for w in "${workspaces[@]}"; do
 done
 [ $listed = 1 ] || echo "warning: /etc/clearpath/robot.yaml system.ros2.workspaces doesn't list $own: the robot won't use this build" >&2
 cd ~/colcon_ws
-# packages an underlay workspace (not /opt/ros) already has: colcon_ws's copy wins at run time
-override=()
+# a package an underlay workspace (not /opt/ros) already builds is the robot's own: skip this repo's copy and
+# drop what an earlier deploy built of it, so the underlay's is the one found
+skip=()
+IFS=: read -ra prefixes <<<"${AMENT_PREFIX_PATH:-}"
 for p in $(colcon list -n --base-paths src); do
-    IFS=: read -ra prefixes <<<"${AMENT_PREFIX_PATH:-}"
     for pre in "${prefixes[@]}"; do
-        [[ "$pre" == /opt/ros/* ]] && continue
-        [ -f "$pre/share/$p/package.xml" ] && { override+=("$p"); echo "overrides $p in $pre"; break; }
+        [[ "$pre" == /opt/ros/* || "$pre" == "$HOME/colcon_ws/"* ]] && continue
+        if [ -f "$pre/share/$p/package.xml" ]; then
+            skip+=("$p"); rm -rf "build/$p" "install/$p"
+            echo "not built: $p, the robot's own is in ${pre%/install/*} (COLCON_IGNORE it there to use this repo's)"
+            break
+        fi
     done
 done
 rosdep check --from-paths src --ignore-src 2>/dev/null </dev/null | grep -v '^All system' || true
-[ ${#override[@]} = 0 ] || set -- --allow-overriding "${override[@]}" "$@"
+[ ${#skip[@]} = 0 ] || set -- --packages-ignore "${skip[@]}" "$@"
 colcon build --symlink-install "$@" --cmake-args -DCMAKE_BUILD_TYPE=Release </dev/null
 echo "built; restart clearpath-robot (sudo systemctl restart clearpath-robot) or your launch to use it"
 }
