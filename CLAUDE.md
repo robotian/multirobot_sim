@@ -33,6 +33,8 @@ docker exec j100_0921 bash -c 'python3 /scripts/calibrate_velocity.py [--modes l
 docker exec j100_0921 bash -c 'arm_goto cut_init [--direct] [--velocity-scale 0.3]'   # arm to an SRDF group_state (`arm_goto --list`)
 docker exec j100_0921 bash -c 'arm_joints [--record 12]'  # commanded vs observed arm joints as JSON
 scripts/foxglove_layout.sh [ns...]        # foxglove/<ns>.json layout with the robot's URDF in a 3D panel
+scripts/deploy_robot.sh <id> [--dry-run]  # rsync colcon_ws/src to a real robot's ~/colcon_ws and build it there (over its ~/robot_ws); see scripts/CLAUDE.md
+scripts/deploy_robot.sh <id> --pull       # copy files edited on the robot since the last deploy back into colcon_ws/src (deploys nothing)
 ```
 
 ## Conventions
