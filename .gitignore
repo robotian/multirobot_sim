@@ -8,7 +8,8 @@ colcon_ws/log/
 # Real robots' own actual robot.yaml files and their original colcon workspaces. The packages the sim needs
 # from them are in colcon_ws/src/ instead: git-backed ones as submodules (mtu32_husky/mocap_fake_localizer on
 # their `sim` branch), the rest as plain files.
-robot_data/
+robot_data/**/colcon_ws/
+robot_data/pictures/**
 # Per-robot Foxglove layouts written by scripts/foxglove_layout.sh
 foxglove/
 # sim/assets/ is tracked, its binaries through Git LFS (.gitattributes); hand-made backups of them are not
