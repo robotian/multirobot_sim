@@ -2,7 +2,8 @@
 """Local web UI for the simulated fleet: start/stop/reset the sim (the scene only), spawn robots at chosen poses
 into the running scene (and start their containers), start/stop
 mtu32_bringup's sim_robot_upstart.launch.py per robot, and move the arm to named SRDF states
-(optionally recording commanded vs. observed joint positions while it moves).
+(optionally recording commanded vs. observed joint positions while it moves), list OptiTrack Motive's rigid bodies
+and assign them to robots, and set each robot's ref_localizer (map -> odom source / anchor).
 
   python3 tools/sim_ui/server.py                 # http://127.0.0.1:8090
   python3 tools/sim_ui/server.py --host 0.0.0.0  # reachable from the LAN -- it runs docker commands, so only on a trusted network
@@ -11,12 +12,16 @@ Stdlib only. Long operations run as background jobs whose output the page polls.
 """
 import argparse
 import base64
+import collections
 import hashlib
 import importlib
 import json
 import math
 import os
 import re
+import select
+import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -29,6 +34,8 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import fleet_ctl  # noqa: E402  (the sim's spawn protocol: request/state files)
+sys.path.insert(0, str(ROOT / "colcon_ws/src/mocap_fake_localizer/scripts"))
+import natnet  # noqa: E402  (OptiTrack Motive's NatNet protocol, shared with the robots' natnet_ref_pose.py)
 
 PAGE = Path(__file__).with_name("index.html")
 PROJECT = "clearpath-fleet"
@@ -108,7 +115,8 @@ def start_job(name, fn):
     def target():
         try:
             ok = fn(job)
-            job.status = "done" if ok in (None, True, 0) else "failed"
+            # not `ok in (None, True, 0)`: False == 0, so every failed `return rc == 0` read as done
+            job.status = "done" if ok is None or ok is True or (type(ok) is int and ok == 0) else "failed"
         except Exception as e:  # surfaced in the job log rather than killing the server
             job.log(f"error: {e!r}")
             job.status = "failed"
@@ -532,6 +540,228 @@ def get_launch_log(q):
     return {"log": out}
 
 
+# ---------------------------------------------------------------- motion capture / localization
+
+# Which Motive rigid body each robot follows: a ROS params file keyed by node (/<ns>/natnet_ref_pose), loaded by
+# mtu32_bringup's bringup_main.launch.py between config/ref_localization.yaml and the hand-written
+# config/ref_localization/<ns>.yaml. Written as JSON (valid YAML: the server stays stdlib-only) under a comment
+# header. It is part of colcon_ws/src, so a real robot gets it with the workspace.
+ASSIGNMENTS = ROOT / "colcon_ws/src/mtu32_husky/mtu32_bringup/config/ref_localization/assignments.yaml"
+ASSIGNMENTS_HEADER = """# Motive rigid body per robot (natnet_ref_pose's rigid_body), written by multirobot_sim's web UI (tools/sim_ui).
+# A robot without an entry follows the rigid body named after its namespace. Loaded by bringup_main.launch.py
+# after ../ref_localization.yaml and before <namespace>.yaml.
+"""
+MOCAP_IDLE_S = 30  # the listener stops this long after the page's last poll
+
+
+def read_assignments():
+    try:
+        text = "\n".join(l for l in ASSIGNMENTS.read_text().splitlines() if not l.lstrip().startswith("#"))
+        data = json.loads(text or "{}")
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {k.strip("/").split("/")[0]: v.get("ros__parameters", {}).get("rigid_body", "")
+            for k, v in data.items() if k.endswith("/natnet_ref_pose")}
+
+
+def write_assignments(mapping):
+    data = {f"/{ns}/natnet_ref_pose": {"ros__parameters": {"rigid_body": rb}} for ns, rb in sorted(mapping.items())}
+    tmp = ASSIGNMENTS.with_suffix(".tmp")
+    tmp.write_text(ASSIGNMENTS_HEADER + json.dumps(data, indent=2) + "\n")
+    tmp.replace(ASSIGNMENTS)
+
+
+class MocapMonitor:
+    """Listens to Motive's NatNet stream on this host while the page polls it: rigid bodies, tracking, rate.
+
+    Registers for unicast (NAT_CONNECT from the data socket, as natnet_ref_pose.py does) and joins the default
+    multicast group, so either of Motive's transmission types works."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.server = None
+        self.thread = None
+        self.last_poll = 0.0
+        self.reset()
+
+    def reset(self):
+        self.version = None
+        self.app = None
+        self.names = {}
+        self.bodies = {}
+        self.frames = collections.deque()
+        self.error = None
+
+    def poll(self, server):
+        with self.lock:
+            self.last_poll = time.time()
+            if server != self.server or not (self.thread and self.thread.is_alive()):
+                self.server = server
+                self.reset()
+                self.thread = threading.Thread(target=self.run, args=(server,), daemon=True)
+                self.thread.start()
+            now = time.time()
+            while self.frames and now - self.frames[0] > 2.0:
+                self.frames.popleft()
+            return {
+                "server": server,
+                "app": self.app, "natnet": ".".join(map(str, self.version[:2])) if self.version else None,
+                "rate": round(len(self.frames) / 2.0, 1),
+                "error": self.error,
+                "bodies": [dict(id=i, name=self.names.get(i, ""), **b) for i, b in sorted(self.bodies.items())],
+            }
+
+    def run(self, server):
+        try:
+            local = self.local_ip(server)
+            data = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            data.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            data.bind(("", natnet.DATA_PORT))
+            try:
+                data.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                                socket.inet_aton(natnet.DEFAULT_MULTICAST) + socket.inet_aton(local))
+            except OSError:
+                pass  # e.g. Motive on this machine (loopback): unicast only
+        except OSError as e:
+            self.error = f"cannot listen for Motive: {e}"
+            return
+        target = (server, natnet.COMMAND_PORT)
+
+        def send(message_id):
+            try:
+                data.sendto(struct.pack("<HH", message_id, 0), target)
+            except OSError as e:
+                self.error = f"cannot reach {server}: {e}"
+
+        last_connect = last_modeldef = 0.0
+        last_number = None
+        try:
+            while self.server == server and time.time() - self.last_poll < MOCAP_IDLE_S:
+                now = time.time()
+                if now - last_connect > 2.0 and (not self.frames or now - self.frames[-1] > 1.0):
+                    send(natnet.NAT_CONNECT)  # (re)register; also answers with the NatNet version
+                    last_connect = now
+                if self.version and now - last_modeldef > 5.0:
+                    send(natnet.NAT_REQUEST_MODELDEF)  # rigid bodies renamed / added in Motive
+                    last_modeldef = now
+                if not select.select([data], [], [], 0.2)[0]:
+                    continue
+                packet, addr = data.recvfrom(65535)
+                if addr[0] != server or len(packet) < 4:
+                    continue
+                message_id = struct.unpack_from("<H", packet)[0]
+                try:
+                    if message_id == natnet.NAT_SERVERINFO:
+                        name, app_version, self.version = natnet.parse_server_info(packet)
+                        self.app = f"{name} {'.'.join(map(str, app_version[:2]))}"
+                        self.error = None
+                    elif self.version is None:
+                        continue
+                    elif message_id == natnet.NAT_MODELDEF:
+                        self.names = natnet.parse_model_def(packet, self.version)
+                    elif message_id == natnet.NAT_FRAMEOFDATA:
+                        number, bodies = natnet.parse_frame(packet, self.version)
+                        if last_number is not None and 0 <= last_number - number < 1000:
+                            continue  # the same frame twice (unicast + multicast)
+                        last_number = number
+                        with self.lock:
+                            self.frames.append(time.time())
+                            self.bodies = {i: self.body(pos, quat, err, tracked)
+                                           for i, (pos, quat, err, tracked) in bodies.items()}
+                except (struct.error, ValueError, IndexError) as e:
+                    self.error = f"cannot parse NatNet message {message_id}: {e}"
+        finally:
+            data.close()
+
+    @staticmethod
+    def local_ip(server):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect((server, natnet.COMMAND_PORT))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+
+    @staticmethod
+    def body(pos, quat, err, tracked):
+        x, y, z, w = quat
+        yaw = math.degrees(math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))  # Motive Z-up
+        return {"tracked": tracked, "pos": [round(v, 3) for v in pos], "yaw": round(yaw, 1),
+                "err_mm": round(err * 1000, 2)}
+
+
+MOCAP = MocapMonitor()
+IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+
+
+def get_mocap(q):
+    server = q.get("server") or "192.168.50.80"
+    if not IP_RE.match(server):
+        raise ValueError("server must be an IPv4 address")
+    snap = MOCAP.poll(server)
+    snap["assignments"] = read_assignments()
+    # robots to offer: MTU's real robots (ids with "_") and the running sim robots
+    snap["robots"] = sorted({m for m in available_models() if "_" in m} |
+                            {r["name"] for r in containers() if r["service"].startswith("robot")})
+    return snap
+
+
+def act_mocap_assign(body):
+    robot, rigid_body = body.get("robot"), body.get("rigid_body", "")
+    if not (isinstance(robot, str) and NAME_RE.match(robot)):
+        raise ValueError("bad robot name")
+    if not isinstance(rigid_body, str) or (rigid_body and not re.fullmatch(r"[\w.\- ]+", rigid_body)):
+        raise ValueError("bad rigid body name")
+    mapping = read_assignments()
+    for ns in [ns for ns, rb in mapping.items() if rb == rigid_body and ns != robot]:
+        del mapping[ns]  # a rigid body follows one robot
+    if rigid_body and rigid_body != robot:
+        mapping[robot] = rigid_body
+    else:
+        mapping.pop(robot, None)  # unassigned, or the default (rigid body named after the robot)
+    write_assignments(mapping)
+    return {"assignments": mapping}
+
+
+LOC_SOURCES = ("auto", "ref", "gps", "external")
+LOC_ANCHORS = ("fixed", "start", "external")
+LOC_NODE = "/$ROBOT_NAMESPACE/ref_localizer"
+
+
+def get_localization(q):
+    robot = running_robot(q.get("robot"))
+    code, out = in_robot(robot, f"timeout 6 ros2 topic echo --once --no-daemon --full-length {LOC_NODE}/status "
+                                "std_msgs/msg/String", timeout=15)
+    m = re.search(r"^data: '(.*)'$", out, re.M)
+    if code != 0 or not m:
+        return {"running": False}  # no ref_localizer (sim_robot_upstart not started)
+    return {"running": True, **json.loads(m.group(1).replace("''", "'"))}
+
+
+def act_localization_set(body):
+    robot = running_robot(body.get("robot"))
+    cmds = []
+    if body.get("source"):
+        if body["source"] not in LOC_SOURCES:
+            raise ValueError(f"source must be one of {LOC_SOURCES}")
+        cmds.append(f"ros2 param set {LOC_NODE} source {body['source']}")
+    if body.get("anchor"):
+        if body["anchor"] not in LOC_ANCHORS:
+            raise ValueError(f"anchor must be one of {LOC_ANCHORS}")
+        cmds.append(f"ros2 param set {LOC_NODE} anchor {body['anchor']}")
+    if body.get("service"):
+        if body["service"] not in ("save_anchor", "reset_anchor"):
+            raise ValueError("service must be save_anchor or reset_anchor")
+        # ros2 service call exits 0 whatever the response: fail the job on success=False
+        cmds.append(f'out=$(ros2 service call {LOC_NODE}/{body["service"]} std_srvs/srv/Trigger); echo "$out"; '
+                    f'grep -q "success=True" <<< "$out"')
+    if not cmds:
+        raise ValueError("nothing to do")
+    what = ", ".join(f"{k} {body[k]}" for k in ("source", "anchor", "service") if body.get(k))
+    return start_job(f"{robot}: localization {what}",
+                     lambda j: all(j.run(["docker", "exec", robot, "bash", "-c", c]) == 0 for c in cmds))
+
+
 POST = {
     "/api/sim/start": act_sim_start,
     "/api/sim/stop": act_sim_stop,
@@ -544,12 +774,16 @@ POST = {
     "/api/cutstem/start": act_cutstem_start,
     "/api/rviz/start": act_rviz_start,
     "/api/cutstem/stop": act_cutstem_stop,
+    "/api/mocap/assign": act_mocap_assign,
+    "/api/localization/set": act_localization_set,
 }
 GET = {
     "/api/status": lambda q: status(),
     "/api/arm/states": get_arm_states,
     "/api/joints": get_joints,
     "/api/launch/log": get_launch_log,
+    "/api/mocap": get_mocap,
+    "/api/localization": get_localization,
     "/api/jobs": lambda q: [j.to_json() for j in sorted(JOBS.values(), key=lambda j: -j.started)],
     "/api/job": lambda q: JOBS[q["id"]].to_json(full=True),
 }

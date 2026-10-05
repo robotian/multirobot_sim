@@ -106,6 +106,21 @@
 
   <div class="col">
     <section class="card">
+      <h2>Motion capture</h2>
+      <div class="row">
+        <label title="OptiTrack Motive's address (its NatNet stream: command port 1510, data port 1511; unicast or multicast)">Motive
+          <input id="mocapServer" value="192.168.50.80" style="width:130px"></label>
+        <button id="mocapBtn" class="ghost" onclick="toggleMocap()">Listen</button>
+        <span id="mocapPill" class="pill">off</span>
+      </div>
+      <div class="muted" style="font-size:12px">Motive's rigid bodies, live from this machine. Robot: which robot follows
+        the rigid body (its natnet_ref_pose), saved to mtu32_bringup's config/ref_localization/assignments.yaml; a robot
+        without an entry follows the rigid body named after it. Real robots read it at their next launch (deploy
+        colcon_ws to them). In the simulator the reference pose comes from Isaac Sim, not Motive.</div>
+      <div id="mocapBody"></div>
+    </section>
+
+    <section class="card">
       <h2>Jobs</h2>
       <div id="jobs" class="jobs muted">none yet</div>
       <div id="jobTitle" class="muted" style="margin-top:8px"></div>
@@ -318,7 +333,8 @@ window.addEventListener('resize', drawMap);
 // ------------------------------------------------------------ robots
 function renderRobots() {
   const box = document.getElementById('robots');
-  const open = new Set([...box.querySelectorAll('details[open]')].map(d => d.dataset.robot));
+  const open = new Set([...box.querySelectorAll('details[data-robot][open]')].map(d => d.dataset.robot));
+  const locOpen = new Set([...box.querySelectorAll('details[data-loc][open]')].map(d => d.dataset.loc));
   // sig cleared too: the same robots coming back (e.g. respawned) would otherwise match it and never be drawn
   if (!status.robots.length) { box.innerHTML = '<span class="muted">no robot containers</span>'; delete box.dataset.sig; return; }
   // Only rebuild when the set/state of robots changes, so inputs being edited aren't wiped every poll.
@@ -349,6 +365,20 @@ function renderRobots() {
           return `<button class="ghost" onclick="post('/api/rviz/start',{robot:'${esc(r.name)}',view:'${v}'})" ${on ? 'disabled' : ''}
             title="ros2 launch clearpath_viz view_${v}.launch.py namespace:=${esc(r.name)}${on ? ' (open; close its window to stop it)' : ''}">${label}${on ? ' (open)' : ''}</button>`;
         }).join('')}</div>
+      <details data-loc="${esc(r.name)}" ${locOpen.has(r.name) ? 'open' : ''} ontoggle="this.open && loadLoc('${esc(r.name)}')">
+        <summary>Localization</summary>
+        <div class="row locstat muted">loading...</div>
+        <div class="row">
+          <label title="What drives map -> odom. auto: the reference pose (the sim's ref_pose / Motive) while it arrives, else GPS. external: SLAM / AMCL publishes it">Source
+            <select class="locsrc">${['auto', 'ref', 'gps', 'external'].map(v => `<option>${v}</option>`).join('')}</select></label>
+          <label title="Where map sits in ref_frame. fixed: map_pose_in_ref or the anchor file. start: where the robot is now. external: measured from SLAM / AMCL's map (needs source external or gps)">Anchor
+            <select class="locanc">${['fixed', 'start', 'external'].map(v => `<option>${v}</option>`).join('')}</select></label>
+          <button onclick="setLoc('${esc(r.name)}')">Apply</button>
+          <button class="ghost" onclick="locService('${esc(r.name)}','save_anchor')" title="Write the current anchor (ref_frame -> map) to ~/.ros/ref_anchor_<ns>.yaml in the robot (or its anchor_file)">Save anchor</button>
+          <button class="ghost" onclick="locService('${esc(r.name)}','reset_anchor')" title="Reload the fixed anchor, or re-anchor start / external on the next pose">Reset anchor</button>
+          <button class="ghost" onclick="loadLoc('${esc(r.name)}')">Refresh</button>
+        </div>
+      </details>
       <details data-robot="${esc(r.name)}" ${open.has(r.name) || r.launch ? 'open' : ''} ontoggle="this.open && loadStates('${esc(r.name)}')">
         <summary>Arm</summary>
         <div class="row">
@@ -364,7 +394,97 @@ function renderRobots() {
       </details>` : ''}
     </div>`;
   }).join('');
-  box.querySelectorAll('details[open]').forEach(d => loadStates(d.dataset.robot));
+  box.querySelectorAll('details[data-robot][open]').forEach(d => loadStates(d.dataset.robot));
+  box.querySelectorAll('details[data-loc][open]').forEach(d => loadLoc(d.dataset.loc));
+}
+
+// ------------------------------------------------------------ localization (ref_localizer, per robot)
+async function loadLoc(robot) {
+  const el = document.querySelector(`details[data-loc="${robot}"]`);
+  if (!el) return;
+  const stat = el.querySelector('.locstat');
+  stat.textContent = 'reading ref_localizer/status...';
+  let s;
+  try { s = await api('/api/localization?robot=' + encodeURIComponent(robot)); }
+  catch (e) { stat.textContent = e.message; return; }
+  if (!s.running) { stat.innerHTML = 'no ref_localizer running (start sim_robot_upstart)'; return; }
+  el.querySelector('.locsrc').value = s.source;
+  el.querySelector('.locanc').value = s.anchor;
+  const age = v => v === null ? 'none' : v < 1 ? `${(v * 1000).toFixed(0)} ms` : `${v.toFixed(1)} s`;
+  const p = s.map_pose_in_ref;
+  const yaw = p ? (2 * Math.atan2(p[5], p[6]) * 180 / Math.PI).toFixed(1) : null;
+  stat.innerHTML = `<span class="pill ${s.active ? 'ok' : s.source === 'external' ? '' : 'warn'}">map->odom: ${
+      s.source === 'external' ? 'external' : s.active ? 'from ' + esc(s.active) : s.publishing ? 'holding' : 'none'}</span>
+    <span>${s.anchored ? `map at (${p[0].toFixed(2)}, ${p[1].toFixed(2)}), ${yaw}° in ref_frame <span class="muted">(${esc(s.anchored_from)})</span>` : 'map not anchored'}</span>
+    <span class="muted">ref_pose ${age(s.ref_age)} · GPS ${age(s.gps_age)}</span>`;
+}
+async function setLoc(robot) {
+  const el = document.querySelector(`details[data-loc="${robot}"]`);
+  await post('/api/localization/set', { robot, source: el.querySelector('.locsrc').value, anchor: el.querySelector('.locanc').value });
+  setTimeout(() => loadLoc(robot), 3000);
+}
+async function locService(robot, service) {
+  await post('/api/localization/set', { robot, service });
+  setTimeout(() => loadLoc(robot), 3000);
+}
+
+// ------------------------------------------------------------ motion capture (Motive's rigid bodies)
+let mocapOn = false, mocapTimer = null, mocapSig = '';
+try { const v = localStorage.getItem('mocapServer'); if (v) document.getElementById('mocapServer').value = v; } catch (e) {}
+function toggleMocap() {
+  mocapOn = !mocapOn;
+  document.getElementById('mocapBtn').textContent = mocapOn ? 'Stop' : 'Listen';
+  clearTimeout(mocapTimer);
+  if (mocapOn) { try { localStorage.setItem('mocapServer', document.getElementById('mocapServer').value); } catch (e) {} pollMocap(); }
+  else { document.getElementById('mocapPill').textContent = 'off'; document.getElementById('mocapPill').className = 'pill'; }
+}
+async function pollMocap() {
+  if (!mocapOn) return;
+  let m;
+  try { m = await api('/api/mocap?server=' + encodeURIComponent(document.getElementById('mocapServer').value.trim())); }
+  catch (e) { toast(e.message); return toggleMocap(); }
+  const pill = document.getElementById('mocapPill');
+  pill.textContent = m.error ? m.error : !m.app ? 'waiting for Motive...' : `${m.app}, NatNet ${m.natnet} · ${m.rate} Hz`;
+  pill.className = 'pill ' + (m.error ? 'bad' : m.rate > 0 ? 'ok' : 'warn');
+  renderMocap(m);
+  mocapTimer = setTimeout(pollMocap, 1000);
+}
+function followerOf(m, name) {
+  // the robot assigned to this rigid body, else the robot named like it (the default), else none
+  const a = Object.entries(m.assignments).find(([, rb]) => rb === name);
+  if (a) return [a[0], false];
+  return m.robots.includes(name) && !(name in m.assignments) ? [name, true] : ['', false];
+}
+function renderMocap(m) {
+  const box = document.getElementById('mocapBody');
+  if (!m.bodies.length) { box.innerHTML = m.app ? '<span class="muted">no rigid bodies in the stream</span>' : ''; mocapSig = ''; return; }
+  // rebuild only when the rigid bodies / assignments change (keeps an open dropdown alive); else update the cells
+  const sig = JSON.stringify([m.bodies.map(b => [b.id, b.name]), m.assignments, m.robots]);
+  if (sig !== mocapSig) {
+    mocapSig = sig;
+    box.innerHTML = `<table style="width:100%"><tr><th>id</th><th>rigid body</th><th>tracked</th><th>x</th><th>y</th><th>z</th><th>yaw°</th><th>err mm</th><th>robot</th></tr>${
+      m.bodies.map(b => {
+        const [follower, byName] = followerOf(m, b.name);
+        return `<tr data-rb="${b.id}"><td>${b.id}</td><td>${esc(b.name)}</td><td class="trk"></td><td class="x"></td><td class="y"></td><td class="z"></td><td class="yaw"></td><td class="err"></td>
+          <td><select onchange="assignMocap(this, '${esc(b.name)}', '${esc(follower)}')"><option value="">(none)</option>${
+            m.robots.map(r => `<option ${r === follower ? 'selected' : ''} value="${esc(r)}">${esc(r)}${r === follower && byName ? ' (by name)' : ''}</option>`).join('')}</select></td></tr>`;
+      }).join('')}</table>`;
+  }
+  m.bodies.forEach(b => {
+    const row = box.querySelector(`tr[data-rb="${b.id}"]`);
+    if (!row) return;
+    row.querySelector('.trk').innerHTML = b.tracked ? '<span class="pill ok">yes</span>' : '<span class="pill bad">no</span>';
+    ['x', 'y', 'z'].forEach((k, i) => row.querySelector('.' + k).textContent = b.tracked ? b.pos[i].toFixed(3) : '-');
+    row.querySelector('.yaw').textContent = b.tracked ? b.yaw.toFixed(1) : '-';
+    row.querySelector('.err').textContent = b.tracked ? b.err_mm.toFixed(2) : '-';
+  });
+}
+async function assignMocap(sel, rigidBody, previous) {
+  try {
+    if (previous && previous !== sel.value) await api('/api/mocap/assign', { robot: previous, rigid_body: '' });
+    if (sel.value) await api('/api/mocap/assign', { robot: sel.value, rigid_body: rigidBody });
+    mocapSig = '';
+  } catch (e) { toast(e.message); }
 }
 
 async function loadStates(robot) {
