@@ -444,11 +444,18 @@ async function pollMocap() {
   try { m = await api('/api/mocap?server=' + encodeURIComponent(document.getElementById('mocapServer').value.trim())); }
   catch (e) { toast(e.message); return toggleMocap(); }
   const pill = document.getElementById('mocapPill');
-  pill.textContent = m.error ? m.error : !m.app ? 'waiting for Motive...' : `${m.app}, NatNet ${m.natnet} · ${m.rate} Hz`;
+  pill.textContent = m.error ? m.error : !m.app ? 'waiting for Motive...' : `${m.app}, NatNet ${m.natnet} · ${
+    m.rate > 0 ? m.rate + ' Hz' : m.age == null ? 'no frames' : `no frames for ${fmtAge(m.age)}`}`;
+  // Motive answers commands (server info, rigid body names) but its frame data doesn't reach this machine
+  pill.title = m.app && !(m.rate > 0) ? "Motive answers but streams no frames here: this host's firewall letting UDP port 1511 in " +
+    "(sudo ufw allow from <Motive> to any port 1511 proto udp), Motive in Live mode (not a paused take), " +
+    "Streaming pane 'Broadcast Frame Data' on, Local Interface = the address above, multicast group 239.255.42.99 " +
+    "(or Unicast), and the network passing its multicast (IGMP snooping without a querier drops it)" : '';
   pill.className = 'pill ' + (m.error ? 'bad' : m.rate > 0 ? 'ok' : 'warn');
   renderMocap(m);
   mocapTimer = setTimeout(pollMocap, 1000);
 }
+function fmtAge(s) { return s < 90 ? Math.round(s) + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : Math.round(s / 3600) + ' h'; }
 function followerOf(m, name) {
   // the robot assigned to this rigid body, else the robot named like it (the default), else none
   const a = Object.entries(m.assignments).find(([, rb]) => rb === name);
@@ -457,7 +464,9 @@ function followerOf(m, name) {
 }
 function renderMocap(m) {
   const box = document.getElementById('mocapBody');
-  if (!m.bodies.length) { box.innerHTML = m.app ? '<span class="muted">no rigid bodies in the stream</span>' : ''; mocapSig = ''; return; }
+  if (!m.bodies.length) { box.innerHTML = !m.app ? '' : m.age == null ?
+    '<span class="muted">no frame data from Motive yet (hover the status for what to check)</span>' :
+    '<span class="muted">no rigid bodies in the stream</span>'; mocapSig = ''; return; }
   // rebuild only when the rigid bodies / assignments change (keeps an open dropdown alive); else update the cells
   const sig = JSON.stringify([m.bodies.map(b => [b.id, b.name]), m.assignments, m.robots]);
   if (sig !== mocapSig) {
@@ -473,7 +482,9 @@ function renderMocap(m) {
   m.bodies.forEach(b => {
     const row = box.querySelector(`tr[data-rb="${b.id}"]`);
     if (!row) return;
-    row.querySelector('.trk').innerHTML = b.tracked ? '<span class="pill ok">yes</span>' : '<span class="pill bad">no</span>';
+    const stale = !(m.rate > 0);  // the last frame's values, Motive isn't streaming them now
+    row.querySelector('.trk').innerHTML = stale ? '<span class="pill warn" title="values from the last frame received">stale</span>'
+      : b.tracked ? '<span class="pill ok">yes</span>' : '<span class="pill bad">no</span>';
     ['x', 'y', 'z'].forEach((k, i) => row.querySelector('.' + k).textContent = b.tracked ? b.pos[i].toFixed(3) : '-');
     row.querySelector('.yaw').textContent = b.tracked ? b.yaw.toFixed(1) : '-';
     row.querySelector('.err').textContent = b.tracked ? b.err_mm.toFixed(2) : '-';

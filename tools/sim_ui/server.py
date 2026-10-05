@@ -590,6 +590,7 @@ class MocapMonitor:
         self.names = {}
         self.bodies = {}
         self.frames = collections.deque()
+        self.last_frame = None
         self.error = None
 
     def poll(self, server):
@@ -607,6 +608,8 @@ class MocapMonitor:
                 "server": server,
                 "app": self.app, "natnet": ".".join(map(str, self.version[:2])) if self.version else None,
                 "rate": round(len(self.frames) / 2.0, 1),
+                # seconds since the last frame (None: none yet); bodies keep the last frame's values
+                "age": round(now - self.last_frame, 1) if self.last_frame else None,
                 "error": self.error,
                 "bodies": [dict(id=i, name=self.names.get(i, ""), **b) for i, b in sorted(self.bodies.items())],
             }
@@ -665,7 +668,8 @@ class MocapMonitor:
                             continue  # the same frame twice (unicast + multicast)
                         last_number = number
                         with self.lock:
-                            self.frames.append(time.time())
+                            self.last_frame = time.time()
+                            self.frames.append(self.last_frame)
                             self.bodies = {i: self.body(pos, quat, err, tracked)
                                            for i, (pos, quat, err, tracked) in bodies.items()}
                 except (struct.error, ValueError, IndexError) as e:
