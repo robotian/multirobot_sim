@@ -26,3 +26,7 @@
 	path = colcon_ws/src/mtu32_husky
 	url = https://github.com/robotian/mtu32_husky.git
 	branch = sim
+[submodule "colcon_ws/src/husky_operations_manager"]
+	path = colcon_ws/src/husky_operations_manager
+	url = https://github.com/robotian/husky_operations_manager.git
+	branch = waypoint_based_navigation
