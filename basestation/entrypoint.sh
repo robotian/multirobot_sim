@@ -60,6 +60,14 @@ log "PostgreSQL $PG_MAJOR ready on port $PGPORT (database $PGDATABASE, user $PGU
 # its sessions are clients of it (ZENOH_CONFIG_OVERRIDE from compose). The router dials the routers in
 # BASESTATION_ZENOH_CONNECT (space-separated: the sim's zenoh-router, real robots' tcp/<ip>:7447) and keeps
 # retrying any that are down, so one list serves the sim, real robots or both. Log: /tmp/zenoh_router.log.
+# Known problem (2026-10-06, zenoh 1.8.0 on all three routers): with two real robots in the list, the
+# router-to-router links deadlock -- this router stops reading a robot's socket (850 KB unread in its receive
+# queue) while it waits to push messages zenoh may not drop (RViz opening / closing sends them), and that robot's
+# router does the same; the other robot's data is held meanwhile (225 s once). With one robot: 100 % over 10 min
+# with RViz opened and closed twice. Shorter close / lease timeouts (0.5 s or 2 s, 5 s lease) only made it loop:
+# each reconnection resends all declarations and deadlocks again. So the web UI's per-robot tools (the
+# Communication monitor, a real robot's RViz) don't go through this router: each is a zenoh client of that robot's
+# own router. List real robots here only for base station programs that need several robots in one graph.
 if [ "${RMW_IMPLEMENTATION:-}" = rmw_zenoh_cpp ]; then
     endpoints=""
     for e in ${BASESTATION_ZENOH_CONNECT:-}; do endpoints+="${endpoints:+,}\"$e\""; done

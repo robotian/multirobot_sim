@@ -808,6 +808,7 @@ def act_rviz_start(body):
     view = body.get("view")
     if view not in RVIZ_VIEWS:
         raise ValueError(f"view must be one of {RVIZ_VIEWS}")
+    exec_env = []
     if t.kind == "sim":
         where, ns, sim_time, log = t.name, "$ROBOT_NAMESPACE", "${USE_SIM_TIME:-false}", view
     else:
@@ -815,6 +816,9 @@ def act_rviz_start(body):
             raise ValueError("a real robot's RViz runs in the base station container: "
                              "docker compose -f basestation.compose.yml up -d")
         where, ns, sim_time, log = BASESTATION, t.name, "false", f"{t.name}_{view}"
+        # a zenoh client of that robot's own router, like its link monitor: not through the base station's router,
+        # where opening / closing RViz once held up another robot's data (router-to-router deadlock)
+        exec_env = ["-e", f'ZENOH_CONFIG_OVERRIDE=mode="client";connect/endpoints=["tcp/{host_ip(t.host) or t.host}:7447"]']
     match = f"[c]learpath_viz view_{view}.launch.py namespace:={t.name if t.kind == 'real' else ''}"
 
     def fn(j):
@@ -831,7 +835,7 @@ def act_rviz_start(body):
             env["DISPLAY"] = display
             j.run(["scripts/x11_auth.sh"], env=env)  # /tmp/.docker.xauth, mounted into the robot containers
         cmd = RVIZ_CMD.format(view=view, ns=ns, sim_time=sim_time, log=log)
-        if j.run(["docker", "exec", "-d", where, "bash", "-c", cmd]) != 0:
+        if j.run(["docker", "exec", "-d", *exec_env, where, "bash", "-c", cmd]) != 0:
             return False
         time.sleep(3)  # no display / bad package: the launch exits within a second or two
         if sh(["docker", "exec", where, "bash", "-c", f"pgrep -f '{match}'"])[0] != 0:
@@ -1283,12 +1287,11 @@ class LinkWatch:
         self.pingers = {}       # robot -> Pinger
         self.ssh = {}           # robot -> {"t": time, ...probe values}
         self.ssh_busy = set()
-        self.monitor = None     # docker exec of scripts/link_monitor.py
-        self.monitor_for = ()
-        self.monitor_started = 0.0
-        self.ros = {}           # robot -> link_monitor.py's last report
-        self.ros_t = 0.0
-        self.monitor_error = None
+        # One scripts/link_monitor.py per robot, a zenoh client connected straight to that robot's router -- not
+        # through the base station's router, whose router-to-router links to two robots deadlocked (2026-10-06):
+        # one robot's trouble then held up the other's data. robot -> {"proc", "started", "endpoint", "error"}
+        self.monitors = {}
+        self.ros = {}           # robot -> (receive time, its last report)
         threading.Thread(target=self.idle_stop, daemon=True).start()
 
     # -- lifecycle: everything stops LINK_IDLE_S after the page's last poll
@@ -1303,43 +1306,50 @@ class LinkWatch:
         for p in self.pingers.values():
             p.stop()
         self.pingers = {}
-        self.stop_monitor()
+        for name in list(self.monitors):
+            self.stop_monitor(name)
         self.last_poll = 0.0
 
-    def stop_monitor(self):
-        if self.monitor:
-            # killing `docker exec` leaves its process running in the container: stop that one
-            sh(["docker", "exec", BASESTATION, "pkill", "-INT", "-f", "/scripts/[l]ink_monitor.py"], timeout=10)
-            self.monitor.kill()
-        self.monitor, self.monitor_for, self.ros = None, (), {}
+    @staticmethod
+    def kill_monitor_process(name):
+        # killing `docker exec` leaves its process running in the container: stop that one
+        sh(["docker", "exec", BASESTATION, "pkill", "-INT", "-f", f"/scripts/[l]ink_monitor.py {name}$"], timeout=10)
 
-    def start_monitor(self, names):
-        self.stop_monitor()
-        self.monitor_started = time.time()
-        if not names or container_state(BASESTATION) != "running":
-            self.monitor_error = "the base station is not running" if names else None
+    def stop_monitor(self, name):
+        m = self.monitors.pop(name, None)
+        if m and m["proc"]:
+            self.kill_monitor_process(name)
+            m["proc"].kill()
+        self.ros.pop(name, None)
+
+    def start_monitor(self, name, endpoint):
+        self.stop_monitor(name)
+        m = self.monitors[name] = {"proc": None, "started": time.time(), "endpoint": endpoint, "error": None}
+        if container_state(BASESTATION) != "running":
+            m["error"] = "the base station is not running"
             return
-        sh(["docker", "exec", BASESTATION, "pkill", "-INT", "-f", "/scripts/[l]ink_monitor.py"], timeout=10)
-        self.monitor = subprocess.Popen(
-            ["docker", "exec", BASESTATION, "bash", "-c", "exec python3 -u /scripts/link_monitor.py " + " ".join(names)],
+        self.kill_monitor_process(name)
+        override = f'mode="client";connect/endpoints=["{endpoint}"]'  # replaces the container's (its own router)
+        m["proc"] = subprocess.Popen(
+            ["docker", "exec", "-e", f"ZENOH_CONFIG_OVERRIDE={override}", BASESTATION, "bash", "-c",
+             f"exec python3 -u /scripts/link_monitor.py {name}"],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        self.monitor_for, self.monitor_error = names, None
-        threading.Thread(target=self.read_monitor, args=(self.monitor,), daemon=True).start()
+        threading.Thread(target=self.read_monitor, args=(name, m), daemon=True).start()
 
-    def read_monitor(self, proc):
+    def read_monitor(self, name, m):
         tail = collections.deque(maxlen=5)
-        for line in proc.stdout:
+        for line in m["proc"].stdout:
             if line.startswith("{"):
                 try:
                     report = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if proc is self.monitor:
-                    self.ros, self.ros_t = report["robots"], time.time()
+                if self.monitors.get(name) is m:
+                    self.ros[name] = (time.time(), report["robots"].get(name))
             else:
                 tail.append(line.rstrip())
-        if proc is self.monitor:
-            self.monitor_error = "link_monitor.py stopped: " + (" | ".join(tail) or f"exit {proc.wait()}")
+        if self.monitors.get(name) is m:
+            m["error"] = "link_monitor.py stopped: " + (" | ".join(tail) or f"exit {m['proc'].wait()}")
 
     # -- SSH round per robot (background, so a slow robot never holds up a poll)
     def ssh_probe(self, t):
@@ -1388,10 +1398,18 @@ class LinkWatch:
                         and t.name not in self.ssh_busy):
                     self.ssh_busy.add(t.name)
                     threading.Thread(target=self.ssh_probe, args=(t,), daemon=True).start()
-            # (re)start it for a changed robot list, or 30 s after it last started if it has died since
-            if names != self.monitor_for or (self.monitor is None or self.monitor.poll() is not None) and \
-                    time.time() - self.monitor_started > 30:
-                self.start_monitor(names)
+            for name in set(self.monitors) - set(names):
+                self.stop_monitor(name)
+            for t in targets:
+                # a robot's monitor starts once it answers ping (an unreachable one would only churn), and is
+                # restarted for a new address, or 30 s after it last started if it has died since
+                endpoint = f"tcp/{host_ip(t.host) or t.host}:7447"
+                m = self.monitors.get(t.name)
+                reachable = self.pingers[t.name].summary().get("rtt_ms") is not None
+                if (m is None and reachable) or (m and m["endpoint"] != endpoint) or (
+                        m and (m["proc"] is None or m["proc"].poll() is not None)
+                        and time.time() - m["started"] > 30 and reachable):
+                    self.start_monitor(t.name, endpoint)
             return {t.name: self.robot_report(t) for t in targets}
 
     # -- one robot: values + a level per value + the overall verdict and its reasons
@@ -1443,9 +1461,10 @@ class LinkWatch:
         if s.get("error"):
             reasons.append(("warn", f"SSH: {s['error']}"))
 
-        ros = {"error": self.monitor_error}
-        report = self.ros.get(t.name)
-        if report and time.time() - self.ros_t < 5:
+        m = self.monitors.get(t.name)
+        ros = {"error": m["error"] if m else None}
+        received, report = self.ros.get(t.name, (0.0, None))
+        if report and time.time() - received < 5:
             correct = (offset or 0) / 1000  # age measured with this machine's clock against the robot's stamps
             # ref_localizer says it publishes no map -> odom (no Motive rigid body / GPS fix yet): that is the
             # robot's localization, not its link -- shown as information. Only when its status is fresh: a status
@@ -1506,7 +1525,7 @@ class LinkWatch:
                                                      LINK_LIMITS["ros_timeouts_pct"], " %")
             ros["round_trip"] = rt
         elif not ros["error"]:
-            ros["error"] = "waiting for the base station's link monitor..."
+            ros["error"] = "waiting for this robot's link monitor (a client of its own router)..."
 
         if ping.get("error") or (ping.get("rtt_ms") is None and ping.get("window_s", 0) >= 3):
             # unreachable: everything else follows from that
