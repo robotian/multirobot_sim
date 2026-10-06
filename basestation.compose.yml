@@ -1,0 +1,65 @@
+# Base station: the farm's base-station PC (ROS 2 Jazzy + the harvesting operation's PostgreSQL database).
+# A separate compose project from the fleet, so `scripts/fleet.sh down` and sim restarts never stop the database:
+#   docker compose -f basestation.compose.yml up -d --build    (build the robot image first: docker compose build robot0)
+#   docker compose -f basestation.compose.yml down             (the data stays in the basestation_pgdata volume)
+# It reads the fleet's .env (same directory) for the middleware and domain.
+#
+# Host networking: the container is on this machine's LAN like a real base station, so DDS discovery reaches the
+# real robots (a container behind the Docker bridge's NAT can't do that) and the database is <host LAN IP>:5433.
+# The simulated robots reach it through the fleet's bridge, br-fleet (docker-compose.yml). A host firewall has to
+# let that in: with ufw, `sudo ufw allow in on br-fleet`, plus the robots' LAN for real robots (README "Base station").
+name: basestation
+
+services:
+  basestation:
+    image: basestation:jazzy
+    build: ./basestation
+    container_name: basestation
+    network_mode: host
+    # for colcon_ws/src/status_server's config.yaml (host.docker.internal:5433), which is what the robots use too
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    # PGPASSWORD=... (untracked): the database password, set at the first start; also what libpq clients here use
+    env_file: ./db.env
+    restart: unless-stopped
+    stop_grace_period: 30s
+    shm_size: 256mb
+    stdin_open: true
+    tty: true
+    environment:
+      RMW_IMPLEMENTATION: ${FLEET_RMW:-rmw_zenoh_cpp}
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      # rmw_zenoh_cpp: sessions are clients of the base station's own router (entrypoint.sh, port 7447), which
+      # dials the routers listed here, space-separated: the sim's zenoh-router (published on 127.0.0.1:7448) and
+      # real robots' routers, e.g. "tcp/127.0.0.1:7448 tcp/192.168.130.5:7447 tcp/192.168.130.20:7447"
+      ZENOH_CONFIG_OVERRIDE: mode="client";connect/endpoints=["tcp/127.0.0.1:7447"]
+      BASESTATION_ZENOH_CONNECT: ${BASESTATION_ZENOH_CONNECT:-tcp/127.0.0.1:7448}
+      FASTRTPS_DEFAULT_PROFILES_FILE: /dds/fastdds_udp.xml
+      # true with the sim's robots (they stamp with /clock), false with real ones
+      USE_SIM_TIME: ${USE_SIM_TIME:-true}
+      # Port, superuser and database of status_server's config.yaml. 5433, not 5432, so a PostgreSQL installed
+      # on the host doesn't collide. User and database only take effect when the database is first created.
+      PGPORT: ${BASESTATION_PG_PORT:-5433}
+      PGUSER: ${BASESTATION_PG_USER:-admin}
+      PGDATABASE: ${BASESTATION_PG_DB:-test_lavender_farming}
+      DISPLAY: ${DISPLAY:-:0}
+      XAUTHORITY: /tmp/.docker.xauth
+      QT_X11_NO_MITSHM: "1"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # *.sql / *.sql.gz / *.dump / *.sh loaded in name order when the database is first created
+      - ./basestation/initdb:/initdb:ro
+      - ./docker/fastdds_udp.xml:/dds/fastdds_udp.xml:ro
+      - ./scripts:/scripts:ro
+      # the robots' workspace (status_server, interfaces); build it from a robot container (scripts/colcon_build.sh)
+      - ./colcon_ws:/home/robot/colcon_ws
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /tmp/.docker.xauth:/tmp/.docker.xauth
+    healthcheck:
+      test: ["CMD", "pg_isready", "-q"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  pgdata:

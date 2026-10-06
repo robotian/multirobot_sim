@@ -17,3 +17,6 @@ sim/assets/**/*.orig
 sim/assets/**/*.bak-*
 # Secrets passed to the robot containers (docker-compose.yml env_file), e.g. PGPASSWORD
 db.env
+# Database dumps for the base station's first start (basestation.compose.yml): farm data, not source
+basestation/initdb/*
+!basestation/initdb/README.md

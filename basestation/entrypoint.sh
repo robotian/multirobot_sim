@@ -1,0 +1,85 @@
+#!/bin/bash
+# Base station: starts PostgreSQL (creating the cluster and database on first start) and, with rmw_zenoh_cpp, the
+# base station's own zenoh router, then runs the container command. PostgreSQL is stopped cleanly (fast shutdown)
+# on `docker stop`.
+set -Eeuo pipefail  # -E: the ERR trap below also fires inside as_pg
+: "${PGPORT:?}" "${PGUSER:?}" "${PGDATABASE:?}"
+
+as_pg() { setpriv --reuid=postgres --regid=postgres --init-groups "$@"; }
+log() { echo "[basestation] $*"; }
+
+mkdir -p "$PGDATA" /run/postgresql
+chown postgres:postgres "$PGDATA" /run/postgresql
+chmod 700 "$PGDATA"
+
+# First start: a cluster whose superuser is $PGUSER (as the official postgres image does with POSTGRES_USER), so
+# dumps of the farm database, owned by that user, restore unchanged. Local socket connections are trusted (only
+# processes in this container can use the socket); TCP needs the password.
+if [ ! -s "$PGDATA/PG_VERSION" ]; then
+    : "${PGPASSWORD:?PGPASSWORD is not set: put PGPASSWORD=... in db.env at the repo root}"
+    log "creating the database cluster in $PGDATA (PostgreSQL $PG_MAJOR)"
+    # anything created here is half-made if a step fails: remove it so the next start begins again
+    trap 'log "first-start setup failed, removing the half-made cluster"
+          as_pg pg_ctl -D "$PGDATA" -m immediate -w stop >/dev/null 2>&1 || true
+          find "$PGDATA" -mindepth 1 -delete; exit 1' ERR
+    pwfile=$(mktemp)
+    printf '%s' "$PGPASSWORD" > "$pwfile"
+    chown postgres "$pwfile"
+    as_pg initdb -D "$PGDATA" -U "$PGUSER" --pwfile="$pwfile" --encoding=UTF8 --locale=C.UTF-8 \
+        --auth-local=trust --auth-host=scram-sha-256 >/dev/null
+    rm -f "$pwfile"
+    printf '%s\n' 'host all all 0.0.0.0/0 scram-sha-256' 'host all all ::/0 scram-sha-256' >> "$PGDATA/pg_hba.conf"
+
+    # socket only while the database is filled, so no client sees a half-restored one
+    as_pg pg_ctl -D "$PGDATA" -o "-c listen_addresses='' -c port=$PGPORT" -w start >/dev/null
+    as_pg psql -q -v ON_ERROR_STOP=1 -d postgres -v db="$PGDATABASE" <<<'CREATE DATABASE :"db";'
+    shopt -s nullglob
+    for f in /initdb/*; do
+        case "$f" in
+            *.sh) log "running $f"; bash "$f" ;;
+            *.sql) log "loading $f"; as_pg psql -q -v ON_ERROR_STOP=1 -f "$f" ;;
+            *.sql.gz) log "loading $f"; gunzip -c "$f" | as_pg psql -q -v ON_ERROR_STOP=1 ;;
+            *.dump) log "restoring $f"; as_pg pg_restore --exit-on-error --no-owner -d "$PGDATABASE" "$f" ;;
+            *.md) ;;
+            *) log "ignoring $f (not .sh/.sql/.sql.gz/.dump)" ;;
+        esac
+    done
+    as_pg pg_ctl -D "$PGDATA" -m fast -w stop >/dev/null
+    trap - ERR
+fi
+
+as_pg postgres -D "$PGDATA" -c listen_addresses='*' -c port="$PGPORT" &
+pg_pid=$!
+until pg_isready -q; do
+    kill -0 "$pg_pid" 2>/dev/null || { log "PostgreSQL failed to start"; exit 1; }
+    sleep 0.5
+done
+log "PostgreSQL $PG_MAJOR ready on port $PGPORT (database $PGDATABASE, user $PGUSER)"
+
+# Zenoh: like each real robot, the base station has its own router (tcp/[::]:7447, so robots can also dial in);
+# its sessions are clients of it (ZENOH_CONFIG_OVERRIDE from compose). The router dials the routers in
+# BASESTATION_ZENOH_CONNECT (space-separated: the sim's zenoh-router, real robots' tcp/<ip>:7447) and keeps
+# retrying any that are down, so one list serves the sim, real robots or both. Log: /tmp/zenoh_router.log.
+if [ "${RMW_IMPLEMENTATION:-}" = rmw_zenoh_cpp ]; then
+    endpoints=""
+    for e in ${BASESTATION_ZENOH_CONNECT:-}; do endpoints+="${endpoints:+,}\"$e\""; done
+    (
+        export ZENOH_CONFIG_OVERRIDE="connect/endpoints=[$endpoints]"
+        set +u; source /opt/ros/jazzy/setup.bash
+        while true; do ros2 run rmw_zenoh_cpp rmw_zenohd || true; sleep 2; done
+    ) > /tmp/zenoh_router.log 2>&1 &
+    log "zenoh router on port 7447, connecting to: ${BASESTATION_ZENOH_CONNECT:-(none)}"
+fi
+
+"$@" &
+cmd_pid=$!
+stop() {
+    kill -TERM "$cmd_pid" 2>/dev/null || true
+    as_pg pg_ctl -D "$PGDATA" -m fast -w stop >/dev/null 2>&1 || true
+    exit 0
+}
+trap stop TERM INT
+# Whichever ends first (PostgreSQL dying, or the command) ends the container.
+wait -n "$pg_pid" "$cmd_pid" || true
+log "$( kill -0 "$pg_pid" 2>/dev/null && echo 'command exited' || echo 'PostgreSQL exited' ), stopping"
+stop

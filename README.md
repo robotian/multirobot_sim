@@ -41,7 +41,7 @@ head -c 40 sim/assets/sky/farm_field_puresky_2k.hdr   # must NOT print "version 
 # 1. Build both images: clearpath-robot:jazzy (every robot + the zenoh router) and a300-isaac-sim:6.0.0
 docker compose build
 
-# 2. Optional, only for status_server: its database password (db.env is gitignored)
+# 2. Optional, for status_server and the base station: the database password (db.env is gitignored)
 echo "PGPASSWORD=<status_server database password>" > db.env
 
 # 3. Review .env (tracked; it holds the last committer's settings). Check at least:
@@ -205,7 +205,7 @@ A real Clearpath robot's own `robot.yaml` can be simulated directly, unmodified 
    - Drivetrain: the platform's generic constants (`platforms` in `sim/config/model_params.yaml`, platform from `serial_number`), replaced by the robot's own `platform.extras.ros_parameters.platform_velocity_controller` calibration if its `robot.yaml` has one.
    - Sensors and arm from `robot.yaml` + the flattened URDF: camera (a ZED's own optical frame if present), IMU (the link its frame was merged into, from `sim/assets/<id>/merged_links.json`), GPS, 2D/3D lidar, arm (`arm_0_*` joints), wrist camera (`camera_1_link`).
    - `chassis_link`: the prim the URDF importer made the articulation root, read at spawn. A robot with several roots is refused with that reason (see `weld_empty_root_children` in `scripts/flatten_urdf.py`).
-   - Anything that can't be derived or needs tuning goes in `robots.<id>` of `sim/config/model_params.yaml` (e.g. `massless_density`/`frame_mass` if the robot tips over, see `j100_0922`). The robot's own `domain_id` is ignored: the robot container is put on the fleet's `ROS_DOMAIN_ID` (see `robot/entrypoint.sh`).
+   - Anything that can't be derived or needs tuning goes in `robots.<id>` of `sim/config/model_params.yaml` (e.g. `massless_density`/`frame_mass` if the robot tips over, see `j100_0922`). The robot's own `domain_id` and middleware are ignored: the robot container is put on the fleet's `ROS_DOMAIN_ID` and `FLEET_RMW` (see `robot/entrypoint.sh`).
 
 4. **Start it** like any other model:
    ```bash
@@ -322,7 +322,7 @@ Simulation time is physics time (1/30 s per frame at the default 60 Hz physics, 
 
 | Value | Setup |
 |---|---|
-| `rmw_zenoh_cpp` (default if `.env` doesn't say otherwise; this repo's checked-in `.env` currently has `rmw_fastrtps_cpp`) | Every session, including Isaac Sim's, runs in zenoh *client* mode and connects to the `zenoh-router` service (`tcp/zenoh-router:7447`). Set `ZENOH_ROUTER=tcp/<host>:7447` to use another router, e.g. a real robot's. |
+| `rmw_zenoh_cpp` (the default, and the real robots' middleware) | Every session, including Isaac Sim's, runs in zenoh *client* mode and connects to the `zenoh-router` service (`tcp/zenoh-router:7447`). Set `ZENOH_ROUTER=tcp/<host>:7447` to use another router, e.g. a real robot's. |
 | `rmw_fastrtps_cpp` | FastDDS over UDP only (`docker/fastdds_udp.xml`); the router container just idles. |
 
 ### Switching the middleware
@@ -355,6 +355,54 @@ What follows from the switch:
 - `peer` mode, the rmw_zenoh_cpp default, does not work between containers: sessions listen on loopback only, so peers in different containers never see each other. That is why the sessions are clients.
 - Zenoh costs about 3–4 frames per second in the sim compared with FastDDS, so lower `SIM_RATE_HZ` (about 15 for 3 robots on zenoh).
 - `ros2` CLI tools in a container may print `Unable to connect to any locator of scouted peer` warnings from zenoh; they are harmless. `ros2 topic list --no-daemon --spin-time 4` gives the most reliable listing.
+
+## Base station
+
+`basestation.compose.yml` runs one more container, `basestation`. It stands in for the farm's base-station PC: a ROS 2 Jazzy computer (the robot image plus PostgreSQL) on the same network as the robots, real or simulated. It also hosts the harvesting operation's PostgreSQL database. It is a separate compose project, so `scripts/fleet.sh down` and sim restarts never stop the database.
+
+```bash
+docker compose build robot0                                  # the base station is built on the robot image
+# optional: put a database dump in basestation/initdb/ first (below)
+docker compose -f basestation.compose.yml up -d --build
+docker exec -it basestation psql                             # the farm database, as its owner
+docker exec -it basestation bash                             # ROS shell (colcon_ws sourced), e.g. ros2 topic list
+docker compose -f basestation.compose.yml down               # stop; the data stays in the basestation_pgdata volume
+```
+
+**Database.** PostgreSQL 18 on port `BASESTATION_PG_PORT` (default 5433), database `test_lavender_farming`, superuser `admin`, password `PGPASSWORD` from `db.env`. These are the settings in `status_server`'s `config.yaml`, so its `host.docker.internal:5433` reaches the base station from the robot containers and from the base station itself. A real robot uses `<this machine's LAN IP>:5433`. On the first start, with an empty volume, the container creates the database and loads `basestation/initdb/`: `*.sql`, `*.sql.gz`, `*.dump` (`pg_dump -Fc`) and `*.sh`, in name order. If a file fails, the half-made database is removed and the next start tries again. To copy an existing farm database:
+
+```bash
+docker exec robotian_database pg_dump -U admin -Fc test_lavender_farming > basestation/initdb/10-farm.dump
+docker compose -f basestation.compose.yml down -v           # -v deletes the database volume
+docker compose -f basestation.compose.yml up -d             # created again from initdb/
+```
+
+Back up with `docker exec basestation pg_dump -Fc > farm.dump`. The user, database name and password only take effect when the database is created; change them afterwards in `psql`.
+
+**Network.** The container uses host networking, so it is on this machine's LAN the way a real base station is. It uses the fleet's `FLEET_RMW` and `ROS_DOMAIN_ID` from `.env`.
+
+**Zenoh (the default, as on the real robots).** Like each real robot, the base station runs its own zenoh router, listening on port 7447 of this machine. Its own ROS sessions are clients of that router. The router dials every router listed in `BASESTATION_ZENOH_CONNECT` (space-separated) and keeps retrying any that are down, so one list covers the sim, real robots or both. The default is the sim's `zenoh-router`, which the fleet publishes on `127.0.0.1:7448`. To add real robots, put their routers in `.env`, then run `docker compose -f basestation.compose.yml up -d`:
+
+```bash
+BASESTATION_ZENOH_CONNECT="tcp/127.0.0.1:7448 tcp/192.168.130.5:7447 tcp/192.168.130.20:7447"
+```
+
+Because the base station dials out, it needs no firewall rule for zenoh. A robot can also dial in: point its router at `tcp/<this machine's LAN IP>:7447`, which needs the robots' subnet allowed in the firewall (below).
+
+**FastDDS** (`FLEET_RMW=rmw_fastrtps_cpp`). Host networking is what makes DDS discovery with real robots possible: a container behind Docker's bridge NAT can't take part in it. Simulated robots reach the base station through the fleet's bridge interface, `br-fleet`.
+
+With either middleware, simulated and real robots share one ROS domain, so a simulated robot and a real robot with the same id have the same topics. Under FastDDS the base station is also visible to anything else on the LAN running ROS on the same domain.
+
+**Firewall.** A host firewall has to allow traffic in from the robots. With ufw, which is active on some lab machines (`systemctl is-active ufw`), that is:
+
+```bash
+sudo ufw allow in on br-fleet                          # simulated robots: the database and FastDDS
+sudo ufw allow from 192.168.130.0/24                   # real robots: the robots' subnet
+```
+
+Without the first rule, `status_server` in a robot times out connecting to the database, and FastDDS topics from the simulated robots never arrive. Zenoh doesn't need it, because the base station's router dials the sim's over loopback. The interface name is fixed in `docker-compose.yml`; a stack started before that change needs `scripts/fleet.sh down` once.
+
+**ROS.** `colcon_ws` is mounted as in the robots. Build it from a robot container (`scripts/colcon_build.sh`), not here, so the files stay yours. `USE_SIM_TIME` comes from `.env`: true with the simulated robots, set it false with real ones.
 
 ## Configuration
 
@@ -565,6 +613,7 @@ The values are authored on the shader prims in `SM_Lavender_Nanite_01.usd`; the 
 | `tools/sim_ui/` | `server.py` + `index.html`: local web UI (port 8090) that runs the same scripts as this README: start/stop/reset the sim, spawn robots, `sim_robot_upstart`, arm moves with commanded-vs-observed plots, Cut stem |
 | `sim/assets/Ground_cover/`, `sky/`, `trees/`, `shrubs/`, `rocks/` | Grass field USD, cloud HDR, and Omniverse-library vegetation used by `build_world()` (in git through LFS, see *Scene*) |
 | `sim/assets/lavender/` | `SM_Lavender_Nanite_01.usd` and its real `Materials/` (MDL shaders + textures, see *Lavender material*), referenced as the lavender hedge rows |
+| `basestation.compose.yml`, `basestation/` | the base station: ROS 2 + the farm's PostgreSQL (`Dockerfile`, `entrypoint.sh`, `initdb/` for dumps loaded at its first start); see *Base station* |
 | `docker/fastdds_udp.xml` | FastDDS profile (UDP only, since containers don't share `/dev/shm`) |
 | `docker/isaac-sim.Dockerfile`, `docker/isaac-entrypoint.sh` | Isaac Sim image with a system ROS 2 Jazzy (needed for zenoh) |
 | `docs/images/` | images used by this README |
@@ -611,7 +660,7 @@ See `CLAUDE.md` and the per-directory `CLAUDE.md` files for more detail on how t
 - **A changed `robot/entrypoint.sh` or `robot/bin/*` has no effect:** both are baked into the image. Run `docker compose build robot0`, then recreate with `scripts/fleet.sh N`.
 - **A changed colcon package has no effect:** run `scripts/colcon_build.sh --packages-select <pkg>`, then restart its launch (a running node keeps the old binary).
 - **The container is still named with a slot suffix (`j100_0921_0000`) after changing a slot's model:** start with `scripts/fleet.sh`, not `docker compose up -d`. `fleet.sh` writes `ROBOT_SUFFIX_<i>`/`ROBOT_HOSTNAME_<i>` into `.env`.
-- **A real robot's container sees none of the sim's topics:** its `robot.yaml` uses a different `domain_id` or middleware than the fleet. `entrypoint.sh` rewrites `domain_id` (look for `[entrypoint] <id>: robot.yaml domain_id 1 -> 0` in the log), but not `middleware.implementation`.
+- **A real robot's container sees none of the sim's topics:** its `robot.yaml` uses a different `domain_id` or middleware than the fleet. `entrypoint.sh` rewrites both to the fleet's (look for `[entrypoint] <id>: robot.yaml domain_id 1 -> 0` or `... middleware rmw_fastrtps_cpp -> rmw_zenoh_cpp` in the log); a container made before that change needs `docker compose build robot0` and `scripts/fleet.sh`.
 - **A background service (`robot_state`, `ekf`, `foxglove`, `pruner_stub`) seems dead:** its restart loop swallows errors. Read `/tmp/<service>.log` in the container. For example, `robot_state_publisher` crash-looped unnoticed on a URDF with a dangling joint.
 - **Robots tip over or wheelie while driving:** links without `<inertial>` get mass from their collider at 1000 kg/m³ (a Jackal weighed 75 kg instead of 18 kg). Check `Articulation.get_link_masses()`, and set `massless_density`/`frame_mass` for the robot in `sim/config/model_params.yaml` (applied before the timeline plays; a mass change at runtime is ignored).
 - **The commanded speed and the wall-clock speed disagree:** expected whenever the sim runs slower than real time; measure in simulation time (the message stamps with `USE_SIM_TIME=true`, as `drive_test.py`/`calibrate_velocity.py` do). Kit runs `floor(PHYSICS_HZ / SIM_RATE_HZ)` physics steps per frame, and `FLEET_DEBUG`'s rtf is timeline-based, so it overstates the physical real-time factor; `/clock` follows physics time, so it is not affected. Measure velocity from the pose: PhysX's reported angular velocity reads ~0.02-0.03 rad/s high.

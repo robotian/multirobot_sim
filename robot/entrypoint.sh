@@ -60,6 +60,14 @@ if [[ "$ROBOT_MODEL" == *_* && -f "/robot_data/$ROBOT_MODEL/robot.yaml" ]]; then
         echo "[entrypoint] $ROBOT_MODEL: robot.yaml domain_id $real_domain -> $fleet_domain (the fleet's ROS_DOMAIN_ID)"
         sed -i -E "s/^([[:space:]]*domain_id:[[:space:]]*)[0-9]+/\1${fleet_domain}/" /etc/clearpath/robot.yaml
     fi
+    # Same for the middleware (FLEET_RMW): generate_bash exports RMW_IMPLEMENTATION from it, and a robot on
+    # another RMW than the sim sees nothing. The robot_data copies may also lag the real robots (now zenoh).
+    fleet_rmw="${RMW_IMPLEMENTATION:-rmw_zenoh_cpp}"
+    real_rmw="$(sed -n -E 's/^[[:space:]]*implementation:[[:space:]]*([a-z_]+).*/\1/p' /etc/clearpath/robot.yaml | head -1)"
+    if [[ -n "$real_rmw" && "$real_rmw" != "$fleet_rmw" ]]; then
+        echo "[entrypoint] $ROBOT_MODEL: robot.yaml middleware $real_rmw -> $fleet_rmw (the fleet's FLEET_RMW)"
+        sed -i -E "s/^([[:space:]]*implementation:[[:space:]]*)[a-z_]+/\1${fleet_rmw}/" /etc/clearpath/robot.yaml
+    fi
 else
     sed -e "s/__NS__/${ROBOT_NAMESPACE}/g" -e "s/__SERIAL__/${ROBOT_SERIAL}/g" \
         -e "s/__RMW__/${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}/g" \

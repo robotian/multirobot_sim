@@ -19,8 +19,8 @@ x-robot: &robot
   image: clearpath-robot:jazzy
   build: ./robot
   networks: [ros]
-  # host.docker.internal = the host, for services published on its ports from outside this compose project
-  # (status_server's PostgreSQL, the robotian_database container, is on host port 5433).
+  # host.docker.internal = the host, for services on its ports from outside this compose project (status_server's
+  # PostgreSQL on port 5433: the base station, basestation.compose.yml, or a robotian_database container).
   extra_hosts: ["host.docker.internal:host-gateway"]
   # Untracked secrets, e.g. PGPASSWORD=... for status_server's database (its config.yaml holds no password).
   env_file:
@@ -87,6 +87,10 @@ services:
     hostname: zenoh-router
     networks: [ros]
     entrypoint: ["/bin/bash", "-c", "exec ros2 run rmw_zenoh_cpp rmw_zenohd"]
+    # for the base station's router (host network, basestation.compose.yml, which takes host port 7447 itself as a
+    # real base station would); loopback only
+    ports:
+      - "127.0.0.1:7448:7447"
     environment:
       RMW_IMPLEMENTATION: rmw_zenoh_cpp
     healthcheck:
@@ -310,6 +314,10 @@ services:
 networks:
   ros:
     driver: bridge
+    # A fixed interface name, so a host firewall can let the containers reach host-network services (the base
+    # station's DDS and PostgreSQL): `sudo ufw allow in on br-fleet`. Changing it needs `scripts/fleet.sh down` first.
+    driver_opts:
+      com.docker.network.bridge.name: br-fleet
 
 volumes:
   isaac-cache:
