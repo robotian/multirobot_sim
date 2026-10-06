@@ -1233,11 +1233,13 @@ def level_of(value, limits, lower_is_worse=False):
 class Pinger:
     """`ping -O -i 1` to one robot, from this machine: RTT, jitter and loss over the last PING_WINDOW_S."""
 
-    def __init__(self, host):
+    def __init__(self, host, error=None):
         self.host = host
         self.started = time.time()
         self.samples = collections.deque()  # (time, rtt ms or None for no answer)
-        self.error = None
+        # a restart keeps the last one's error until a reply: else the robot flipped between "unreachable" and
+        # "starting" every retry (j100_0921, unresolvable host)
+        self.error = error
         self.proc = subprocess.Popen(["ping", "-n", "-O", "-i", "1", "-W", "1", host], stdin=subprocess.DEVNULL,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         threading.Thread(target=self.read, daemon=True).start()
@@ -1247,6 +1249,7 @@ class Pinger:
             m = re.search(r"icmp_seq=\d+ .*time=([\d.]+) ms", line)
             if m:
                 self.samples.append((time.time(), float(m.group(1))))
+                self.error = None
             elif "no answer yet" in line:
                 self.samples.append((time.time(), None))
             elif "PING" not in line and line.strip():
@@ -1378,9 +1381,9 @@ class LinkWatch:
                 # a new robot, a changed host, or a ping process that ended (killed, or the host didn't resolve):
                 # start it (again); a dead one is retried at most every 10 s
                 if p is None or p.host != t.host or (p.proc.poll() is not None and time.time() - p.started > 10):
-                    if t.name in self.pingers:
-                        self.pingers[t.name].stop()
-                    self.pingers[t.name] = Pinger(t.host)
+                    if p is not None:
+                        p.stop()
+                    self.pingers[t.name] = Pinger(t.host, p.error if p is not None and p.host == t.host else None)
                 if (time.time() - self.ssh.get(t.name, {}).get("t", 0) > LINK_SSH_EVERY_S
                         and t.name not in self.ssh_busy):
                     self.ssh_busy.add(t.name)
