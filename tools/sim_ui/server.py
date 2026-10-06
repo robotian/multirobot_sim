@@ -96,9 +96,11 @@ STOP_CMD = (f"pkill -INT -f '{CUT_MATCH}' && echo 'cut_stem client: Ctrl+C'; "
             "|| r='no action server'; fi; echo \"$a: $r\" ) & done; wait")
 
 
-def sh(argv, timeout=30):
-    # stdin from /dev/null: ssh would otherwise read the server's terminal
-    p = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+def sh(argv, timeout=30, input=None):
+    # stdin: `input` (e.g. a sudo password, never put on a command line), else /dev/null: ssh would otherwise read
+    # the server's terminal
+    stdin = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
+    p = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, timeout=timeout, **stdin)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -148,8 +150,8 @@ class RealTarget:
         script = f"source /etc/clearpath/setup.bash >/dev/null 2>&1; export ROBOT_NAMESPACE={self.name}; {command}"
         return ["ssh", *SSH_OPTS, f"{self.user}@{self.host}", "bash -c " + shlex.quote(script)]
 
-    def run(self, command, timeout=30):
-        return sh(self.argv(command), timeout=timeout)
+    def run(self, command, timeout=30, input=None):
+        return sh(self.argv(command), timeout=timeout, input=input)
 
 
 # Which real robots the UI shows: {"<id>": {"host": ..., "user": ..., "cutter": true}}; host defaults to the
@@ -753,17 +755,38 @@ def act_launch_stop(body):
     return start_job(f"{robot}: restart_ros", lambda j: j.run(["docker", "exec", robot, "restart_ros"]) == 0)
 
 
+class NeedPassword(ValueError):
+    """The robot's sudo wants a password: the page asks for it and sends the request again with it."""
+
+
 def act_real_restart(body):
     # The real robot's counterpart of start/stop: Clearpath's services (clearpath-platform-extras runs bringup_main,
-    # clearpath-manipulators the arm driver and move_group). Needs a NOPASSWD sudoers entry for exactly this.
+    # clearpath-manipulators the arm driver and move_group). Without a NOPASSWD sudoers entry for this, the page asks
+    # for the robot user's sudo password: it goes to `sudo -S` on ssh's stdin, never on a command line or in a log,
+    # and isn't kept (Handler.do_POST only takes it from this machine).
     t = resolve(body, kinds=("real",))
+    password = body.get("password")
+    if password is None:
+        code, out = t.run("sudo -n true 2>&1", timeout=30)
+        if code != 0:
+            if "password" not in out:
+                raise ValueError(f"sudo on {t.name}: {out.strip() or f'exit {code}'}")
+            raise NeedPassword(f"sudo on {t.name} needs robot's password (or, to skip this: {SUDOERS_HINT})")
+    elif not isinstance(password, str) or not password or len(password) > 1024 or "\n" in password:
+        raise ValueError("bad password")
 
     def fn(j):
-        code, out = t.run("sudo -n systemctl restart clearpath-robot 2>&1", timeout=120)
+        if password is None:
+            code, out = t.run("sudo -n systemctl restart clearpath-robot 2>&1", timeout=120)
+        else:
+            # -p '': no prompt in the output; -k: always read the password (a cached sudo timestamp would leave it
+            # unread on stdin)
+            code, out = t.run("sudo -k -S -p '' systemctl restart clearpath-robot 2>&1", timeout=120,
+                              input=password + "\n")
         j.log(out.rstrip() or f"exit {code}")
         if code != 0:
-            if "password" in out:
-                j.log(f"sudo needs a password for this on {t.name}; {SUDOERS_HINT}")
+            if password is not None and re.search(r"incorrect password|Sorry, try again|no password was provided", out):
+                j.log(f"wrong sudo password for {t.user}@{t.host}")
             return False
         j.log("restarted; waiting for clearpath-platform-extras ...")
         for _ in range(30):
@@ -1257,6 +1280,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             out = table[path](arg)
             self.reply(200, out.to_json() if isinstance(out, Job) else out)
+        except NeedPassword as e:
+            self.reply(400, {"error": str(e), "need_password": True})
         except (ValueError, KeyError) as e:
             self.reply(400, {"error": str(e)})
         except subprocess.TimeoutExpired:
@@ -1278,6 +1303,9 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length) or b"{}")
         except json.JSONDecodeError:
             return self.reply(400, {"error": "bad json"})
+        # A password (a robot's sudo) only from this machine: with --host 0.0.0.0 it would cross the LAN as plain HTTP.
+        if isinstance(body, dict) and "password" in body and self.client_address[0] not in ("127.0.0.1", "::1"):
+            return self.reply(403, {"error": "passwords are only accepted from this machine (127.0.0.1)"})
         self.handle_api(POST, body)
 
     def log_message(self, *args):

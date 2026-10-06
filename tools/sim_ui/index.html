@@ -53,6 +53,8 @@
   .pill.kind { font-weight: 600; }
   .banner { margin: 12px 20px 0; padding: 8px 12px; border: 1px solid var(--warn); border-radius: 6px; color: var(--warn); }
   .banner:empty { display: none; }
+  dialog { background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  dialog::backdrop { background: rgba(0, 0, 0, .35); }
   #toast { position: fixed; bottom: 16px; right: 16px; background: var(--bad); color: #fff; padding: 8px 12px; border-radius: 6px; display: none; max-width: 60ch; }
 </style>
 </head>
@@ -167,6 +169,17 @@
   </div>
 </main>
 <div id="toast"></div>
+<!-- a robot's sudo password (Restart services): sent once to this machine's server, which hands it to sudo on the
+     robot over ssh's stdin; never stored -->
+<dialog id="pwDialog">
+  <form method="dialog">
+    <div id="pwTitle" style="font-weight:600"></div>
+    <div id="pwNote" class="muted" style="font-size:12px;max-width:56ch;margin:6px 0 10px;overflow-wrap:anywhere"></div>
+    <input type="password" id="pwInput" autocomplete="off" style="width:100%">
+    <!-- Enter submits with the first button: Restart -->
+    <div class="row" style="justify-content:flex-end;margin-top:10px"><button value="ok">Restart</button><button value="cancel" class="ghost">Cancel</button></div>
+  </form>
+</dialog>
 
 <script>
 let status = null, slotsInit = false, selectedJob = null, armStates = {}, lastJobStatus = {};
@@ -175,7 +188,7 @@ async function api(path, body) {
   const opt = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
   const r = await fetch(path, opt);
   const data = await r.json();
-  if (!r.ok) throw new Error(data.error || r.statusText);
+  if (!r.ok) throw Object.assign(new Error(data.error || r.statusText), { data });
   return data;
 }
 function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.style.display = 'block'; setTimeout(() => t.style.display = 'none', 6000); }
@@ -459,6 +472,35 @@ function act(key, path, extra = {}, question = null) {
   if (question && isReal(key) && !confirm(`${rref(key).robot} (REAL robot): ${question}?`)) return;
   post(path, Object.assign(rref(key), extra));
 }
+// Restart services: plain sudo first; if the robot's sudo wants a password, ask for it and send it once
+async function restartReal(key) {
+  const { robot } = rref(key);
+  if (!confirm(`${robot} (REAL robot): sudo systemctl restart clearpath-robot (drivers, bringup, MoveIt)?`)) return;
+  try {
+    const job = await api('/api/real/restart', rref(key));
+    selectedJob = job.id; refreshJobs();
+  } catch (e) {
+    if (!(e.data && e.data.need_password)) return toast(e.message);
+    const password = await askPassword(`sudo password on ${robot}`, e.message);
+    if (password !== null) post('/api/real/restart', { ...rref(key), password });
+  }
+}
+function askPassword(title, note) {
+  const d = document.getElementById('pwDialog'), input = document.getElementById('pwInput');
+  document.getElementById('pwTitle').textContent = title;
+  document.getElementById('pwNote').textContent = note;
+  input.value = '';
+  return new Promise(resolve => {
+    d.addEventListener('close', () => {
+      const v = d.returnValue === 'ok' && input.value ? input.value : null;
+      input.value = '';  // not kept in the page either
+      resolve(v);
+    }, { once: true });
+    d.returnValue = '';
+    d.showModal();
+    input.focus();
+  });
+}
 function renderRobots() {
   const box = document.getElementById('robots');
   const open = new Set([...box.querySelectorAll('details[data-robot][open]')].map(d => d.dataset.robot));
@@ -488,8 +530,8 @@ function renderRobots() {
         ${r.cutting ? '<span class="pill ok">cutting</span>' : ''}
         ${r.conflict ? '<span class="pill bad" title="a sim robot and an online real robot share this name (and every ROS name): actions are refused">name clash</span>' : ''}</div>
       ${up ? `<div class="row">
-        ${real ? `<button onclick="act(${k}, '/api/real/restart', {}, 'sudo systemctl restart clearpath-robot (drivers, bringup, MoveIt)')"
-            title="sudo systemctl restart clearpath-robot on the robot (needs a NOPASSWD sudoers entry for it; the job says how)">Restart services</button>`
+        ${real ? `<button onclick="restartReal(${k})"
+            title="sudo systemctl restart clearpath-robot on the robot (asks for robot's sudo password unless a NOPASSWD sudoers entry allows it)">Restart services</button>`
           : `<button onclick="act(${k}, '/api/launch/start')" ${r.launch ? 'disabled' : ''}>Start sim_robot_upstart</button>
         <button class="ghost" onclick="act(${k}, '/api/launch/stop')" title="restart_ros: kills every ROS node; robot_state/foxglove/pruner_stub come back">Stop (restart_ros)</button>`}
         ${r.cutter ? `<button onclick="act(${k}, '/api/cutstem/start', {}, 'start cut_stem (the arm cuts every stem it finds)')"
