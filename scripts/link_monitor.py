@@ -17,6 +17,9 @@ Per robot (namespace), subscribed here so the data crosses the robot's link like
                 request and its reply through zenoh both ways (the topics only show robot -> here, ping doesn't
                 involve zenoh); mean / max over the last 60 s and the share of calls unanswered in RTT_TIMEOUT_S.
                 ~2 ms on a300_00036 (18 ms on the first call)
+  localizer     ref_localizer/status (1 Hz JSON, a few hundred bytes): whether it publishes map -> odom at all, so a
+                robot without a localization source yet (no Motive rigid body, no GPS fix) isn't mistaken for a link
+                problem
 For a topic: rate (last 5 s), its usual rate (median of the last 60 one-second rates), longest gap between messages
 in the last 30 s (the current silence included), age = receive time - header stamp (mean over the last second;
 this machine's clock minus the robot's, measured by the UI over SSH, is not corrected here). For a TF chain: the
@@ -38,6 +41,7 @@ from nav_msgs.msg import Odometry
 from rcl_interfaces.srv import GetParameterTypes
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import NavSatFix
+from std_msgs.msg import String
 from tf2_msgs.msg import TFMessage
 
 CHAINS = (("map", "odom"), ("odom", "base_link"), ("arm_0_base_link", "arm_0_end_effector_link"))
@@ -111,15 +115,23 @@ class Robot:
         self.rtt_next = 0.0
         self.rtt_warm = True
         self.rtts = collections.deque()  # (time, ms or None: no answer)
+        self.localizer = None   # (receive time, ref_localizer's status dict)
         self.subs = [
             node.create_subscription(Odometry, f"/{ns}/platform/odom/filtered",
                                      lambda m: self.topics["odom"].add(time.time(), stamp_of(m.header)),
                                      qos_profile_sensor_data),
+            node.create_subscription(String, f"/{ns}/ref_localizer/status", self.on_localizer, 1),
             node.create_subscription(TFMessage, f"/{ns}/tf", lambda m: self.on_tf(m, False), 100),
             node.create_subscription(TFMessage, f"/{ns}/tf_static", lambda m: self.on_tf(m, True),
                                      QoSProfile(depth=100, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                                                 reliability=ReliabilityPolicy.RELIABLE)),
         ]
+
+    def on_localizer(self, msg):
+        try:
+            self.localizer = (time.time(), json.loads(msg.data))
+        except ValueError:
+            pass
 
     def on_tf(self, msg, static):
         now = time.time()
@@ -212,8 +224,13 @@ class Robot:
             if target == ARM_FRAME and ARM_FRAME not in self.edges:
                 continue  # no arm (tf_static never had its base)
             chains[f"{target}->{source}"] = self.chain(target, source, now)
+        localizer = None
+        if self.localizer:
+            t, s = self.localizer
+            localizer = {k: s.get(k) for k in ("source", "active", "publishing", "ref_age", "gps_age")}
+            localizer["age"] = round(now - t, 1)
         return {"topics": {k: s.summary(now) for k, s in self.topics.items()}, "tf": chains,
-                "round_trip": self.rtt_report()}
+                "round_trip": self.rtt_report(), "localizer": localizer}
 
 
 def main():

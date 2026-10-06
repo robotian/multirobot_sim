@@ -1439,10 +1439,24 @@ class LinkWatch:
         report = self.ros.get(t.name)
         if report and time.time() - self.ros_t < 5:
             correct = (offset or 0) / 1000  # age measured with this machine's clock against the robot's stamps
+            # ref_localizer says it publishes no map -> odom (no Motive rigid body / GPS fix yet): that is the
+            # robot's localization, not its link -- shown as information. Only when its status is fresh: a status
+            # that stopped arriving is itself a link (or bringup) problem.
+            loc = report.get("localizer")
+            no_source = None
+            if loc and loc.get("age", 99) < 5 and loc.get("publishing") is False:
+                ages = ", ".join(f"{k} {'none' if loc.get(f'{k}_age') is None else str(loc[f'{k}_age']) + ' s old'}"
+                                 for k in ("ref", "gps"))
+                no_source = f"not published: ref_localizer has no localization source (source {loc.get('source')}; {ages})"
+            ros["localizer"] = loc
             for group, items in (("topics", report["topics"]), ("tf", report["tf"])):
                 ros[group] = {}
                 for name, v in items.items():
                     v = dict(v, levels={})
+                    if group == "tf" and name == "map->odom" and no_source and (v.get("broken") or (
+                            v.get("silent") is None or v["silent"] > LINK_LIMITS["silent_s"][1])):
+                        ros[group][name] = {"info": no_source, "levels": {}}
+                        continue
                     if v.get("broken"):
                         reasons.append(("bad", f"TF {name}: {v['broken']}"))
                         v["levels"]["broken"] = "bad"

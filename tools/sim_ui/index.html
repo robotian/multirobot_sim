@@ -630,6 +630,7 @@ function limitsTitle(key, unit, lower) {
   return l ? `degraded ${lower ? 'below' : 'above'} ${l[0]}${unit}, bad ${lower ? 'below' : 'above'} ${l[1]}${unit}` : '';
 }
 function streamText(name, s) {
+  if (s.info) return `${esc(name)}: <span class="muted" title="information, not counted against the link">${esc(s.info)}</span>`;
   if (s.broken) return lv(`${esc(name)}: broken (${esc(s.broken)})`, 'bad');
   if (s.static) return `${esc(name)}: static`;
   const L = s.levels || {}, ms = x => x === null || x === undefined ? '-' : Math.round(x * 1000);
