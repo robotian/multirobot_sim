@@ -84,12 +84,16 @@ REAL_MAX_VELOCITY = 0.3  # arm velocity/acceleration scale cap on a real robot
 STOP_ACTIONS = ("cut_stem", "move_action", "execute_trajectory",
                 "manipulators/arm_0_joint_trajectory_controller/follow_joint_trajectory",
                 "manipulators/arm_0_gripper_controller/gripper_cmd")
+# ros2 service call prints "making request" once it found the server and sent it. On a300_00036 (2026-10-06) the
+# move_action / trajectory controller cancels arrived (PREEMPTED 1.9 s after the button) but their replies never
+# came back within the timeout: that is "sent, no reply", not "no action server".
 STOP_CMD = (f"pkill -INT -f '{CUT_MATCH}' && echo 'cut_stem client: Ctrl+C'; "
             "pkill -INT -f '[/ ]arm_goto( |$)' && echo 'arm_goto: Ctrl+C'; "
             "for a in " + " ".join(STOP_ACTIONS) + "; do ( "
             "out=$(timeout 10 ros2 service call /$ROBOT_NAMESPACE/$a/_action/cancel_goal action_msgs/srv/CancelGoal "
             "'{}' 2>&1); r=$(grep -o 'return_code=[0-9]*, goals_canceling=\\[[^]]*\\]' <<< \"$out\"); "
-            "echo \"$a: ${r:-no action server}\" ) & done; wait")
+            "if [ -z \"$r\" ]; then grep -q 'making request' <<< \"$out\" && r='cancel sent, no reply in 10 s' "
+            "|| r='no action server'; fi; echo \"$a: $r\" ) & done; wait")
 
 
 def sh(argv, timeout=30):

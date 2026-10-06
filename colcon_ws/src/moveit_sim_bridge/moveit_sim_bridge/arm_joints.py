@@ -31,21 +31,28 @@ def main():
     node.create_subscription(JointState, "arm_0/joint_command", keep(cmd), 50)
     node.create_subscription(JointState, "platform/joint_states", keep(obs), 50)
 
-    if args.record is None:
-        deadline = time.monotonic() + 2.0
-        while not obs and time.monotonic() < deadline:
-            rclpy.spin_once(node, timeout_sec=0.05)
-        print(json.dumps({"cmd": cmd, "obs": obs}))
-    else:
-        t0 = time.monotonic()
-        next_sample = t0
-        while (now := time.monotonic()) - t0 < args.record:
-            rclpy.spin_once(node, timeout_sec=max(0.0, next_sample - now))
-            if time.monotonic() >= next_sample:
-                print(json.dumps({"t": round(time.monotonic() - t0, 3), "cmd": cmd, "obs": obs}), flush=True)
-                next_sample += 1.0 / args.rate
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        if args.record is None:
+            deadline = time.monotonic() + 2.0
+            while not obs and time.monotonic() < deadline:
+                rclpy.spin_once(node, timeout_sec=0.05)
+            print(json.dumps({"cmd": cmd, "obs": obs}))
+        else:
+            t0 = time.monotonic()
+            next_sample = t0
+            while (now := time.monotonic()) - t0 < args.record:
+                rclpy.spin_once(node, timeout_sec=max(0.0, next_sample - now))
+                if time.monotonic() >= next_sample:
+                    print(json.dumps({"t": round(time.monotonic() - t0, 3), "cmd": cmd, "obs": obs}), flush=True)
+                    next_sample += 1.0 / args.rate
+    except BaseException as e:
+        # Ctrl+C: rclpy's handler shuts the context down, so the waiting call raises (KeyboardInterrupt,
+        # ExternalShutdownException, ...); a recording cut short keeps the samples printed so far
+        if not isinstance(e, KeyboardInterrupt) and rclpy.ok():
+            raise
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()  # rclpy's SIGINT handler may already have shut the context down
 
 
 if __name__ == "__main__":

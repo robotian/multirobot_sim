@@ -64,9 +64,17 @@ def main():
         if args.direct:
             return direct_goto(node, ActionClient, target, args)
         return plan_goto(node, ActionClient, target, args)
+    except BaseException as e:
+        # Ctrl+C: rclpy's handler shuts the context down, so whatever call was waiting raises (KeyboardInterrupt,
+        # ExternalShutdownException, or an RCLError about the invalid context)
+        if not isinstance(e, KeyboardInterrupt) and rclpy.ok():
+            raise
+        # it doesn't cancel the goal: the server keeps executing it (the web UI's Stop motion cancels it)
+        print("interrupted; the goal itself isn't cancelled by this")
+        return 130
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()  # rclpy's SIGINT handler may already have shut the context down
 
 
 def wait_result(node, client, goal, timeout, label):
