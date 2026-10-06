@@ -223,9 +223,11 @@ SIM_PROBE = (f"if pgrep -f '{LAUNCH_MATCH}' >/dev/null; then echo launch=1; {ACT
              f"pgrep -af '{RVIZ_MATCH}' | grep -o 'view_[a-z]*' | sed 's/^view_/rviz=/'; true")
 REAL_PROBE = ("for s in " + " ".join(REAL_SERVICES) + "; do echo \"service=$s:$(systemctl is-active $s)\"; done; "
               f"pgrep -f '{CUT_MATCH}' >/dev/null && echo cutting=1; echo \"rmw=$RMW_IMPLEMENTATION\"; "
-              "sed -n '1s/^multirobot_sim \\([0-9a-f]*\\).*/deployed=\\1/p' ~/colcon_ws/DEPLOYED 2>/dev/null; "
-              f"{ACTIONS_PROBE}; true")
-PROBES = {}  # (kind, name) -> {"t": time, "data": {...}}
+              "sed -n '1s/^multirobot_sim \\([0-9a-f]*\\).*/deployed=\\1/p' ~/colcon_ws/DEPLOYED 2>/dev/null; true")
+# A ros2 CLI call costs a robot's CPU 1-5 s (5 s on a300_00036 while its zenoh router hung): on a real robot the
+# actions (move_group, cut_stem) are checked this often, systemd and processes every poll.
+REAL_ACTIONS_EVERY_S = 30
+PROBES = {}  # (kind, name) -> {"t": time, "actions_t": time, "data": {...}}
 OFFLINE_RETRY_S = 15
 RETRYING = set()  # offline robots being probed again in the background
 
@@ -246,8 +248,16 @@ def probe(target, max_age=0.0):
 
 
 def _probe(target, key):
+    last = PROBES.get(key) or {}
+    command, actions_t = SIM_PROBE, time.time()
+    if target.kind == "real":
+        command = REAL_PROBE
+        if time.time() - last.get("actions_t", 0) > REAL_ACTIONS_EVERY_S or not last["data"]["online"]:
+            command += f"; {ACTIONS_PROBE}; true"
+        else:
+            actions_t = last["actions_t"]
     try:
-        code, out = target.run(SIM_PROBE if target.kind == "sim" else REAL_PROBE, timeout=20)
+        code, out = target.run(command, timeout=20)
     except subprocess.TimeoutExpired:
         code, out = -1, "no answer in 20 s"
     data = {"online": code == 0, "launch": False, "cutting": False, "move_group": False, "cut_stem_action": False,
@@ -269,7 +279,9 @@ def _probe(target, key):
             data[k] = v
     if target.kind == "real":
         data["launch"] = data["services"].get("clearpath-platform-extras") == "active"
-    PROBES[key] = {"t": time.time(), "data": data}
+        if code == 0 and actions_t == last.get("actions_t"):  # not checked this time: the last check's
+            data["move_group"], data["cut_stem_action"] = last["data"]["move_group"], last["data"]["cut_stem_action"]
+    PROBES[key] = {"t": time.time(), "actions_t": actions_t, "data": data}
     return data
 
 
@@ -903,7 +915,8 @@ def act_arm_goto(body):
 
 
 def last_json(code, out, what):
-    lines = out.strip().splitlines()
+    # the last JSON object line: zenoh can log after it (a300_00036: "close operation timed out!" at shutdown)
+    lines = [l for l in out.strip().splitlines() if l.startswith("{")]
     if code != 0 or not lines:
         raise ValueError(out.strip() or f"{what} failed")
     return json.loads(lines[-1])
