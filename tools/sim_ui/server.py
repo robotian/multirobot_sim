@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Local web UI for the simulated fleet: start/stop/reset the sim (the scene only), spawn robots at chosen poses
-into the running scene (and start their containers), start/stop
-mtu32_bringup's sim_robot_upstart.launch.py per robot, and move the arm to named SRDF states
-(optionally recording commanded vs. observed joint positions while it moves), list OptiTrack Motive's rigid bodies
-and assign them to robots, and set each robot's ref_localizer (map -> odom source / anchor).
+"""Local web UI for the fleet: the simulated robots, the real ones, or both (the page's mode).
+
+Sim: start/stop/reset the sim (the scene only), spawn robots at chosen poses into the running scene (and start
+their containers), start/stop mtu32_bringup's sim_robot_upstart.launch.py per robot.
+Real (tools/sim_ui/real_robots.json, reached over SSH like scripts/deploy_robot.sh): Clearpath's services and
+restarting them, deploying colcon_ws/src, linking the robot to the base station's zenoh router.
+Either: move the arm to named SRDF states (optionally recording commanded vs. observed joint positions while it
+moves), cut_stem, stop motion, RViz, each robot's ref_localizer (map -> odom source / anchor), OptiTrack Motive's
+rigid bodies and which robot follows each.
 
   python3 tools/sim_ui/server.py                 # http://127.0.0.1:8090
+  python3 tools/sim_ui/server.py --mode real     # the page's mode until the browser picks its own
   python3 tools/sim_ui/server.py --host 0.0.0.0  # reachable from the LAN -- it runs docker commands, so only on a trusted network
+  FLEET_ROOT=<checkout> python3 server.py        # drive another checkout's fleet (e.g. this UI from a worktree)
 
 Stdlib only. Long operations run as background jobs whose output the page polls.
 """
@@ -20,6 +26,7 @@ import math
 import os
 import re
 import select
+import shlex
 import socket
 import struct
 import subprocess
@@ -27,11 +34,12 @@ import sys
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(os.environ.get("FLEET_ROOT") or Path(__file__).resolve().parents[2]).resolve()
 sys.path.insert(0, str(ROOT / "scripts"))
 import fleet_ctl  # noqa: E402  (the sim's spawn protocol: request/state files)
 sys.path.insert(0, str(ROOT / "colcon_ws/src/mocap_fake_localizer/scripts"))
@@ -40,35 +48,259 @@ import natnet  # noqa: E402  (OptiTrack Motive's NatNet protocol, shared with th
 PAGE = Path(__file__).with_name("index.html")
 PROJECT = "clearpath-fleet"
 SIM = "a300-isaac-sim"
+BASESTATION = "basestation"  # basestation.compose.yml's container (host network); real robots' RViz runs there
 MAX_SLOTS = 8
+MODES = ("sim", "real", "both")
+DEFAULT_MODE = "sim"  # --mode
 NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+# Commands run as `bash -c '<command>'` (docker exec, or ssh's remote shell), whose own command line then holds every
+# pgrep/pkill pattern in it: each pattern's first letter is bracketed ("[r]os2") so it can't match that shell.
 # The cut_stem client (`ros2 action send_goal ... /<ns>/cut_stem`) is exec'd directly (no wrapper shell), so this
 # matches exactly one process per run; SIGINT to it makes ros2cli cancel the goal.
-CUT_MATCH = "ros2 action send_goal.*cut_stem"
+CUT_MATCH = "[r]os2 action send_goal.*cut_stem"
 CUT_CMD = ('exec ros2 action send_goal --feedback /$ROBOT_NAMESPACE/cut_stem '
            'plant_cutter_msgs/action/CutStem "{start_cutting: true}"')
 LAUNCH_LOG = "/tmp/sim_robot_upstart.log"
+LAUNCH_MATCH = "[s]im_robot_upstart.launch.py"
 SRDF = "/etc/clearpath/robot.srdf"  # written at container boot; sim_robot_upstart needs it
 SRDF_WAIT_S = 120
 LAUNCH_CMD = ("source /home/robot/colcon_ws/install/setup.bash && "
               f"exec ros2 launch mtu32_bringup sim_robot_upstart.launch.py > {LAUNCH_LOG} 2>&1")
 # RViz from clearpath_viz (colcon_ws/src/clearpath_desktop), opened on the host display through the container's X11
-# mount; one window per view and robot. The launch exits when its rviz2 window is closed.
+# mount; one window per view and robot. The launch exits when its rviz2 window is closed. A sim robot's runs in its
+# own container; a real robot's in the base station container (host network, the same colcon_ws), on wall time.
 RVIZ_VIEWS = ("navigation", "moveit", "robot")
-RVIZ_MATCH = r"clearpath_viz view_(navigation|moveit|robot)\.launch\.py"
+RVIZ_MATCH = r"[c]learpath_viz view_(navigation|moveit|robot)\.launch\.py"
 RVIZ_CMD = ("source /home/robot/colcon_ws/install/setup.bash && "
-            "exec ros2 launch clearpath_viz view_{view}.launch.py namespace:=$ROBOT_NAMESPACE "
-            "use_sim_time:=${{USE_SIM_TIME:-false}} > /tmp/rviz_{view}.log 2>&1")
+            "exec ros2 launch clearpath_viz view_{view}.launch.py namespace:={ns} "
+            "use_sim_time:={sim_time} > /tmp/rviz_{log}.log 2>&1")
+# A real robot: Clearpath's systemd services (bringup_main runs from clearpath-platform-extras).
+REAL_SERVICES = ("clearpath-robot", "clearpath-platform-extras", "clearpath-manipulators")
+SUDOERS_HINT = ("once, on the robot: echo 'robot ALL=(root) NOPASSWD: /usr/bin/systemctl restart clearpath-robot' "
+                "| sudo tee /etc/sudoers.d/fleet-ui && sudo chmod 440 /etc/sudoers.d/fleet-ui")
+REAL_MAX_VELOCITY = 0.3  # arm velocity/acceleration scale cap on a real robot
+# Every action goal a robot may be running from here: cut_stem, arm_goto (move_action / the trajectory and gripper
+# controllers), RViz's MoveIt panel (execute_trajectory). A CancelGoal with a zero goal id and stamp cancels all.
+STOP_ACTIONS = ("cut_stem", "move_action", "execute_trajectory",
+                "manipulators/arm_0_joint_trajectory_controller/follow_joint_trajectory",
+                "manipulators/arm_0_gripper_controller/gripper_cmd")
+STOP_CMD = (f"pkill -INT -f '{CUT_MATCH}' && echo 'cut_stem client: Ctrl+C'; "
+            "pkill -INT -f '[/ ]arm_goto( |$)' && echo 'arm_goto: Ctrl+C'; "
+            "for a in " + " ".join(STOP_ACTIONS) + "; do ( "
+            "out=$(timeout 10 ros2 service call /$ROBOT_NAMESPACE/$a/_action/cancel_goal action_msgs/srv/CancelGoal "
+            "'{}' 2>&1); r=$(grep -o 'return_code=[0-9]*, goals_canceling=\\[[^]]*\\]' <<< \"$out\"); "
+            "echo \"$a: ${r:-no action server}\" ) & done; wait")
 
 
 def sh(argv, timeout=30):
-    p = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+    # stdin from /dev/null: ssh would otherwise read the server's terminal
+    p = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
     return p.returncode, p.stdout + p.stderr
 
 
-def in_robot(robot, command, timeout=30):
-    # bash -c so BASH_ENV sources the robot's ROS environment and ROBOT_NAMESPACE.
-    return sh(["docker", "exec", robot, "bash", "-c", command], timeout=timeout)
+def arm_tool(tool, args=""):
+    """moveit_sim_bridge's arm_goto / arm_joints from ~/colcon_ws (the sim's shared workspace, a real robot's
+    deployed one); a sim robot image from before they moved there has its own copy in /usr/local/bin."""
+    exe = f"$HOME/colcon_ws/install/moveit_sim_bridge/lib/moveit_sim_bridge/{tool}"
+    return (f"[ -f ~/colcon_ws/install/setup.bash ] && source ~/colcon_ws/install/setup.bash >/dev/null 2>&1; "
+            f"if [ -x {exe} ]; then exec ros2 run moveit_sim_bridge {tool} {args}; fi; "
+            f"command -v {tool} >/dev/null || {{ echo 'no {tool} here: build/deploy colcon_ws (moveit_sim_bridge)'; "
+            f"exit 127; }}; exec {tool} {args}")
+
+
+# ---------------------------------------------------------------- robots: sim containers and real robots
+
+class SimTarget:
+    """A sim robot: its container, `docker exec` (bash -c, so BASH_ENV sources ROS and ROBOT_NAMESPACE)."""
+    kind = "sim"
+    cutter = True  # every sim robot runs the cutter stack (pruner_stub); cut_stem is gated on its action server
+
+    def __init__(self, name):
+        self.name = name
+
+    def argv(self, command):
+        return ["docker", "exec", self.name, "bash", "-c", command]
+
+    def run(self, command, timeout=30):
+        return sh(self.argv(command), timeout=timeout)
+
+
+SSH_DIR = Path(f"/tmp/fleet-ui-ssh-{os.getuid()}")  # ControlMaster sockets: one connection per robot, reused
+SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5",
+            "-o", "ServerAliveCountMax=3", "-o", "ControlMaster=auto", "-o", f"ControlPath={SSH_DIR}/%C",
+            "-o", "ControlPersist=120"]
+
+
+class RealTarget:
+    """A real robot over SSH (key login, as scripts/deploy_robot.sh): its login shell runs `bash -c` with Clearpath's
+    setup.bash (ROS + its workspaces from robot.yaml) and ROBOT_NAMESPACE, which a robot's own shell doesn't set."""
+    kind = "real"
+
+    def __init__(self, name, host, user, cutter):
+        self.name, self.host, self.user, self.cutter = name, host, user, cutter
+
+    def argv(self, command):
+        SSH_DIR.mkdir(mode=0o700, exist_ok=True)
+        script = f"source /etc/clearpath/setup.bash >/dev/null 2>&1; export ROBOT_NAMESPACE={self.name}; {command}"
+        return ["ssh", *SSH_OPTS, f"{self.user}@{self.host}", "bash -c " + shlex.quote(script)]
+
+    def run(self, command, timeout=30):
+        return sh(self.argv(command), timeout=timeout)
+
+
+# Which real robots the UI shows: {"<id>": {"host": ..., "user": ..., "cutter": true}}; host defaults to the
+# robot's mDNS name (cpr-<id with - for _>.local, as deploy_robot.sh), user to robot, cutter (the stem cutter is
+# fitted: cut_stem is offered; bringup_main advertises the action on every robot) to false.
+REAL_CONFIG = Path(__file__).with_name("real_robots.json")
+ROBOT_ID_RE = re.compile(r"^[a-z0-9]+_[0-9]+$")  # deploy_robot.sh's
+HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
+USER_RE = re.compile(r"^[a-z_][a-z0-9_-]*$")
+REAL_LOCK = threading.Lock()
+
+
+def default_host(robot_id):
+    return f"cpr-{robot_id.replace('_', '-')}.local"
+
+
+def real_config():
+    try:
+        data = json.loads(REAL_CONFIG.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {k: v for k, v in data.items() if ROBOT_ID_RE.match(k) and isinstance(v, dict)}
+
+
+def real_target(name, config=None):
+    c = (real_config() if config is None else config).get(name)
+    if c is None:
+        raise ValueError(f"{name} is not in the real robots list")
+    return RealTarget(name, c.get("host") or default_host(name), c.get("user") or "robot", bool(c.get("cutter")))
+
+
+def known_real_ids():
+    """MTU's real robots this checkout knows (robot_data/<id>/robot.yaml), offered when adding one."""
+    d = ROOT / "robot_data"
+    return sorted(p.parent.name for p in d.glob("*/robot.yaml") if ROBOT_ID_RE.match(p.parent.name)) if d.is_dir() else []
+
+
+def act_real_save(body):
+    robot = body.get("robot")
+    if not (isinstance(robot, str) and ROBOT_ID_RE.match(robot)):
+        raise ValueError("robot id like j100_0921")
+    host = (body.get("host") or "").strip()
+    user = (body.get("user") or "").strip()
+    if host and not HOST_RE.match(host):
+        raise ValueError("bad host")
+    if user and not USER_RE.match(user):
+        raise ValueError("bad user")
+    with REAL_LOCK:
+        config = real_config()
+        entry = {"host": host or default_host(robot)}
+        if user and user != "robot":
+            entry["user"] = user
+        entry["cutter"] = bool(body.get("cutter"))
+        config[robot] = entry
+        REAL_CONFIG.write_text(json.dumps(dict(sorted(config.items())), indent=2) + "\n")
+    PROBES.pop(("real", robot), None)
+    return {"real_robots": config}
+
+
+def act_real_remove(body):
+    with REAL_LOCK:
+        config = real_config()
+        if config.pop(body.get("robot"), None) is None:
+            raise ValueError("not in the list")
+        REAL_CONFIG.write_text(json.dumps(config, indent=2) + "\n")
+    return {"real_robots": config}
+
+
+# One command per robot per status poll (the old per-field docker execs were 5 per robot, one after another; over
+# WiFi with SSH that adds up): `key=value` lines. ros2 action list doubles as the move_group check (move_action).
+ACTIONS_PROBE = ('timeout 6 ros2 action list 2>/dev/null | '
+                 'sed -n "s#^/$ROBOT_NAMESPACE/\\(move_action\\|cut_stem\\)\\$#action=\\1#p"')
+SIM_PROBE = (f"if pgrep -f '{LAUNCH_MATCH}' >/dev/null; then echo launch=1; {ACTIONS_PROBE}; fi; "
+             f"pgrep -f '{CUT_MATCH}' >/dev/null && echo cutting=1; "
+             f"pgrep -af '{RVIZ_MATCH}' | grep -o 'view_[a-z]*' | sed 's/^view_/rviz=/'; true")
+REAL_PROBE = ("for s in " + " ".join(REAL_SERVICES) + "; do echo \"service=$s:$(systemctl is-active $s)\"; done; "
+              f"pgrep -f '{CUT_MATCH}' >/dev/null && echo cutting=1; echo \"rmw=$RMW_IMPLEMENTATION\"; "
+              "sed -n '1s/^multirobot_sim \\([0-9a-f]*\\).*/deployed=\\1/p' ~/colcon_ws/DEPLOYED 2>/dev/null; "
+              f"{ACTIONS_PROBE}; true")
+PROBES = {}  # (kind, name) -> {"t": time, "data": {...}}
+OFFLINE_RETRY_S = 15
+RETRYING = set()  # offline robots being probed again in the background
+
+
+def probe(target, max_age=0.0):
+    key = (target.kind, target.name)
+    last = PROBES.get(key)
+    if last and time.time() - last["t"] < max_age:
+        return last["data"]
+    if last and not last["data"]["online"]:
+        # An unreachable robot costs ssh's ConnectTimeout (or a few seconds of mDNS) per try: retry it now and then,
+        # in the background, so it doesn't hold up every status poll.
+        if time.time() - last["t"] > OFFLINE_RETRY_S and key not in RETRYING:
+            RETRYING.add(key)
+            threading.Thread(target=lambda: (_probe(target, key), RETRYING.discard(key)), daemon=True).start()
+        return last["data"]
+    return _probe(target, key)
+
+
+def _probe(target, key):
+    try:
+        code, out = target.run(SIM_PROBE if target.kind == "sim" else REAL_PROBE, timeout=20)
+    except subprocess.TimeoutExpired:
+        code, out = -1, "no answer in 20 s"
+    data = {"online": code == 0, "launch": False, "cutting": False, "move_group": False, "cut_stem_action": False,
+            "rviz": [], "services": {}, "rmw": "", "deployed": "", "error": ""}
+    if code != 0:
+        data["error"] = (out.strip().splitlines() or [f"exit {code}"])[-1]
+    for line in out.splitlines() if code == 0 else []:
+        k, _, v = line.partition("=")
+        if k in ("launch", "cutting"):
+            data[k] = True
+        elif k == "action":
+            data["move_group" if v == "move_action" else "cut_stem_action"] = True
+        elif k == "rviz":
+            data["rviz"].append(v[len("view_"):] if v.startswith("view_") else v)
+        elif k == "service":
+            name, _, state = v.partition(":")
+            data["services"][name] = state
+        elif k in ("rmw", "deployed"):
+            data[k] = v
+    if target.kind == "real":
+        data["launch"] = data["services"].get("clearpath-platform-extras") == "active"
+    PROBES[key] = {"t": time.time(), "data": data}
+    return data
+
+
+def running_sims(rows=None):
+    return {c["name"] for c in (containers() if rows is None else rows)
+            if c["state"] == "running" and re.fullmatch(r"robot\d+", c["service"])}
+
+
+CONFLICT = ("{name} is both a running sim robot and an online real robot: they share every ROS name and the base "
+            "station can bridge their networks, so a command could reach the other one. Spawn the sim with another "
+            "model, or take the real robot off the list")
+
+
+def resolve(body, kinds=("sim", "real"), check_conflict=True):
+    """The robot an action is for: body {"robot": <name>, "kind": "sim" (default) | "real"}."""
+    kind, name = body.get("kind") or "sim", body.get("robot")
+    if not isinstance(name, str) or not NAME_RE.match(name):
+        raise ValueError("bad robot name")
+    if kind not in kinds:
+        raise ValueError(f"not for a {kind} robot")
+    if kind == "sim":
+        if name not in running_sims():
+            raise ValueError(f"robot {name} is not running")
+        target = SimTarget(name)
+        if check_conflict and name in real_config() and probe(real_target(name), max_age=30)["online"]:
+            raise ValueError(CONFLICT.format(name=name))
+        return target
+    target = real_target(name)
+    if check_conflict and name in running_sims():
+        raise ValueError(CONFLICT.format(name=name))
+    return target
 
 
 # ---------------------------------------------------------------- jobs
@@ -87,8 +319,10 @@ class Job:
         del self.lines[:-2000]
 
     def run(self, argv, **kw):
-        self.log("$ " + " ".join(argv))
-        p = subprocess.Popen(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kw)
+        # an ssh argv ends in the whole remote script: log what it runs, not the ssh options
+        self.log("$ " + (f"ssh {argv[-2]} {argv[-1]}" if argv[0] == "ssh" else " ".join(argv)))
+        p = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True, **kw)
         for line in p.stdout:
             self.log(line)
         return p.wait()
@@ -123,6 +357,10 @@ def start_job(name, fn):
 
     threading.Thread(target=target, daemon=True).start()
     return job
+
+
+def label(t):
+    return t.name if t.kind == "sim" else f"{t.name} (real)"
 
 
 # ---------------------------------------------------------------- state
@@ -228,45 +466,111 @@ def containers():
     return rows
 
 
-def robots():
-    rows = [c for c in containers() if re.fullmatch(r"robot\d+", c["service"])]
-    for r in rows:
-        r["slot"] = int(r["service"][5:])
-        r["launch"] = False
-        r["move_group"] = False
-        r["cut_stem_action"] = False
-        r["rviz"] = []
-        if r["state"] == "running":
-            code, _ = sh(["docker", "exec", r["name"], "pgrep", "-f", "sim_robot_upstart.launch.py"], timeout=10)
-            r["launch"] = code == 0
-            r["cutting"] = sh(["docker", "exec", r["name"], "pgrep", "-f", CUT_MATCH], timeout=10)[0] == 0
-            _, out = sh(["docker", "exec", r["name"], "pgrep", "-af", RVIZ_MATCH], timeout=10)
-            r["rviz"] = sorted(set(re.findall(r"view_(navigation|moveit|robot)\.launch\.py", out)))
-            # Check move_group availability (only check if launch is running)
-            if r["launch"]:
-                code, _ = in_robot(r["name"], "ros2 node list 2>/dev/null | grep -q move_group", timeout=5)
-                r["move_group"] = code == 0
-                # Check cut_stem action server availability
-                code, _ = in_robot(r["name"], "ros2 action list 2>/dev/null | grep -xq /$ROBOT_NAMESPACE/cut_stem", timeout=5)
-                r["cut_stem_action"] = code == 0
-        else:
-            r["cutting"] = False
-    return sorted(rows, key=lambda r: r["slot"])
+def container_state(name):
+    code, out = sh(["docker", "inspect", "-f", "{{.State.Status}}", name], timeout=10)
+    return out.strip() if code == 0 else None
 
 
-def running_robot(name):
-    if not isinstance(name, str) or not NAME_RE.match(name):
-        raise ValueError("bad robot name")
-    if name not in {r["name"] for r in containers() if r["state"] == "running" and r["service"].startswith("robot")}:
-        raise ValueError(f"robot {name} is not running")
-    return name
+def zenoh_endpoints(env):
+    return env.get("BASESTATION_ZENOH_CONNECT", "tcp/127.0.0.1:7448").strip("\"'").split()
 
 
-def status():
+HOST_IPS = {}  # host -> (time, ip or None); an mDNS name that doesn't resolve can take seconds
+
+
+def host_ip(host):
+    if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
+        return host
+    last = HOST_IPS.get(host)
+    if last and time.time() - last[0] < 60:
+        return last[1]
+    try:
+        ip = socket.gethostbyname(host)
+    except OSError:
+        ip = None
+    HOST_IPS[host] = (time.time(), ip)
+    return ip
+
+
+DEPLOY_CURRENT = {}  # (deployed commit, HEAD) -> bool or None
+
+
+def deploy_current(deployed, head):
+    """Whether a robot's deployed commit has this checkout's colcon_ws/src (submodule pointers included): a newer
+    commit that changed nothing there needs no deploy. None: that commit isn't in this repository."""
+    if not deployed or not head:
+        return None
+    if (deployed, head) not in DEPLOY_CURRENT:
+        code, _ = sh(["git", "-C", str(ROOT), "diff", "--quiet", deployed, head, "--", "colcon_ws/src"], timeout=10)
+        DEPLOY_CURRENT[(deployed, head)] = {0: True, 1: False}.get(code)
+    return DEPLOY_CURRENT[(deployed, head)]
+
+
+# What the base station has of each real robot: its RViz windows, and whether the robot's graph reaches it (a robot
+# publishing platform/joint_states). Configured isn't enough: a300_00036's router once took the base station's link
+# but logged "Could not find corresponding link in routers network" and routed nothing.
+BASESTATION_PROBE = (f"pgrep -af '{RVIZ_MATCH}'; timeout 6 ros2 topic list -v 2>/dev/null | "
+                     "sed -n 's#^ \\* /\\([A-Za-z0-9_]*\\)/platform/joint_states .* publishers\\?$#seen=\\1#p'")
+
+
+def basestation_view():
+    """({robot: [RViz views open]}, {robots whose topics the base station sees}); ({}, None) without it."""
+    try:
+        code, out = sh(["docker", "exec", BASESTATION, "bash", "-c", BASESTATION_PROBE], timeout=15)
+    except subprocess.TimeoutExpired:
+        return {}, None
+    if code != 0:
+        return {}, None
+    views = collections.defaultdict(list)
+    for view, ns in re.findall(r"view_(\w+)\.launch\.py namespace:=(\w+)", out):
+        views[ns].append(view)
+    return views, set(re.findall(r"^seen=(\w+)$", out, re.M))
+
+
+def robots(mode, rows, env, head):
+    sims = [c for c in rows if re.fullmatch(r"robot\d+", c["service"])] if mode != "real" else []
+    config = real_config() if mode != "sim" else {}
+    reals = [real_target(name, config) for name in sorted(config)]
+    targets = [SimTarget(c["name"]) for c in sims if c["state"] == "running"] + reals
+    with ThreadPoolExecutor(max_workers=len(targets) + 1) as pool:
+        bs = pool.submit(basestation_view) if reals else None
+        probed = dict(zip(((t.kind, t.name) for t in targets), pool.map(probe, targets)))
+        views, seen = bs.result() if bs else ({}, None)
+    running = running_sims(rows)
+    out = []
+    for c in sims:
+        r = dict(c, kind="sim", slot=int(c["service"][5:]), cutter=True, **probed.get(("sim", c["name"]), {}))
+        real = PROBES.get(("real", c["name"]))
+        r["conflict"] = c["name"] in running and c["name"] in real_config() and bool(real and real["data"]["online"])
+        out.append(r)
+    endpoints, zenoh = zenoh_endpoints(env), env.get("FLEET_RMW", "rmw_zenoh_cpp") == "rmw_zenoh_cpp"
+    for t in reals:
+        p = probed[("real", t.name)]
+        ip = host_ip(t.host)
+        out.append(dict(p, kind="real", name=t.name, host=t.host, user=t.user, cutter=t.cutter, ip=ip,
+                        state="online" if p["online"] else "offline", rviz=views.get(t.name, []),
+                        conflict=t.name in running and p["online"],
+                        deploy_current=deploy_current(p["deployed"], head),
+                        # the base station's router dials the robot's (basestation.compose.yml); None: not zenoh
+                        zenoh_linked=(ip is not None and f"tcp/{ip}:7447" in endpoints) if zenoh else None,
+                        # and the robot's topics actually reach it; None: no base station, or can't tell (offline,
+                        # or a sim robot of the same name publishes the same topics)
+                        basestation_sees=None if seen is None or not p["online"] or t.name in running
+                        else t.name in seen))
+    return sorted(out, key=lambda r: (r["kind"] != "sim", r.get("slot", 0), r["name"]))
+
+
+def status(q):
+    mode = q.get("mode") if q.get("mode") in MODES else DEFAULT_MODE
     env = read_env()
-    sim = next((c for c in containers() if c["service"] == "isaac-sim"), None)
+    rows = containers()
+    sim = next((c for c in rows if c["service"] == "isaac-sim"), None)
     n = int(env.get("NUM_ROBOTS", "0") or 0)
+    code, head = sh(["git", "-C", str(ROOT), "rev-parse", "HEAD"], timeout=10)
+    head = head.strip() if code == 0 else ""
     return {
+        "mode": mode,
+        "default_mode": DEFAULT_MODE,
         "sim": sim,
         # the running sim's own report (scene loading/ready, robots in it, last spawn); None if not running
         "scene": fleet_ctl.read_state() if sim and sim["state"] == "running" else None,
@@ -275,12 +579,17 @@ def status():
         "num_robots": n,
         "slots": [env.get(f"ROBOT_MODEL_{i}", "a300") for i in range(MAX_SLOTS)],
         "models": available_models(),
-        "robots": robots(),
+        "robots": robots(mode, rows, env, head),
         "max_slots": MAX_SLOTS,
         "sim_mode": env.get("SIM_MODE", "stream"),
         "robot_looks": env.get("ROBOT_LOOKS", "full"),
         "sim_scene": env.get("SIM_SCENE", ""),
         "sim_scene_label": scene_label(env.get("SIM_SCENE", "")),
+        "fleet_rmw": env.get("FLEET_RMW", "rmw_zenoh_cpp"),
+        "use_sim_time": env.get("USE_SIM_TIME", "true"),
+        "basestation": container_state(BASESTATION) if mode != "sim" else None,
+        "known_real_ids": known_real_ids() if mode != "sim" else [],
+        "head": head,
     }
 
 
@@ -390,7 +699,7 @@ def act_spawn(body):
 
 
 def act_launch_start(body):
-    robot = running_robot(body.get("robot"))
+    robot = resolve(body, kinds=("sim",)).name
 
     def fn(j):
         if sh(["docker", "exec", robot, "pgrep", "-f", "sim_robot_upstart.launch.py"])[0] == 0:
@@ -412,7 +721,7 @@ def act_launch_start(body):
         time.sleep(5)  # a launch that can't start (missing file, bad package) exits within a second or two
         if sh(["docker", "exec", robot, "pgrep", "-f", "sim_robot_upstart.launch.py"])[0] != 0:
             j.log("the launch exited right away; end of its log:")
-            j.log(in_robot(robot, f"tail -n 15 {LAUNCH_LOG}")[1].rstrip())
+            j.log(SimTarget(robot).run(f"tail -n 15 {LAUNCH_LOG}")[1].rstrip())
             # nodes it started before failing (e.g. moveit_sim_bridge) outlive it and would double up with the
             # next launch's; restart_ros (= the Stop button) removes them
             j.run(["docker", "exec", robot, "restart_ros"])
@@ -424,21 +733,55 @@ def act_launch_start(body):
 
 
 def act_launch_stop(body):
-    robot = running_robot(body.get("robot"))
+    robot = resolve(body, kinds=("sim",)).name
     return start_job(f"{robot}: restart_ros", lambda j: j.run(["docker", "exec", robot, "restart_ros"]) == 0)
 
 
+def act_real_restart(body):
+    # The real robot's counterpart of start/stop: Clearpath's services (clearpath-platform-extras runs bringup_main,
+    # clearpath-manipulators the arm driver and move_group). Needs a NOPASSWD sudoers entry for exactly this.
+    t = resolve(body, kinds=("real",))
+
+    def fn(j):
+        code, out = t.run("sudo -n systemctl restart clearpath-robot 2>&1", timeout=120)
+        j.log(out.rstrip() or f"exit {code}")
+        if code != 0:
+            if "password" in out:
+                j.log(f"sudo needs a password for this on {t.name}; {SUDOERS_HINT}")
+            return False
+        j.log("restarted; waiting for clearpath-platform-extras ...")
+        for _ in range(30):
+            code, out = t.run("systemctl is-active " + " ".join(REAL_SERVICES), timeout=20)
+            if out.split()[1:2] == ["active"]:
+                j.log("services: " + " ".join(f"{s}={v}" for s, v in zip(REAL_SERVICES, out.split())))
+                return True
+            time.sleep(2)
+        j.log("clearpath-platform-extras isn't active after 60 s: see the robot's Service log")
+        return False
+
+    return start_job(f"{label(t)}: restart clearpath-robot", fn)
+
+
 def act_rviz_start(body):
-    robot = running_robot(body.get("robot"))
+    t = resolve(body)
     view = body.get("view")
     if view not in RVIZ_VIEWS:
         raise ValueError(f"view must be one of {RVIZ_VIEWS}")
+    if t.kind == "sim":
+        where, ns, sim_time, log = t.name, "$ROBOT_NAMESPACE", "${USE_SIM_TIME:-false}", view
+    else:
+        if container_state(BASESTATION) != "running":
+            raise ValueError("a real robot's RViz runs in the base station container: "
+                             "docker compose -f basestation.compose.yml up -d")
+        where, ns, sim_time, log = BASESTATION, t.name, "false", f"{t.name}_{view}"
+    match = f"[c]learpath_viz view_{view}.launch.py namespace:={t.name if t.kind == 'real' else ''}"
 
     def fn(j):
-        if sh(["docker", "exec", robot, "pgrep", "-f", f"clearpath_viz view_{view}.launch.py"])[0] == 0:
+        if sh(["docker", "exec", where, "bash", "-c", f"pgrep -f '{match}'"])[0] == 0:
             j.log(f"view_{view} is already open")
             return True
-        if in_robot(robot, "source /home/robot/colcon_ws/install/setup.bash && ros2 pkg prefix clearpath_viz")[0] != 0:
+        if sh(["docker", "exec", where, "bash", "-c",
+               "source /home/robot/colcon_ws/install/setup.bash && ros2 pkg prefix clearpath_viz"])[0] != 0:
             j.log("clearpath_viz is not built: scripts/colcon_build.sh --packages-select clearpath_viz")
             return False
         env = dict(os.environ)
@@ -446,68 +789,109 @@ def act_rviz_start(body):
         if display:
             env["DISPLAY"] = display
             j.run(["scripts/x11_auth.sh"], env=env)  # /tmp/.docker.xauth, mounted into the robot containers
-        if j.run(["docker", "exec", "-d", robot, "bash", "-c", RVIZ_CMD.format(view=view)]) != 0:
+        cmd = RVIZ_CMD.format(view=view, ns=ns, sim_time=sim_time, log=log)
+        if j.run(["docker", "exec", "-d", where, "bash", "-c", cmd]) != 0:
             return False
         time.sleep(3)  # no display / bad package: the launch exits within a second or two
-        if sh(["docker", "exec", robot, "pgrep", "-f", f"clearpath_viz view_{view}.launch.py"])[0] != 0:
+        if sh(["docker", "exec", where, "bash", "-c", f"pgrep -f '{match}'"])[0] != 0:
             j.log("the launch exited right away; end of its log:")
-            j.log(in_robot(robot, f"tail -n 15 /tmp/rviz_{view}.log")[1].rstrip())
+            j.log(sh(["docker", "exec", where, "tail", "-n", "15", f"/tmp/rviz_{log}.log"])[1].rstrip())
             return False
-        j.log(f"started; output in {robot}:/tmp/rviz_{view}.log")
+        j.log(f"started; output in {where}:/tmp/rviz_{log}.log")
         return True
 
-    return start_job(f"{robot}: rviz {view}", fn)
+    return start_job(f"{label(t)}: rviz {view}", fn)
 
 
 def act_cutstem_start(body):
-    robot = running_robot(body.get("robot"))
+    t = resolve(body)
+    if not t.cutter:
+        raise ValueError(f"{t.name} has no stem cutter (tick 'cutter' in Real robots if it has one now)")
 
     def fn(j):
-        if sh(["docker", "exec", robot, "pgrep", "-f", CUT_MATCH])[0] == 0:
+        if t.run(f"pgrep -f '{CUT_MATCH}'")[0] == 0:
             j.log("a cut_stem goal is already running")
             return False
-        code, out = in_robot(robot, "ros2 action list 2>/dev/null | grep -x /$ROBOT_NAMESPACE/cut_stem", timeout=20)
+        code, out = t.run("ros2 action list 2>/dev/null | grep -x /$ROBOT_NAMESPACE/cut_stem", timeout=20)
         if code != 0:
-            j.log("no cut_stem action server -- start sim_robot_upstart first and wait ~20 s for it to come up")
+            j.log("no cut_stem action server -- " + ("start sim_robot_upstart first and wait ~20 s for it to come up"
+                                                    if t.kind == "sim" else "is clearpath-platform-extras running?"))
             return False
-        return j.run(["docker", "exec", robot, "bash", "-c", CUT_CMD]) == 0
+        return j.run(t.argv(CUT_CMD)) == 0
 
-    return start_job(f"{robot}: cut_stem", fn)
+    return start_job(f"{label(t)}: cut_stem", fn)
 
 
 def act_cutstem_stop(body):
-    robot = running_robot(body.get("robot"))
+    t = resolve(body, check_conflict=False)  # stopping is always safe
 
     def fn(j):
         # SIGINT, not SIGKILL: ros2 action send_goal cancels the goal on Ctrl+C, so the server stops the task.
-        code, _ = sh(["docker", "exec", robot, "pkill", "-INT", "-f", CUT_MATCH])
+        code, _ = t.run(f"pkill -INT -f '{CUT_MATCH}'")
         j.log("sent Ctrl+C to the cut_stem client (goal is cancelled)" if code == 0 else "no cut_stem goal running")
         return True
 
-    return start_job(f"{robot}: stop cut_stem", fn)
+    return start_job(f"{label(t)}: stop cut_stem", fn)
+
+
+def stop_robot(j, t):
+    """Ctrl+C to this UI's goal clients, then cancel every goal of every action that moves the robot's arm, so it
+    stops even if a client is gone (e.g. this server restarted mid-goal) or another program sent the goal."""
+    lines = []
+    try:
+        code, out = t.run(STOP_CMD, timeout=40)
+        lines = out.strip().splitlines() or [f"exit {code}"]
+    except subprocess.TimeoutExpired:
+        lines = ["no answer in 40 s"]
+    for line in lines:
+        j.log(f"{label(t)}: {line}")
+
+
+def act_stop(body):
+    t = resolve(body, check_conflict=False)
+    return start_job(f"{label(t)}: stop motion", lambda j: stop_robot(j, t))
+
+
+def act_stop_all(body):
+    """Every robot the page shows (its mode): sim robots running, real robots in the list and online."""
+    mode = body.get("mode") if body.get("mode") in MODES else DEFAULT_MODE
+    targets = [SimTarget(n) for n in sorted(running_sims())] if mode != "real" else []
+    if mode != "sim":
+        config = real_config()
+        targets += [t for t in (real_target(n, config) for n in sorted(config)) if probe(t, max_age=30)["online"]]
+    if not targets:
+        raise ValueError("no robots to stop")
+
+    def fn(j):
+        with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+            list(pool.map(lambda t: stop_robot(j, t), targets))
+
+    return start_job("stop all motion: " + ", ".join(label(t) for t in targets), fn)
 
 
 def act_arm_goto(body):
-    robot = running_robot(body.get("robot"))
+    t = resolve(body)
     state, group = body.get("state"), body.get("group", "arm_0")
     if not (isinstance(state, str) and NAME_RE.match(state) and isinstance(group, str) and NAME_RE.match(group)):
         raise ValueError("bad state/group")
     vel = min(max(float(body.get("velocity_scale", 0.3)), 0.01), 1.0)
-    cmd = f"arm_goto {state} --group {group} --velocity-scale {vel}"
-    if body.get("direct"):
-        cmd += " --direct"
+    if t.kind == "real":
+        if body.get("direct"):
+            raise ValueError("direct (unplanned) moves are sim only: they go to moveit_sim_bridge")
+        vel = min(vel, REAL_MAX_VELOCITY)
+    args = f"{state} --group {group} --velocity-scale {vel}" + (" --direct" if body.get("direct") else "")
     record = float(body.get("record", 0) or 0)
 
     def fn(j):
         if record <= 0:
-            return j.run(["docker", "exec", robot, "bash", "-c", cmd]) == 0
+            return j.run(t.argv(arm_tool("arm_goto", args))) == 0
         samples = []
-        rec = subprocess.Popen(["docker", "exec", robot, "bash", "-c", f"arm_joints --record {min(record, 120)}"],
-                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        rec = subprocess.Popen(t.argv(arm_tool("arm_joints", f"--record {min(record, 120)}")),
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         reader = threading.Thread(target=lambda: samples.extend(json.loads(l) for l in rec.stdout if l.startswith("{")))
         reader.start()
         time.sleep(1.5)  # let the recorder's own rclpy startup finish before the arm starts moving
-        rc = j.run(["docker", "exec", robot, "bash", "-c", cmd])
+        rc = j.run(t.argv(arm_tool("arm_goto", args)))
         j.log(f"recording joints for {record:.0f}s total ...")
         rec.wait()
         reader.join()
@@ -515,29 +899,64 @@ def act_arm_goto(body):
         j.log(f"recorded {len(samples)} samples")
         return rc == 0
 
-    return start_job(f"{robot}: {group} -> {state}" + (" (direct)" if body.get("direct") else ""), fn)
+    return start_job(f"{label(t)}: {group} -> {state}" + (" (direct)" if body.get("direct") else ""), fn)
+
+
+def last_json(code, out, what):
+    lines = out.strip().splitlines()
+    if code != 0 or not lines:
+        raise ValueError(out.strip() or f"{what} failed")
+    return json.loads(lines[-1])
 
 
 def get_arm_states(q):
-    robot = running_robot(q.get("robot"))
-    code, out = in_robot(robot, "arm_goto --list")
-    if code != 0:
-        raise ValueError(out.strip() or "arm_goto --list failed")
-    return json.loads(out.strip().splitlines()[-1])
+    t = resolve(q, check_conflict=False)  # read only
+    return last_json(*t.run(arm_tool("arm_goto", "--list")), "arm_goto --list")
 
 
 def get_joints(q):
-    robot = running_robot(q.get("robot"))
-    code, out = in_robot(robot, "arm_joints")
-    if code != 0:
-        raise ValueError(out.strip())
-    return json.loads(out.strip().splitlines()[-1])
+    t = resolve(q, check_conflict=False)
+    return last_json(*t.run(arm_tool("arm_joints")), "arm_joints")
 
 
 def get_launch_log(q):
-    robot = running_robot(q.get("robot"))
-    _, out = sh(["docker", "exec", robot, "tail", "-n", "300", LAUNCH_LOG])
-    return {"log": out}
+    t = resolve(q, check_conflict=False)
+    if t.kind == "sim":
+        return {"log": t.run(f"tail -n 300 {LAUNCH_LOG}")[1]}
+    return {"log": t.run("journalctl -u clearpath-platform-extras -n 300 --no-pager")[1]}
+
+
+def act_deploy(body):
+    """scripts/deploy_robot.sh: dry-run (what would change, and files edited on the robot), deploy (after the page
+    showed a dry run; --yes, since the script's own delete prompt needs a terminal) or pull (the robot's edits)."""
+    t = resolve(body, kinds=("real",), check_conflict=False)
+    what = body.get("action")
+    flags = {"dry-run": ["--dry-run"], "deploy": ["--yes"], "pull": ["--pull"]}
+    if what not in flags:
+        raise ValueError(f"action must be one of {sorted(flags)}")
+    argv = ["scripts/deploy_robot.sh", t.name, "--host", t.host, "--user", t.user, *flags[what]]
+    return start_job(f"{label(t)}: deploy {what}", lambda j: j.run(argv) == 0)
+
+
+def act_basestation_link(body):
+    """Add a real robot's zenoh router to the base station's (BASESTATION_ZENOH_CONNECT) and recreate the base
+    station with it, so the base station, the sim and that robot share one ROS graph."""
+    t = resolve(body, kinds=("real",), check_conflict=False)
+    ip = host_ip(t.host)
+    if not ip:
+        raise ValueError(f"cannot resolve {t.host}: give the robot an IP address in Real robots")
+    endpoints = zenoh_endpoints(read_env())
+    endpoint = f"tcp/{ip}:7447"
+    if endpoint in endpoints:
+        raise ValueError(f"the base station already dials {endpoint}")
+
+    def fn(j):
+        value = '"' + " ".join(endpoints + [endpoint]) + '"'
+        write_env({"BASESTATION_ZENOH_CONNECT": value})
+        j.log(f".env: BASESTATION_ZENOH_CONNECT={value}")
+        return j.run(["docker", "compose", "-f", "basestation.compose.yml", "up", "-d"]) == 0
+
+    return start_job(f"base station: link {t.name} ({endpoint})", fn)
 
 
 # ---------------------------------------------------------------- motion capture / localization
@@ -702,11 +1121,14 @@ def get_mocap(q):
     server = q.get("server") or "192.168.50.80"
     if not IP_RE.match(server):
         raise ValueError("server must be an IPv4 address")
+    mode = q.get("mode") if q.get("mode") in MODES else DEFAULT_MODE
     snap = MOCAP.poll(server)
     snap["assignments"] = read_assignments()
-    # robots to offer: MTU's real robots (ids with "_") and the running sim robots
-    snap["robots"] = sorted({m for m in available_models() if "_" in m} |
-                            {r["name"] for r in containers() if r["service"].startswith("robot")})
+    # robots to offer, by the page's mode: MTU's real robots (ids with "_" the sim knows, and the real robots list)
+    # and the running sim robots
+    real = {m for m in available_models() if "_" in m} | set(real_config()) if mode != "sim" else set()
+    sim = {r["name"] for r in containers() if r["service"].startswith("robot")} if mode != "real" else set()
+    snap["robots"] = sorted(real | sim)
     return snap
 
 
@@ -733,17 +1155,17 @@ LOC_NODE = "/$ROBOT_NAMESPACE/ref_localizer"
 
 
 def get_localization(q):
-    robot = running_robot(q.get("robot"))
-    code, out = in_robot(robot, f"timeout 6 ros2 topic echo --once --no-daemon --full-length {LOC_NODE}/status "
-                                "std_msgs/msg/String", timeout=15)
+    t = resolve(q, check_conflict=False)
+    code, out = t.run(f"timeout 6 ros2 topic echo --once --no-daemon --full-length {LOC_NODE}/status "
+                      "std_msgs/msg/String", timeout=15)
     m = re.search(r"^data: '(.*)'$", out, re.M)
     if code != 0 or not m:
-        return {"running": False}  # no ref_localizer (sim_robot_upstart not started)
+        return {"running": False}  # no ref_localizer (sim_robot_upstart / clearpath-platform-extras not running)
     return {"running": True, **json.loads(m.group(1).replace("''", "'"))}
 
 
 def act_localization_set(body):
-    robot = running_robot(body.get("robot"))
+    t = resolve(body)
     cmds = []
     if body.get("source"):
         if body["source"] not in LOC_SOURCES:
@@ -762,8 +1184,7 @@ def act_localization_set(body):
     if not cmds:
         raise ValueError("nothing to do")
     what = ", ".join(f"{k} {body[k]}" for k in ("source", "anchor", "service") if body.get(k))
-    return start_job(f"{robot}: localization {what}",
-                     lambda j: all(j.run(["docker", "exec", robot, "bash", "-c", c]) == 0 for c in cmds))
+    return start_job(f"{label(t)}: localization {what}", lambda j: all(j.run(t.argv(c)) == 0 for c in cmds))
 
 
 POST = {
@@ -774,15 +1195,22 @@ POST = {
     "/api/spawn": act_spawn,
     "/api/launch/start": act_launch_start,
     "/api/launch/stop": act_launch_stop,
+    "/api/real/restart": act_real_restart,
+    "/api/real/save": act_real_save,
+    "/api/real/remove": act_real_remove,
+    "/api/deploy": act_deploy,
+    "/api/basestation/link": act_basestation_link,
     "/api/arm/goto": act_arm_goto,
     "/api/cutstem/start": act_cutstem_start,
-    "/api/rviz/start": act_rviz_start,
     "/api/cutstem/stop": act_cutstem_stop,
+    "/api/stop": act_stop,
+    "/api/stop_all": act_stop_all,
+    "/api/rviz/start": act_rviz_start,
     "/api/mocap/assign": act_mocap_assign,
     "/api/localization/set": act_localization_set,
 }
 GET = {
-    "/api/status": lambda q: status(),
+    "/api/status": status,
     "/api/arm/states": get_arm_states,
     "/api/joints": get_joints,
     "/api/launch/log": get_launch_log,
@@ -840,11 +1268,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global DEFAULT_MODE
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8090)
+    ap.add_argument("--mode", choices=MODES, default=DEFAULT_MODE,
+                    help="what the page shows until the browser picks its own: sim, real robots, or both")
     args = ap.parse_args()
-    print(f"sim UI on http://{args.host}:{args.port}")
+    DEFAULT_MODE = args.mode
+    print(f"fleet UI on http://{args.host}:{args.port} (fleet: {ROOT}, mode {args.mode})")
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 

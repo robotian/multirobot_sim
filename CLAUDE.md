@@ -21,7 +21,7 @@ scripts/fleet_ctl.py state|wait-scene|spawn|clear|reset   # host side of the spa
 scripts/colcon_build.sh [colcon args...]  # colcon build ~/colcon_ws (as `robot`) in every running robot container
 scripts/make_farm_scene.py                # sim/scene/lavender_farm.usd from the farm DB's object_data (use: SIM_SCENE=lavender_farm.usd)
 docker compose -f basestation.compose.yml up -d --build   # base station: ROS 2 + the farm PostgreSQL (port 5433); `docker exec -it basestation psql`
-python3 tools/sim_ui/server.py            # web UI on http://127.0.0.1:8090 (start/stop/reset, spawn at poses, arm moves, Cut stem)
+python3 tools/sim_ui/server.py [--mode sim|real|both]   # web UI on http://127.0.0.1:8090: sim (start/stop/reset, spawn at poses), real robots (tools/sim_ui/real_robots.json, over SSH: services, deploy), both (arm moves, Cut stem, Stop motion, RViz, localization)
 SIM_MODE=headed scripts/fleet.sh          # Isaac's desktop window instead of WebRTC (needs x11_auth.sh; ~3 min to start)
 docker compose logs -f isaac-sim          # sim's own lines are prefixed [fleet]
 docker exec -it a300_0000 bash            # robot shell (ROS env sourced); add `-u robot` for ~/colcon_ws work
@@ -31,8 +31,8 @@ docker exec a300_0000 camera_view [depth] # rqt_image_view of the camera
 docker exec a300_0000 restart_ros         # kill every ROS 2 node; robot_state/ekf/foxglove/pruner_stub self-heal, manual launches don't
 docker exec a300_0000 bash -c 'python3 /scripts/drive_test.py [lin_x] [ang_z] [seconds]'   # smoke test: commanded vs. odometry
 docker exec j100_0921 bash -c 'python3 /scripts/calibrate_velocity.py [--modes lin lat ang] [--levels ...]'   # velocity sweep, exit 1 if >10% off
-docker exec j100_0921 bash -c 'arm_goto cut_init [--direct] [--velocity-scale 0.3]'   # arm to an SRDF group_state (`arm_goto --list`)
-docker exec j100_0921 bash -c 'arm_joints [--record 12]'  # commanded vs observed arm joints as JSON
+docker exec j100_0921 bash -c 'arm_goto cut_init [--direct] [--velocity-scale 0.3]'   # arm to an SRDF group_state (`arm_goto --list`); on a real robot: ros2 run moveit_sim_bridge arm_goto (no --direct)
+docker exec j100_0921 bash -c 'arm_joints [--record 12]'  # commanded vs observed arm joints as JSON (moveit_sim_bridge's; real robot: observed only)
 scripts/foxglove_layout.sh [ns...]        # foxglove/<ns>.json layout with the robot's URDF in a 3D panel
 scripts/deploy_robot.sh <id> [--dry-run]  # rsync colcon_ws/src to a real robot's ~/colcon_ws and build it there (over its ~/robot_ws); see scripts/CLAUDE.md
 scripts/deploy_robot.sh <id> --pull       # copy files edited on the robot since the last deploy back into colcon_ws/src (deploys nothing)
@@ -57,7 +57,7 @@ scripts/deploy_robot.sh <id> --pull       # copy files edited on the robot since
 - **Robot containers** (`robot/`): `entrypoint.sh` writes `/etc/clearpath/robot.yaml`, runs Clearpath's `generate_bash`/`generate_params` and `generate_srdf`, then supervises `robot_state`, `ekf`, `foxglove` and `pruner_stub`. `./colcon_ws` is bind-mounted into every robot as `/home/robot/colcon_ws`. See `robot/CLAUDE.md`.
 - **ROS workspace** (`colcon_ws/`): MTU's `sim_robot_upstart.launch.py` (MoveIt, `cut_stem`, perception), `moveit_sim_bridge` (the arm's execution path, since there is no ros2_control), Nav2 and dual-GPS localization. See `colcon_ws/CLAUDE.md`.
 - **Base station** (`basestation.compose.yml`, `basestation/`): separate compose project (`fleet.sh down` leaves it running), image `FROM clearpath-robot:jazzy` + PostgreSQL 18. `network_mode: host`, so it is on the LAN like a real base station: real robots' FastDDS discovery works, sim robots reach it via the fleet bridge `br-fleet` (fixed name in `docker-compose.yml`) and, for zenoh, it runs its own router on host port 7447 (sessions are its clients) that dials `BASESTATION_ZENOH_CONNECT` (space-separated; default the fleet's `zenoh-router`, published on `127.0.0.1:7448`; add real robots' `tcp/<ip>:7447`). The database (port 5433, `admin`, `test_lavender_farming`, `PGPASSWORD` from `db.env`) is what `status_server`'s `config.yaml` (`host.docker.internal:5433`) points at; `basestation/initdb/` (gitignored dumps) loads only on the first start (empty `basestation_pgdata` volume).
-- **Web UI** (`tools/sim_ui/`): stdlib-only, binds 127.0.0.1, POSTs require `Content-Type: application/json`. See `tools/sim_ui/CLAUDE.md`.
+- **Web UI** (`tools/sim_ui/`): stdlib-only, binds 127.0.0.1, POSTs require `Content-Type: application/json`. Sim robots through `docker exec`, real robots over SSH; the page's mode (sim / real / both) picks which. See `tools/sim_ui/CLAUDE.md`.
 - **Real robots**: adding or debugging one of MTU's robots → skill `add-real-robot` (`.claude/skills/add-real-robot/SKILL.md`).
 
 ##Important

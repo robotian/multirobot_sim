@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sim Fleet Control</title>
+<title>Fleet Control</title>
 <style>
   :root {
     --bg: #f5f6f8; --card: #fff; --fg: #1d2330; --muted: #6b7385; --line: #dde1e8;
@@ -48,18 +48,28 @@
   .plots { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin-top: 8px; }
   .plots canvas { width: 100%; height: 150px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
   .legend { font-size: 12px; } .legend b { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin: 0 4px 0 10px; }
+  /* the page's mode (header): sim only, real robots only, or both */
+  body[data-mode="real"] .only-sim, body[data-mode="sim"] .only-real { display: none !important; }
+  .pill.kind { font-weight: 600; }
+  .banner { margin: 12px 20px 0; padding: 8px 12px; border: 1px solid var(--warn); border-radius: 6px; color: var(--warn); }
+  .banner:empty { display: none; }
   #toast { position: fixed; bottom: 16px; right: 16px; background: var(--bad); color: #fff; padding: 8px 12px; border-radius: 6px; display: none; max-width: 60ch; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Sim Fleet Control</h1>
-  <span id="simPill" class="pill">sim: ?</span>
+  <h1>Fleet Control</h1>
+  <label title="Which robots this page shows and drives: the simulated ones, the real ones (Real robots list, over SSH), or both. Remembered by this browser.">
+    <select id="modeSel" onchange="setMode(this.value)"><option value="sim">Simulation</option><option value="real">Real robots</option><option value="both">Both</option></select></label>
+  <span id="simPill" class="pill only-sim">sim: ?</span>
   <span class="muted" id="updated"></span>
+  <button class="danger" style="margin-left:auto" onclick="post('/api/stop_all', { mode })"
+    title="Every robot shown: Ctrl+C to this page's cut_stem / arm_goto clients, and cancel every goal of cut_stem, move_group and the arm's trajectory / gripper controllers">Stop all motion</button>
 </header>
+<div id="banner" class="banner"></div>
 <main>
   <div class="col">
-    <section class="card">
+    <section class="card only-sim">
       <h2>Simulation</h2>
       <div class="row">
         <label title="Stream: headless, view it with the WebRTC streaming client. Headed: Isaac Sim's own window on this machine's display (recreates the sim when changed).">View
@@ -84,7 +94,7 @@
       <div id="sceneInfo"></div>
     </section>
 
-    <section class="card">
+    <section class="card only-sim">
       <h2>Spawn robots</h2>
       <div class="row">
         <label>Robots <select id="slotCount" onchange="renderSlots(); setDefaultPoses(true)"></select></label>
@@ -96,6 +106,23 @@
         containers; into an empty scene it takes a few seconds, replacing robots restarts the sim (~30 s).</div>
       <div id="slots"></div>
       <canvas id="spawnMap" style="width:100%;height:260px;background:var(--bg);border:1px solid var(--line);border-radius:6px;margin-top:8px;cursor:crosshair"></canvas>
+    </section>
+
+    <section class="card only-real">
+      <h2>Real robots</h2>
+      <div class="muted" style="font-size:12px">Reached over SSH (key login as robot@host, like scripts/deploy_robot.sh);
+        saved in tools/sim_ui/real_robots.json. Cutter: the stem cutter is fitted (offers Cut stem; every robot's
+        bringup advertises the action). Deployed: the commit in the robot's ~/colcon_ws/DEPLOYED vs. this checkout's.
+        Base station: whether the robot's topics reach it (its zenoh router dials the robot's: BASESTATION_ZENOH_CONNECT).</div>
+      <div id="realList"></div>
+      <div class="row">
+        <input id="realId" list="realIds" placeholder="id, e.g. j100_0921" style="width:150px">
+        <datalist id="realIds"></datalist>
+        <input id="realHost" placeholder="host (default cpr-&lt;id&gt;.local)" style="width:200px">
+        <label><input type="checkbox" id="realCutter"> cutter</label>
+        <button class="ghost" onclick="saveReal()">Add / update</button>
+      </div>
+      <div class="row muted" id="basestationInfo"></div>
     </section>
 
     <section class="card">
@@ -157,9 +184,35 @@ async function post(path, body = {}) {
 }
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// ------------------------------------------------------------ mode (sim / real / both), per browser
+let mode = null;
+try { mode = localStorage.getItem('fleetMode'); } catch (e) {}
+function applyMode() { document.body.dataset.mode = mode; document.getElementById('modeSel').value = mode; }
+function setMode(m) {
+  mode = m;
+  try { localStorage.setItem('fleetMode', m); } catch (e) {}
+  applyMode();
+  // the last poll's robots are the old mode's: blank until the new mode's poll answers (a few seconds over SSH)
+  for (const id of ['robots', 'realList']) {
+    const box = document.getElementById(id);
+    box.innerHTML = '<span class="muted">loading...</span>';
+    delete box.dataset.sig;
+  }
+  refreshStatus();
+}
+if (mode) applyMode();
+
 // ------------------------------------------------------------ status
+let statusSeq = 0;
 async function refreshStatus() {
-  try { status = await api('/api/status'); } catch (e) { return; }
+  const seq = ++statusSeq;
+  let s;
+  try { s = await api('/api/status?mode=' + encodeURIComponent(mode || '')); } catch (e) { return; }
+  if (seq !== statusSeq) return;  // a newer poll (e.g. after a mode change) is on its way
+  status = s;
+  if (!mode) { mode = status.default_mode; applyMode(); }
+  renderBanner();
+  renderReal();
   const sim = status.sim, scene = status.scene;
   const pill = document.getElementById('simPill');
   const up = sim && sim.state === 'running';
@@ -168,7 +221,7 @@ async function refreshStatus() {
   pill.textContent = 'sim: ' + (!sim ? 'not created' : !up ? sim.state : !scene ? 'starting'
     : scene.scene !== 'ready' ? `scene ${scene.scene}` : spawning ? 'spawning robots'
     : `scene ready, ${scene.robots.length} robot(s)`);
-  pill.className = 'pill ' + (!up || (scene && scene.scene === 'error') ? 'bad' : scene && scene.scene === 'ready' && !spawning ? 'ok' : 'warn');
+  pill.className = 'pill only-sim ' + (!up || (scene && scene.scene === 'error') ? 'bad' : scene && scene.scene === 'ready' && !spawning ? 'ok' : 'warn');
   renderScenes();
   const loaded = scene && scene.scene_source ? ` · scene ${scene.scene_source}` : '';
   document.getElementById('simInfo').textContent = sim ? `${sim.name}: ${sim.status} · ${status.sim_mode} · looks ${status.robot_looks}${loaded}` : 'no sim container -- press Start';
@@ -330,42 +383,131 @@ function mapClick(ev) {
 }
 window.addEventListener('resize', drawMap);
 
-// ------------------------------------------------------------ robots
+// ------------------------------------------------------------ banner: what both / real mode needs
+function renderBanner() {
+  const notes = [];
+  const reals = status.robots.filter(r => r.kind === 'real'), sims = status.robots.filter(r => r.kind === 'sim' && r.state === 'running');
+  if (mode !== 'sim' && status.basestation !== 'running')
+    notes.push('The base station is not running (real robots\' RViz runs there, and its zenoh router links the sim and the real robots): docker compose -f basestation.compose.yml up -d');
+  if (sims.length && reals.some(r => r.online))
+    notes.push(`Sim robots run on sim time (/clock), real ones on wall time; the base station uses USE_SIM_TIME=${status.use_sim_time}.`);
+  if (status.robots.some(r => r.conflict))
+    notes.push('A robot is both a sim robot and an online real robot (same ROS names): actions on either are refused until one is gone.');
+  document.getElementById('banner').innerHTML = notes.map(esc).join('<br>');
+}
+
+// ------------------------------------------------------------ real robots list (real_robots.json)
+function renderReal() {
+  if (mode === 'sim') return;
+  const reals = status.robots.filter(r => r.kind === 'real');
+  document.getElementById('realIds').innerHTML = status.known_real_ids.map(i => `<option value="${esc(i)}">`).join('');
+  document.getElementById('basestationInfo').innerHTML = `base station <span class="pill ${status.basestation === 'running' ? 'ok' : 'warn'}">${esc(status.basestation || 'not created')}</span> · middleware ${esc(status.fleet_rmw)}`;
+  const box = document.getElementById('realList');
+  const sig = JSON.stringify([reals, status.head]);
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  if (!reals.length) { box.innerHTML = '<div class="muted">no real robots yet: add one below</div>'; return; }
+  box.innerHTML = reals.map(r => {
+    // current: the deployed commit's colcon_ws/src is this checkout's HEAD's (null: commit unknown here)
+    const k = `'${r.name}'`, current = r.deploy_current;
+    const deployed = !r.deployed ? '<span class="pill warn">never deployed</span>'
+      : `<span class="pill ${current ? 'ok' : 'warn'}" title="${current ? 'colcon_ws/src is the same as' : current === false ? 'colcon_ws/src differs from' : 'commit not in this repository; compare with'} this checkout's HEAD ${esc(status.head.slice(0, 12))} (uncommitted changes aren't counted)">deployed ${esc(r.deployed.slice(0, 7))}${current ? '' : current === false ? ', out of date' : ' (?)'}</span>`;
+    // whether the robot's topics reach the base station; can't tell while offline or while a sim robot has its name
+    const link = r.conflict ? '' : r.basestation_sees ? '<span class="pill ok" title="the base station sees its platform/joint_states">base station sees it</span>'
+      : r.zenoh_linked === false ? `<button class="ghost" onclick="confirm('Add ${esc(r.name)} (tcp/${esc(r.ip || '?')}:7447) to BASESTATION_ZENOH_CONNECT and recreate the base station container?') && post('/api/basestation/link', {robot: ${k}, kind: 'real'})"
+          title="the base station's zenoh router doesn't dial this robot's">Link to base station</button>`
+      : `<span class="pill warn" title="${r.basestation_sees === null ? 'the base station is not running'
+          : 'its platform/joint_states does not reach the base station' + (r.zenoh_linked ? ' although the base station\'s router dials it: check the zenoh routers\' logs (journalctl -u clearpath-zenoh-router on the robot, docker logs basestation)' : '')}">${r.basestation_sees === null ? 'no base station' : 'base station gets no data'}</span>`;
+    return `<div class="robot">
+      <div class="row"><h3>${esc(r.name)}</h3><span class="muted">${esc(r.user)}@${esc(r.host)}${r.ip && r.ip !== r.host ? ` (${esc(r.ip)})` : ''}</span>
+        <span class="pill ${r.online ? 'ok' : 'bad'}" title="${esc(r.error || '')}">${r.online ? 'online' : 'offline'}</span>
+        ${r.online ? deployed + link : ''}
+        <label title="the stem cutter is fitted: offers Cut stem"><input type="checkbox" ${r.cutter ? 'checked' : ''} onchange="saveReal(${k}, '${esc(r.host)}', this.checked)"> cutter</label></div>
+      <div class="row">
+        <button class="ghost" onclick="post('/api/deploy', {robot: ${k}, kind: 'real', action: 'dry-run'})" title="scripts/deploy_robot.sh --dry-run: what would change, and files edited on the robot since the last deploy">Dry run</button>
+        <button class="ghost" onclick="deployReal(${k})" title="rsync colcon_ws/src to ~/colcon_ws and build it there; restarts nothing">Deploy</button>
+        <button class="ghost" onclick="post('/api/deploy', {robot: ${k}, kind: 'real', action: 'pull'})" title="copy files edited on the robot since the last deploy back into colcon_ws/src (deploys nothing)">Pull</button>
+        <button class="ghost" onclick="confirm('Take ${esc(r.name)} off the list?') && removeReal(${k})">Remove</button></div>
+    </div>`;
+  }).join('');
+}
+async function saveReal(robot, host, cutter) {
+  if (robot === undefined) {
+    robot = document.getElementById('realId').value.trim();
+    host = document.getElementById('realHost').value.trim();
+    cutter = document.getElementById('realCutter').checked;
+  }
+  try { await api('/api/real/save', { robot, host, cutter }); refreshStatus(); } catch (e) { toast(e.message); }
+}
+async function removeReal(robot) {
+  try { await api('/api/real/remove', { robot }); refreshStatus(); } catch (e) { toast(e.message); }
+}
+function deployReal(robot) {
+  if (confirm(`Deploy this checkout's colcon_ws/src (${status.head.slice(0, 7)}) to ${robot} and build it there?\n\n` +
+      'Run a Dry run first: files on the robot that aren\'t in colcon_ws/src are deleted, and edits made on the robot stop the deploy (Pull them first). Nothing is restarted.'))
+    post('/api/deploy', { robot, kind: 'real', action: 'deploy' });
+}
+
+// ------------------------------------------------------------ robots (sim and real)
+// A robot is keyed "<kind>:<name>" (the same name can be a sim and a real robot); actions get {kind, robot}.
+const rkey = r => `${r.kind}:${r.name}`;
+const rref = key => { const [kind, robot] = key.split(':'); return { kind, robot }; };
+const isReal = key => key.startsWith('real:');
+const rq = key => { const { kind, robot } = rref(key); return `robot=${encodeURIComponent(robot)}&kind=${kind}`; };
+function act(key, path, extra = {}, question = null) {
+  // real robots: every action that moves something asks first
+  if (question && isReal(key) && !confirm(`${rref(key).robot} (REAL robot): ${question}?`)) return;
+  post(path, Object.assign(rref(key), extra));
+}
 function renderRobots() {
   const box = document.getElementById('robots');
   const open = new Set([...box.querySelectorAll('details[data-robot][open]')].map(d => d.dataset.robot));
   const locOpen = new Set([...box.querySelectorAll('details[data-loc][open]')].map(d => d.dataset.loc));
   // sig cleared too: the same robots coming back (e.g. respawned) would otherwise match it and never be drawn
-  if (!status.robots.length) { box.innerHTML = '<span class="muted">no robot containers</span>'; delete box.dataset.sig; return; }
+  if (!status.robots.length) {
+    box.innerHTML = `<span class="muted">${mode === 'real' ? 'no real robots: add them under Real robots' : mode === 'both' ? 'no robot containers and no real robots' : 'no robot containers'}</span>`;
+    delete box.dataset.sig; return;
+  }
   // Only rebuild when the set/state of robots changes, so inputs being edited aren't wiped every poll.
-  const sig = JSON.stringify(status.robots.map(r => [r.name, r.state, r.launch, r.cutting, r.move_group, r.cut_stem_action, r.rviz]));
+  const sig = JSON.stringify(status.robots.map(r => [r.kind, r.name, r.state, r.launch, r.cutting, r.move_group, r.cut_stem_action, r.rviz, r.services, r.cutter, r.conflict, r.rmw]));
   if (box.dataset.sig === sig) return;
   box.dataset.sig = sig;
   box.innerHTML = status.robots.map(r => {
-    const up = r.state === 'running';
-    return `<div class="robot" data-robot="${esc(r.name)}">
+    const real = r.kind === 'real', key = rkey(r), k = `'${key}'`;
+    const up = real ? r.online : r.state === 'running';
+    const extras = (r.services || {})['clearpath-platform-extras'];
+    const cutBlock = real ? (!r.move_group ? 'Waiting for move_group (clearpath-manipulators / bringup_main)' : !r.cut_stem_action ? 'No cut_stem action server (clearpath-platform-extras)' : '')
+      : !r.launch ? 'Start sim_robot_upstart first' : !r.move_group ? 'Waiting for move_group to be available (~20s)' : !r.cut_stem_action ? 'Waiting for cut_stem action server (~20s)' : '';
+    return `<div class="robot" data-robot="${key}">
       <div class="row"><h3>${esc(r.name)}</h3>
-        <span class="pill ${up ? 'ok' : 'bad'}">${esc(r.state)}</span>
-        <span class="pill ${r.launch ? 'ok' : ''}">upstart ${r.launch ? 'running' : 'stopped'}</span>
-        ${r.cutting ? '<span class="pill ok">cutting</span>' : ''}</div>
+        <span class="pill kind ${real ? 'warn' : ''}">${real ? 'real' : 'sim'}</span>
+        <span class="pill ${up ? 'ok' : 'bad'}" title="${esc(r.error || r.status || '')}">${esc(r.state)}</span>
+        ${real ? (up ? `<span class="pill ${extras === 'active' ? 'ok' : 'bad'}" title="${esc(Object.entries(r.services || {}).map(([s, v]) => `${s}: ${v}`).join('\n'))}">services ${esc(extras || '?')}</span>` : '')
+          : `<span class="pill ${r.launch ? 'ok' : ''}">upstart ${r.launch ? 'running' : 'stopped'}</span>`}
+        ${real && up && r.rmw && r.rmw !== status.fleet_rmw ? `<span class="pill warn" title="the fleet uses ${esc(status.fleet_rmw)}">${esc(r.rmw)}</span>` : ''}
+        ${r.cutting ? '<span class="pill ok">cutting</span>' : ''}
+        ${r.conflict ? '<span class="pill bad" title="a sim robot and an online real robot share this name (and every ROS name): actions are refused">name clash</span>' : ''}</div>
       ${up ? `<div class="row">
-        <button onclick="post('/api/launch/start',{robot:'${esc(r.name)}'})" ${r.launch ? 'disabled' : ''}>Start sim_robot_upstart</button>
-        <button class="ghost" onclick="post('/api/launch/stop',{robot:'${esc(r.name)}'})" title="restart_ros: kills every ROS node; robot_state/foxglove/pruner_stub come back">Stop (restart_ros)</button>
-        <button onclick="post('/api/cutstem/start',{robot:'${esc(r.name)}'})"
-          ${!r.launch || !r.move_group || !r.cut_stem_action || r.cutting ? 'disabled' : ''}
-          title="${!r.launch ? 'Start sim_robot_upstart first' : !r.move_group ? 'Waiting for move_group to be available (~20s)' : !r.cut_stem_action ? 'Waiting for cut_stem action server (~20s)' : 'ros2 action send_goal /&lt;ns&gt;/cut_stem plant_cutter_msgs/action/CutStem {start_cutting: true}'}">
+        ${real ? `<button onclick="act(${k}, '/api/real/restart', {}, 'sudo systemctl restart clearpath-robot (drivers, bringup, MoveIt)')"
+            title="sudo systemctl restart clearpath-robot on the robot (needs a NOPASSWD sudoers entry for it; the job says how)">Restart services</button>`
+          : `<button onclick="act(${k}, '/api/launch/start')" ${r.launch ? 'disabled' : ''}>Start sim_robot_upstart</button>
+        <button class="ghost" onclick="act(${k}, '/api/launch/stop')" title="restart_ros: kills every ROS node; robot_state/foxglove/pruner_stub come back">Stop (restart_ros)</button>`}
+        ${r.cutter ? `<button onclick="act(${k}, '/api/cutstem/start', {}, 'start cut_stem (the arm cuts every stem it finds)')"
+          ${cutBlock || r.cutting ? 'disabled' : ''}
+          title="${cutBlock || 'ros2 action send_goal /&lt;ns&gt;/cut_stem plant_cutter_msgs/action/CutStem {start_cutting: true}'}">
           ${r.cutting ? 'Cutting' : 'Cut stem'}</button>
-        <button class="ghost" onclick="post('/api/cutstem/stop',{robot:'${esc(r.name)}'})" ${r.cutting ? '' : 'disabled'}
-          title="Ctrl+C on the goal client: cancels the running cut_stem goal">Stop cutting</button>
-        <button class="ghost" onclick="showLaunchLog('${esc(r.name)}')">Launch log</button>
-        <button class="ghost" onclick="showJoints('${esc(r.name)}')">Joints</button></div>
-      <div class="row"><span class="muted">RViz</span>
+        <button class="ghost" onclick="act(${k}, '/api/cutstem/stop')" ${r.cutting ? '' : 'disabled'}
+          title="Ctrl+C on the goal client: cancels the running cut_stem goal">Stop cutting</button>` : ''}
+        <button class="danger" onclick="act(${k}, '/api/stop')" title="Ctrl+C to this page's cut_stem / arm_goto clients, and cancel every goal of cut_stem, move_group and the arm's trajectory / gripper controllers">Stop motion</button>
+        <button class="ghost" onclick="showLaunchLog(${k})">${real ? 'Service log' : 'Launch log'}</button>
+        <button class="ghost" onclick="showJoints(${k})">Joints</button></div>
+      <div class="row"><span class="muted">RViz${real ? ' (base station)' : ''}</span>
         ${[['navigation', 'Navigation'], ['moveit', 'MoveIt'], ['robot', 'Robot']].map(([v, label]) => {
           const on = (r.rviz || []).includes(v);
-          return `<button class="ghost" onclick="post('/api/rviz/start',{robot:'${esc(r.name)}',view:'${v}'})" ${on ? 'disabled' : ''}
+          return `<button class="ghost" onclick="act(${k}, '/api/rviz/start', {view: '${v}'})" ${on ? 'disabled' : ''}
             title="ros2 launch clearpath_viz view_${v}.launch.py namespace:=${esc(r.name)}${on ? ' (open; close its window to stop it)' : ''}">${label}${on ? ' (open)' : ''}</button>`;
         }).join('')}</div>
-      <details data-loc="${esc(r.name)}" ${locOpen.has(r.name) ? 'open' : ''} ontoggle="this.open && loadLoc('${esc(r.name)}')">
+      <details data-loc="${key}" ${locOpen.has(key) ? 'open' : ''} ontoggle="this.open && loadLoc(${k})">
         <summary>Localization</summary>
         <div class="row locstat muted">loading...</div>
         <div class="row">
@@ -373,21 +515,21 @@ function renderRobots() {
             <select class="locsrc">${['auto', 'ref', 'gps', 'external'].map(v => `<option>${v}</option>`).join('')}</select></label>
           <label title="Where map sits in ref_frame. fixed: map_pose_in_ref or the anchor file. start: where the robot is now. external: measured from SLAM / AMCL's map (needs source external or gps)">Anchor
             <select class="locanc">${['fixed', 'start', 'external'].map(v => `<option>${v}</option>`).join('')}</select></label>
-          <button onclick="setLoc('${esc(r.name)}')">Apply</button>
-          <button class="ghost" onclick="locService('${esc(r.name)}','save_anchor')" title="Write the current anchor (ref_frame -> map) to ~/.ros/ref_anchor_<ns>.yaml in the robot (or its anchor_file)">Save anchor</button>
-          <button class="ghost" onclick="locService('${esc(r.name)}','reset_anchor')" title="Reload the fixed anchor, or re-anchor start / external on the next pose">Reset anchor</button>
-          <button class="ghost" onclick="loadLoc('${esc(r.name)}')">Refresh</button>
+          <button onclick="setLoc(${k})">Apply</button>
+          <button class="ghost" onclick="locService(${k},'save_anchor')" title="Write the current anchor (ref_frame -> map) to ~/.ros/ref_anchor_<ns>.yaml in the robot (or its anchor_file)">Save anchor</button>
+          <button class="ghost" onclick="locService(${k},'reset_anchor')" title="Reload the fixed anchor, or re-anchor start / external on the next pose">Reset anchor</button>
+          <button class="ghost" onclick="loadLoc(${k})">Refresh</button>
         </div>
       </details>
-      <details data-robot="${esc(r.name)}" ${open.has(r.name) || r.launch ? 'open' : ''} ontoggle="this.open && loadStates('${esc(r.name)}')">
+      <details data-robot="${key}" ${open.has(key) || (!real && r.launch) ? 'open' : ''} ontoggle="this.open && loadStates(${k})">
         <summary>Arm</summary>
         <div class="row">
-          <label>Group <select class="group" onchange="renderStates('${esc(r.name)}')"></select></label>
-          <label><input type="checkbox" class="direct"> direct (no planning)</label>
+          <label>Group <select class="group" onchange="renderStates(${k})"></select></label>
+          ${real ? `<span class="muted">planned moves only, velocity &le; ${REAL_MAX_VEL}</span>` : '<label><input type="checkbox" class="direct"> direct (no planning)</label>'}
         </div>
         <div class="row">
-          <label>Velocity <input type="range" class="vel" min="0.05" max="1" step="0.05" value="0.3"
-            oninput="this.nextElementSibling.textContent=this.value"><span>0.3</span></label>
+          <label>Velocity <input type="range" class="vel" min="0.05" max="${real ? REAL_MAX_VEL : 1}" step="0.05" value="${real ? 0.1 : 0.3}"
+            oninput="this.nextElementSibling.textContent=this.value"><span>${real ? 0.1 : 0.3}</span></label>
           <label>Record <input type="number" class="rec" min="0" max="120" value="12" style="width:60px"> s</label>
         </div>
         <div class="row states"><span class="muted">loading states...</span></div>
@@ -397,6 +539,7 @@ function renderRobots() {
   box.querySelectorAll('details[data-robot][open]').forEach(d => loadStates(d.dataset.robot));
   box.querySelectorAll('details[data-loc][open]').forEach(d => loadLoc(d.dataset.loc));
 }
+const REAL_MAX_VEL = 0.3;  // server.py REAL_MAX_VELOCITY
 
 // ------------------------------------------------------------ localization (ref_localizer, per robot)
 async function loadLoc(robot) {
@@ -405,9 +548,9 @@ async function loadLoc(robot) {
   const stat = el.querySelector('.locstat');
   stat.textContent = 'reading ref_localizer/status...';
   let s;
-  try { s = await api('/api/localization?robot=' + encodeURIComponent(robot)); }
+  try { s = await api('/api/localization?' + rq(robot)); }
   catch (e) { stat.textContent = e.message; return; }
-  if (!s.running) { stat.innerHTML = 'no ref_localizer running (start sim_robot_upstart)'; return; }
+  if (!s.running) { stat.innerHTML = isReal(robot) ? 'no ref_localizer running (clearpath-platform-extras starts it)' : 'no ref_localizer running (start sim_robot_upstart)'; return; }
   el.querySelector('.locsrc').value = s.source;
   el.querySelector('.locanc').value = s.anchor;
   const age = v => v === null ? 'none' : v < 1 ? `${(v * 1000).toFixed(0)} ms` : `${v.toFixed(1)} s`;
@@ -420,11 +563,11 @@ async function loadLoc(robot) {
 }
 async function setLoc(robot) {
   const el = document.querySelector(`details[data-loc="${robot}"]`);
-  await post('/api/localization/set', { robot, source: el.querySelector('.locsrc').value, anchor: el.querySelector('.locanc').value });
+  await post('/api/localization/set', { ...rref(robot), source: el.querySelector('.locsrc').value, anchor: el.querySelector('.locanc').value });
   setTimeout(() => loadLoc(robot), 3000);
 }
 async function locService(robot, service) {
-  await post('/api/localization/set', { robot, service });
+  await post('/api/localization/set', { ...rref(robot), service });
   setTimeout(() => loadLoc(robot), 3000);
 }
 
@@ -441,7 +584,7 @@ function toggleMocap() {
 async function pollMocap() {
   if (!mocapOn) return;
   let m;
-  try { m = await api('/api/mocap?server=' + encodeURIComponent(document.getElementById('mocapServer').value.trim())); }
+  try { m = await api('/api/mocap?server=' + encodeURIComponent(document.getElementById('mocapServer').value.trim()) + '&mode=' + encodeURIComponent(mode || '')); }
   catch (e) { toast(e.message); return toggleMocap(); }
   const pill = document.getElementById('mocapPill');
   pill.textContent = m.error ? m.error : !m.app ? 'waiting for Motive...' : `${m.app}, NatNet ${m.natnet} · ${
@@ -500,8 +643,12 @@ async function assignMocap(sel, rigidBody, previous) {
 
 async function loadStates(robot) {
   if (!armStates[robot]) {
-    try { armStates[robot] = await api('/api/arm/states?robot=' + encodeURIComponent(robot)); }
-    catch (e) { return toast(e.message); }
+    try { armStates[robot] = await api('/api/arm/states?' + rq(robot)); }
+    catch (e) {
+      const states = document.querySelector(`.robot[data-robot="${robot}"] .states`);
+      if (states) states.innerHTML = `<span class="muted">${esc(e.message)}</span>`;
+      return;
+    }
   }
   const el = document.querySelector(`.robot[data-robot="${robot}"]`);
   const sel = el.querySelector('.group');
@@ -512,32 +659,35 @@ function renderStates(robot) {
   const el = document.querySelector(`.robot[data-robot="${robot}"]`);
   const group = el.querySelector('.group').value;
   el.querySelector('.states').innerHTML = Object.keys(armStates[robot][group] || {}).map(s =>
-    `<button onclick="goto('${esc(robot)}','${esc(group)}','${esc(s)}')">${esc(s)}</button>`).join('');
+    `<button onclick="goto('${robot}','${esc(group)}','${esc(s)}')">${esc(s)}</button>`).join('');
 }
 function goto(robot, group, state) {
   const el = document.querySelector(`.robot[data-robot="${robot}"]`);
-  post('/api/arm/goto', {
-    robot, group, state,
-    direct: el.querySelector('.direct').checked,
-    velocity_scale: +el.querySelector('.vel').value,
+  const direct = el.querySelector('.direct'), vel = +el.querySelector('.vel').value;
+  act(robot, '/api/arm/goto', {
+    group, state,
+    direct: !!(direct && direct.checked),
+    velocity_scale: vel,
     record: group.endsWith('gripper') ? 0 : +el.querySelector('.rec').value,
-  });
+  }, `move ${group} to "${state}" (planned, velocity ${vel})`);
 }
 
 async function showLaunchLog(robot) {
   try {
-    const { log } = await api('/api/launch/log?robot=' + encodeURIComponent(robot));
-    showPanel(`${robot}: sim_robot_upstart log (last 300 lines)`, `<pre>${esc(log || '(empty)')}</pre>`);
+    const { log } = await api('/api/launch/log?' + rq(robot));
+    showPanel(isReal(robot) ? `${rref(robot).robot} (real): journalctl -u clearpath-platform-extras (last 300 lines)`
+      : `${rref(robot).robot}: sim_robot_upstart log (last 300 lines)`, `<pre>${esc(log || '(empty)')}</pre>`);
   } catch (e) { toast(e.message); }
 }
 async function showJoints(robot) {
   try {
-    const { cmd, obs } = await api('/api/joints?robot=' + encodeURIComponent(robot));
+    const { cmd, obs } = await api('/api/joints?' + rq(robot));
     const names = Object.keys(obs).sort();
     const f = v => v === undefined ? '-' : v.toFixed(4);
-    showPanel(`${robot}: joints (rad)`, `<table><tr><th>joint</th><th>commanded</th><th>observed</th><th>error</th></tr>${
+    // a real robot has no arm_0/joint_command (moveit_sim_bridge's): observed only
+    showPanel(`${rref(robot).robot}${isReal(robot) ? ' (real)' : ''}: joints (rad)`, `<table><tr><th>joint</th><th>commanded</th><th>observed</th><th>error</th></tr>${
       names.map(n => `<tr><td>${esc(n)}</td><td>${f(cmd[n])}</td><td>${f(obs[n])}</td><td>${cmd[n] === undefined ? '-' : f(cmd[n] - obs[n])}</td></tr>`).join('')}</table>
-      <div class="row"><button class="ghost" onclick="showJoints('${esc(robot)}')">Refresh</button></div>`);
+      <div class="row"><button class="ghost" onclick="showJoints('${robot}')">Refresh</button></div>`);
   } catch (e) { toast(e.message); }
 }
 function showPanel(title, html) {

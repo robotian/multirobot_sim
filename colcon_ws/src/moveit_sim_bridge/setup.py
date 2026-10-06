@@ -23,6 +23,9 @@ setup(
     entry_points={
         'console_scripts': [
             'moveit_sim_bridge = moveit_sim_bridge.bridge_node:main',
+            # arm helpers, used by the web UI (tools/sim_ui) on sim and real robots alike
+            'arm_goto = moveit_sim_bridge.arm_goto:main',
+            'arm_joints = moveit_sim_bridge.arm_joints:main',
         ],
     },
 )
