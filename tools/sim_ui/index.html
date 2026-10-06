@@ -53,6 +53,10 @@
   .pill.kind { font-weight: 600; }
   .banner { margin: 12px 20px 0; padding: 8px 12px; border: 1px solid var(--warn); border-radius: 6px; color: var(--warn); }
   .banner:empty { display: none; }
+  .lv-ok { color: var(--ok); } .lv-warn { color: var(--warn); font-weight: 600; } .lv-bad { color: var(--bad); font-weight: 600; }
+  table.linktab { font: 12px/1.6 system-ui, sans-serif; width: 100%; }
+  table.linktab th { text-align: left; vertical-align: top; color: var(--muted); font-weight: 500; width: 64px; }
+  table.linktab td { text-align: left; }
   dialog { background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
   dialog::backdrop { background: rgba(0, 0, 0, .35); }
   #toast { position: fixed; bottom: 16px; right: 16px; background: var(--bad); color: #fff; padding: 8px 12px; border-radius: 6px; display: none; max-width: 60ch; }
@@ -125,6 +129,16 @@
         <button class="ghost" onclick="saveReal()">Add / update</button>
       </div>
       <div class="row muted" id="basestationInfo"></div>
+    </section>
+
+    <section class="card only-real" id="linkCard">
+      <h2>Communication</h2>
+      <div class="muted" style="font-size:12px">Per real robot, while this card is shown: ping from this machine (RTT,
+        jitter, loss over 60 s); the robot's WiFi, zenoh router (state, queued connections, errors) and clock offset,
+        over SSH every 10 s; and from the base station, whether its ROS data arrive: odom, GPS and the TF chains map&rarr;odom,
+        odom&rarr;base_link, the arm (made from joint_states on the robot) &mdash; rate (usual), longest gap in 30 s, age
+        (receive time minus stamp, clock-corrected). Hover a value for its limits.</div>
+      <div id="linkBody" class="muted">loading...</div>
     </section>
 
     <section class="card">
@@ -526,6 +540,7 @@ function renderRobots() {
         <span class="pill ${up ? 'ok' : 'bad'}" title="${esc(r.error || r.status || '')}">${esc(r.state)}</span>
         ${real ? (up ? `<span class="pill ${extras === 'active' ? 'ok' : 'bad'}" title="${esc(Object.entries(r.services || {}).map(([s, v]) => `${s}: ${v}`).join('\n'))}">services ${esc(extras || '?')}</span>` : '')
           : `<span class="pill ${r.launch ? 'ok' : ''}">upstart ${r.launch ? 'running' : 'stopped'}</span>`}
+        ${real ? `<span class="pill linkpill" data-link="${esc(r.name)}" title="communication (see the Communication card)"></span>` : ''}
         ${real && up && r.rmw && r.rmw !== status.fleet_rmw ? `<span class="pill warn" title="the fleet uses ${esc(status.fleet_rmw)}">${esc(r.rmw)}</span>` : ''}
         ${r.cutting ? '<span class="pill ok">cutting</span>' : ''}
         ${r.conflict ? '<span class="pill bad" title="a sim robot and an online real robot share this name (and every ROS name): actions are refused">name clash</span>' : ''}</div>
@@ -580,8 +595,84 @@ function renderRobots() {
   }).join('');
   box.querySelectorAll('details[data-robot][open]').forEach(d => loadStates(d.dataset.robot));
   box.querySelectorAll('details[data-loc][open]').forEach(d => loadLoc(d.dataset.loc));
+  applyLinkPills();
 }
 const REAL_MAX_VEL = 0.3;  // server.py REAL_MAX_VELOCITY
+
+// ------------------------------------------------------------ communication quality (real robots, /api/link)
+// Polled every 2 s while the page shows real robots and is visible; the server stops pinging / monitoring 30 s
+// after the last poll.
+let link = null, linkTimer = null;
+const LINK_LABEL = { ok: 'link good', warn: 'link degraded', bad: 'link bad' };
+async function pollLink() {
+  clearTimeout(linkTimer);
+  if (mode && mode !== 'sim' && document.visibilityState === 'visible') {
+    try { link = await api('/api/link'); renderLink(); applyLinkPills(); } catch (e) {}
+  }
+  linkTimer = setTimeout(pollLink, 2000);
+}
+document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && pollLink());
+function applyLinkPills() {
+  document.querySelectorAll('.linkpill').forEach(p => {
+    const r = link && link.robots[p.dataset.link];
+    p.className = 'pill linkpill' + (r ? ' ' + r.level : '');
+    p.textContent = r ? LINK_LABEL[r.level] : 'link ?';
+    p.title = r && r.reasons.length ? r.reasons.join('\n') : 'communication: see the Communication card';
+  });
+}
+// one value, coloured by its level, its limits on hover
+function lv(text, level, title = '') {
+  return `<span class="${level ? 'lv-' + level : ''}" title="${esc(title)}">${text}</span>`;
+}
+const fmt = (x, d = 1) => x === null || x === undefined ? '-' : (+x).toFixed(d);
+function limitsTitle(key, unit, lower) {
+  const l = link.limits[key];
+  return l ? `degraded ${lower ? 'below' : 'above'} ${l[0]}${unit}, bad ${lower ? 'below' : 'above'} ${l[1]}${unit}` : '';
+}
+function streamText(name, s) {
+  if (s.broken) return lv(`${esc(name)}: broken (${esc(s.broken)})`, 'bad');
+  if (s.static) return `${esc(name)}: static`;
+  const L = s.levels || {}, ms = x => x === null || x === undefined ? '-' : Math.round(x * 1000);
+  return `${esc(name)}: ` + lv(`${fmt(s.rate)} Hz`, L.rate, `usual ${fmt(s.usual_rate)} Hz; ${limitsTitle('rate_ratio', '× usual', true)}; bad if silent > ${link.limits.silent_s[1]} s`)
+    + ` <span class="muted">(${fmt(s.usual_rate, 0)})</span> · gap ` + lv(`${fmt(s.max_gap, 2)} s`, L.max_gap, 'longest gap in 30 s; ' + limitsTitle('gap_s', ' s'))
+    + ' · age ' + lv(`${ms(s.age)} ms`, L.age, 'receive time - stamp, clock-corrected (negative: stamped ahead, as TF publishers do); ' + limitsTitle('age_s', ' s'));
+}
+function renderLink() {
+  const box = document.getElementById('linkBody');
+  const names = Object.keys(link.robots).sort();
+  if (!names.length) { box.innerHTML = '<span class="muted">no real robots in the list</span>'; return; }
+  box.classList.remove('muted');
+  box.innerHTML = names.map(name => {
+    const r = link.robots[name], n = r.network, w = r.wifi, z = r.zenoh, c = r.clock, ros = r.ros;
+    const rows = [];
+    rows.push(['Network', n.error ? lv(esc(n.error), 'bad') : n.rtt_ms === undefined ? '<span class="muted">starting...</span>'
+      : 'RTT ' + lv(`${fmt(n.rtt_ms, 1)} ms`, n.levels.rtt_ms, limitsTitle('rtt_ms', ' ms')) + ` <span class="muted">(max ${fmt(n.rtt_max_ms, 1)})</span>`
+        + ` · jitter ${fmt(n.jitter_ms, 1)} ms · loss ` + lv(`${fmt(n.loss_pct, 1)} %`, n.levels.loss_pct, limitsTitle('loss_pct', ' %'))
+        + ` <span class="muted">(${n.window_s} s)</span>`]);
+    rows.push(['WiFi', w.signal_dbm !== null && w.signal_dbm !== undefined
+      ? lv(`${fmt(w.signal_dbm, 0)} dBm`, w.levels.signal, limitsTitle('signal_dbm', ' dBm', true))
+        + ` · ${esc((w['tx bitrate'] || '').split(' ').slice(0, 2).join(' '))} · ${esc(w.freq || '')} MHz · ${esc(w.SSID || '')}`
+        + (w.retries_delta !== undefined ? ` · retries +${w.retries_delta} <span class="muted">/10 s</span>` : '')
+      : w.iface ? `wired (${esc(w.iface)})` : '<span class="muted">-</span>']);
+    rows.push(['zenoh', z.router === null || z.router === undefined ? '<span class="muted">-</span>'
+      : 'router ' + lv(esc(z.router), z.levels.router || (z.router === 'active' ? 'ok' : 'bad'))
+        + ' · queue ' + lv(fmt(z.queue, 0), z.levels.queue, 'connections waiting to be accepted; ' + limitsTitle('router_queue', ''))
+        + ' · errors ' + lv(fmt(z.errors, 0), z.levels.errors, 'ERROR lines in its journal in the last 10 s')]);
+    rows.push(['Clock', c.offset_ms === null || c.offset_ms === undefined ? '<span class="muted">-</span>'
+      : 'robot ' + lv(`${c.offset_ms > 0 ? '+' : ''}${fmt(c.offset_ms, 1)} ms`, c.levels.offset_ms,
+          'robot clock - this machine\'s; ' + limitsTitle('clock_ms', ' ms') + (c.trusted ? '' : ' (not trusted: round trip too slow)'))
+        + ` <span class="muted">(±${fmt(c.error_ms, 0)})</span> · NTP ${esc(c.ntp || '?')} · load ${esc(c.load || '?')} / ${esc(c.cores || '?')} cores`]);
+    if (r.reasons.length && r.reasons[0].startsWith('unreachable')) rows.push(['ROS', '<span class="muted">-</span>']);
+    else if (ros.error && !ros.topics) rows.push(['ROS', `<span class="muted">${esc(ros.error)}</span>`]);
+    else {
+      rows.push(['ROS', Object.entries(ros.topics || {}).map(([k, s]) => streamText(k, s)).join('<br>')]);
+      rows.push(['TF', Object.entries(ros.tf || {}).map(([k, s]) => streamText(k.replace('->', '→'), s)).join('<br>')]);
+    }
+    return `<div class="robot"><div class="row"><h3>${esc(name)}</h3><span class="pill ${r.level}">${LINK_LABEL[r.level]}</span>
+      <span class="muted" style="font-size:12px">${esc(r.reasons.slice(0, 3).join('; '))}${r.reasons.length > 3 ? ' ...' : ''}</span></div>
+      <table class="linktab">${rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('')}</table></div>`;
+  }).join('');
+}
 
 // ------------------------------------------------------------ localization (ref_localizer, per robot)
 async function loadLoc(robot) {
@@ -802,6 +893,7 @@ function plot(samples) {
 }
 
 refreshStatus(); setInterval(refreshStatus, 4000);
+pollLink();
 refreshJobs();
 </script>
 </body>

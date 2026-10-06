@@ -145,13 +145,15 @@ class RealTarget:
     def __init__(self, name, host, user, cutter):
         self.name, self.host, self.user, self.cutter = name, host, user, cutter
 
-    def argv(self, command):
+    def argv(self, command, ros_env=True):
         SSH_DIR.mkdir(mode=0o700, exist_ok=True)
-        script = f"source /etc/clearpath/setup.bash >/dev/null 2>&1; export ROBOT_NAMESPACE={self.name}; {command}"
+        # ros_env=False: the bare command (sourcing setup.bash takes ~0.5 s, too slow for timing a round trip)
+        script = (f"source /etc/clearpath/setup.bash >/dev/null 2>&1; export ROBOT_NAMESPACE={self.name}; {command}"
+                  if ros_env else command)
         return ["ssh", *SSH_OPTS, f"{self.user}@{self.host}", "bash -c " + shlex.quote(script)]
 
-    def run(self, command, timeout=30, input=None):
-        return sh(self.argv(command), timeout=timeout, input=input)
+    def run(self, command, timeout=30, input=None, ros_env=True):
+        return sh(self.argv(command, ros_env), timeout=timeout, input=input)
 
 
 # Which real robots the UI shows: {"<id>": {"host": ..., "user": ..., "cutter": true}}; host defaults to the
@@ -1189,6 +1191,297 @@ def act_mocap_assign(body):
     return {"assignments": mapping}
 
 
+# ---------------------------------------------------------------- communication quality (real robots)
+
+# Four layers, each of which has looked fine while another was broken: radio (the robot's WiFi), network (ping from
+# here, the base station's spot on the LAN), middleware (the robot's zenoh router: on 2026-10-06 a300_00036's
+# stopped accepting sessions, 85 queued, while ping was perfect) and ROS data (scripts/link_monitor.py in the base
+# station: odom, GPS, the TF chains). Everything runs only while the page polls /api/link and stops LINK_IDLE_S
+# later. Thresholds: (degraded, bad) per measure.
+LINK_IDLE_S = 30
+LINK_SSH_EVERY_S = 10
+CLOCK_TRUSTED_MS = 25  # a robot's clock offset is used only if measured to within this (half the SSH round trip)
+PING_WINDOW_S = 60
+LINK_LIMITS = {
+    "rtt_ms": (20, 100), "loss_pct": (1, 5), "signal_dbm": (-67, -75),  # signal: below these
+    "router_queue": (1, 10), "clock_ms": (50, 500),
+    "age_s": (0.2, 1.0), "gap_s": (0.5, 2.0), "silent_s": (1.0, 2.0), "rate_ratio": (0.8, 0.5),  # rate: below
+}
+# One SSH round per robot every LINK_SSH_EVERY_S: the interface toward this machine and, if it is WiFi, its link;
+# the zenoh router; load; NTP. ~10 ms of shell on the robot.
+LINK_PROBE = (
+    "iface=$(ip route get {local} 2>/dev/null | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p'); echo \"iface=$iface\"; "
+    "if [ -n \"$iface\" ] && [ -d /sys/class/net/$iface/wireless ]; then "
+    "iw dev $iface link 2>/dev/null | sed -n 's/^[[:space:]]*\\(SSID\\|freq\\|signal\\|tx bitrate\\|rx bitrate\\): /\\1=/p'; "
+    "awk -v i=\"$iface:\" '$1 == i {{print \"retries=\" $9; print \"missed_beacons=\" $11}}' /proc/net/wireless; fi; "
+    "echo \"router=$(systemctl is-active clearpath-zenoh-router)\"; "
+    "echo \"router_queue=$(ss -ltnH 'sport = :7447' | awk '{{print $2; exit}}')\"; "
+    "echo \"router_errors=$(journalctl -u clearpath-zenoh-router --since=-{every}s -q --no-pager 2>/dev/null | grep -c ERROR)\"; "
+    "echo \"load=$(cut -d' ' -f1 /proc/loadavg)\"; echo \"cores=$(nproc)\"; "
+    "echo \"ntp=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)\"")
+
+
+def level_of(value, limits, lower_is_worse=False):
+    if value is None:
+        return None
+    degraded, bad = limits
+    if lower_is_worse:
+        return "bad" if value < bad else "warn" if value < degraded else "ok"
+    return "bad" if value > bad else "warn" if value > degraded else "ok"
+
+
+class Pinger:
+    """`ping -O -i 1` to one robot, from this machine: RTT, jitter and loss over the last PING_WINDOW_S."""
+
+    def __init__(self, host):
+        self.host = host
+        self.samples = collections.deque()  # (time, rtt ms or None for no answer)
+        self.error = None
+        self.proc = subprocess.Popen(["ping", "-n", "-O", "-i", "1", "-W", "1", host], stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        threading.Thread(target=self.read, daemon=True).start()
+
+    def read(self):
+        for line in self.proc.stdout:
+            m = re.search(r"icmp_seq=\d+ .*time=([\d.]+) ms", line)
+            if m:
+                self.samples.append((time.time(), float(m.group(1))))
+            elif "no answer yet" in line:
+                self.samples.append((time.time(), None))
+            elif "PING" not in line and line.strip():
+                self.error = line.strip()  # e.g. unknown host
+        self.error = self.error or "ping stopped"
+
+    def stop(self):
+        self.proc.kill()
+
+    def summary(self):
+        now = time.time()
+        while self.samples and now - self.samples[0][0] > PING_WINDOW_S:
+            self.samples.popleft()
+        rtts = [r for _, r in self.samples if r is not None]
+        if not self.samples:
+            return {"error": self.error} if self.error else {}
+        return {"rtt_ms": round(sum(rtts) / len(rtts), 2) if rtts else None, "rtt_max_ms": max(rtts, default=None),
+                # mean change between consecutive replies (RFC 3550 style, unsmoothed)
+                "jitter_ms": round(sum(abs(a - b) for a, b in zip(rtts, rtts[1:])) / (len(rtts) - 1), 2)
+                if len(rtts) > 1 else None,
+                "loss_pct": round(100 * (len(self.samples) - len(rtts)) / len(self.samples), 1),
+                "last_reply_s": round(now - max((t for t, r in self.samples if r is not None), default=0), 1)
+                if rtts else None,
+                "window_s": round(now - self.samples[0][0])}
+
+
+class LinkWatch:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.last_poll = 0.0
+        self.pingers = {}       # robot -> Pinger
+        self.ssh = {}           # robot -> {"t": time, ...probe values}
+        self.ssh_busy = set()
+        self.monitor = None     # docker exec of scripts/link_monitor.py
+        self.monitor_for = ()
+        self.monitor_started = 0.0
+        self.ros = {}           # robot -> link_monitor.py's last report
+        self.ros_t = 0.0
+        self.monitor_error = None
+        threading.Thread(target=self.idle_stop, daemon=True).start()
+
+    # -- lifecycle: everything stops LINK_IDLE_S after the page's last poll
+    def idle_stop(self):
+        while True:
+            time.sleep(5)
+            with self.lock:
+                if self.last_poll and time.time() - self.last_poll > LINK_IDLE_S:
+                    self.stop_all()
+
+    def stop_all(self):
+        for p in self.pingers.values():
+            p.stop()
+        self.pingers = {}
+        self.stop_monitor()
+        self.last_poll = 0.0
+
+    def stop_monitor(self):
+        if self.monitor:
+            # killing `docker exec` leaves its process running in the container: stop that one
+            sh(["docker", "exec", BASESTATION, "pkill", "-INT", "-f", "/scripts/[l]ink_monitor.py"], timeout=10)
+            self.monitor.kill()
+        self.monitor, self.monitor_for, self.ros = None, (), {}
+
+    def start_monitor(self, names):
+        self.stop_monitor()
+        self.monitor_started = time.time()
+        if not names or container_state(BASESTATION) != "running":
+            self.monitor_error = "the base station is not running" if names else None
+            return
+        sh(["docker", "exec", BASESTATION, "pkill", "-INT", "-f", "/scripts/[l]ink_monitor.py"], timeout=10)
+        self.monitor = subprocess.Popen(
+            ["docker", "exec", BASESTATION, "bash", "-c", "exec python3 -u /scripts/link_monitor.py " + " ".join(names)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.monitor_for, self.monitor_error = names, None
+        threading.Thread(target=self.read_monitor, args=(self.monitor,), daemon=True).start()
+
+    def read_monitor(self, proc):
+        tail = collections.deque(maxlen=5)
+        for line in proc.stdout:
+            if line.startswith("{"):
+                try:
+                    report = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if proc is self.monitor:
+                    self.ros, self.ros_t = report["robots"], time.time()
+            else:
+                tail.append(line.rstrip())
+        if proc is self.monitor:
+            self.monitor_error = "link_monitor.py stopped: " + (" | ".join(tail) or f"exit {proc.wait()}")
+
+    # -- SSH round per robot (background, so a slow robot never holds up a poll)
+    def ssh_probe(self, t):
+        try:
+            local = MocapMonitor.local_ip(host_ip(t.host) or t.host)
+            code, out = t.run(LINK_PROBE.format(local=local, every=LINK_SSH_EVERY_S), timeout=20, ros_env=False)
+            data = dict(line.split("=", 1) for line in out.splitlines() if "=" in line) if code == 0 else {}
+            # clock: the robot's time against the middle of a bare round trip (error: half of it), best of 3
+            best = None
+            for _ in range(3 if code == 0 else 0):
+                t0 = time.time()
+                code2, remote = t.run("date +%s.%N", timeout=10, ros_env=False)
+                t1 = time.time()
+                if code2 == 0 and (best is None or t1 - t0 < best[1]):
+                    best = (float(remote.strip().splitlines()[-1]) - (t0 + t1) / 2, t1 - t0)
+            if best:
+                data["clock_offset_ms"] = round(best[0] * 1000, 1)
+                data["clock_error_ms"] = round(best[1] / 2 * 1000, 1)
+            prev = self.ssh.get(t.name, {})
+            for key in ("retries", "missed_beacons"):  # counters since boot: per-interval change
+                if key in data and key in prev:
+                    data[key + "_delta"] = int(data[key]) - int(prev[key])
+            data["error"] = None if code == 0 else (out.strip().splitlines() or [f"exit {code}"])[-1]
+            data["t"] = time.time()
+            self.ssh[t.name] = data
+        except (subprocess.TimeoutExpired, OSError, ValueError) as e:
+            self.ssh[t.name] = {"t": time.time(), "error": str(e)}
+        finally:
+            self.ssh_busy.discard(t.name)
+
+    def poll(self, targets):
+        with self.lock:
+            self.last_poll = time.time()
+            names = tuple(sorted(t.name for t in targets))
+            for name in set(self.pingers) - set(names):
+                self.pingers.pop(name).stop()
+            for t in targets:
+                if t.name not in self.pingers or self.pingers[t.name].host != t.host:
+                    if t.name in self.pingers:
+                        self.pingers[t.name].stop()
+                    self.pingers[t.name] = Pinger(t.host)
+                if (time.time() - self.ssh.get(t.name, {}).get("t", 0) > LINK_SSH_EVERY_S
+                        and t.name not in self.ssh_busy):
+                    self.ssh_busy.add(t.name)
+                    threading.Thread(target=self.ssh_probe, args=(t,), daemon=True).start()
+            # (re)start it for a changed robot list, or 30 s after it last started if it has died since
+            if names != self.monitor_for or (self.monitor is None or self.monitor.poll() is not None) and \
+                    time.time() - self.monitor_started > 30:
+                self.start_monitor(names)
+            return {t.name: self.robot_report(t) for t in targets}
+
+    # -- one robot: values + a level per value + the overall verdict and its reasons
+    def robot_report(self, t):
+        reasons = []
+
+        def judge(label, value, limits, unit="", lower_is_worse=False, fmt="{:g}"):
+            lv = level_of(value, limits, lower_is_worse)
+            if lv in ("warn", "bad"):
+                reasons.append((lv, f"{label} {fmt.format(value)}{unit}"))
+            return lv
+
+        ping = self.pingers[t.name].summary() if t.name in self.pingers else {}
+        net = dict(ping, levels={})
+        if ping.get("error"):
+            reasons.append(("bad", f"ping: {ping['error']}"))
+        elif ping.get("rtt_ms") is None and ping.get("window_s", 0) >= 3:
+            reasons.append(("bad", "no ping replies"))
+            net["levels"]["rtt_ms"] = "bad"
+        else:
+            net["levels"]["rtt_ms"] = judge("RTT", ping.get("rtt_ms"), LINK_LIMITS["rtt_ms"], " ms")
+            net["levels"]["loss_pct"] = judge("ping loss", ping.get("loss_pct"), LINK_LIMITS["loss_pct"], " %")
+
+        s = self.ssh.get(t.name, {})
+        wifi = {k: s.get(k) for k in ("iface", "SSID", "freq", "signal", "tx bitrate", "rx bitrate",
+                                      "retries_delta", "missed_beacons_delta") if s.get(k) not in (None, "")}
+        signal = float(s["signal"].split()[0]) if s.get("signal") else None
+        wifi["signal_dbm"] = signal
+        wifi["levels"] = {"signal": judge("WiFi signal", signal, LINK_LIMITS["signal_dbm"], " dBm", True)}
+        queue = int(s["router_queue"]) if s.get("router_queue", "").isdigit() else None
+        errors = int(s["router_errors"]) if s.get("router_errors", "").isdigit() else None
+        zenoh = {"router": s.get("router"), "queue": queue, "errors": errors, "levels": {}}
+        if s.get("router") and s["router"] != "active":
+            reasons.append(("bad", f"zenoh router {s['router']}"))
+            zenoh["levels"]["router"] = "bad"
+        zenoh["levels"]["queue"] = judge("zenoh router queue", queue, LINK_LIMITS["router_queue"])
+        if errors:
+            reasons.append(("warn", f"{errors} zenoh router errors in {LINK_SSH_EVERY_S} s"))
+            zenoh["levels"]["errors"] = "warn"
+        offset, err = s.get("clock_offset_ms"), s.get("clock_error_ms")
+        # only an offset measured to within CLOCK_TRUSTED_MS is judged and used to correct the ROS ages
+        if offset is not None and (err is None or err > CLOCK_TRUSTED_MS):
+            offset = None
+        clock = {"offset_ms": s.get("clock_offset_ms"), "error_ms": err, "trusted": offset is not None,
+                 "ntp": s.get("ntp"), "load": s.get("load"), "cores": s.get("cores"),
+                 "levels": {"offset_ms": judge("clock offset", max(0.0, abs(offset) - err) if offset is not None
+                                               else None, LINK_LIMITS["clock_ms"], " ms", fmt="{:.0f}")}}
+        if s.get("error"):
+            reasons.append(("warn", f"SSH: {s['error']}"))
+
+        ros = {"error": self.monitor_error}
+        report = self.ros.get(t.name)
+        if report and time.time() - self.ros_t < 5:
+            correct = (offset or 0) / 1000  # age measured with this machine's clock against the robot's stamps
+            for group, items in (("topics", report["topics"]), ("tf", report["tf"])):
+                ros[group] = {}
+                for name, v in items.items():
+                    v = dict(v, levels={})
+                    if v.get("broken"):
+                        reasons.append(("bad", f"TF {name}: {v['broken']}"))
+                        v["levels"]["broken"] = "bad"
+                    elif not v.get("static"):
+                        if v.get("age") is not None:
+                            v["age"] = round(v["age"] + correct, 4)
+                        silent = v.get("silent")
+                        if silent is None or silent > LINK_LIMITS["silent_s"][1]:
+                            reasons.append(("bad", f"{name}: no data for {silent if silent is not None else '?'} s"))
+                            v["levels"]["rate"] = "bad"
+                        else:
+                            ratio = v["rate"] / v["usual_rate"] if v.get("usual_rate") else None
+                            v["levels"]["rate"] = judge(f"{name} rate", ratio, LINK_LIMITS["rate_ratio"], "x usual",
+                                                        True, "{:.2f}")
+                            v["levels"]["max_gap"] = judge(f"{name} gap", v.get("max_gap"), LINK_LIMITS["gap_s"], " s")
+                            v["levels"]["age"] = judge(f"{name} age", v.get("age"), LINK_LIMITS["age_s"], " s",
+                                                       fmt="{:.3f}")
+                    ros[group][name] = v
+        elif not ros["error"]:
+            ros["error"] = "waiting for the base station's link monitor..."
+
+        if ping.get("error") or (ping.get("rtt_ms") is None and ping.get("window_s", 0) >= 3):
+            # unreachable: everything else follows from that
+            reasons = [("bad", "unreachable: " + (ping.get("error") or "no ping replies"))]
+        worst = "bad" if any(l == "bad" for l, _ in reasons) else "warn" if reasons else "ok"
+        return {"host": t.host, "level": worst, "reasons": [r for _, r in sorted(reasons, key=lambda r: r[0] != "bad")],
+                "network": net, "wifi": wifi, "zenoh": zenoh, "clock": clock, "ros": ros}
+
+
+LINK = LinkWatch()
+
+
+def get_link(q):
+    """Communication quality of the real robots in the list (the page polls this while its card is shown)."""
+    config = real_config()
+    targets = [real_target(name, config) for name in sorted(config)]
+    return {"robots": LINK.poll(targets), "limits": LINK_LIMITS}
+
+
 LOC_SOURCES = ("auto", "ref", "gps", "external")
 LOC_ANCHORS = ("fixed", "start", "external")
 LOC_NODE = "/$ROBOT_NAMESPACE/ref_localizer"
@@ -1256,6 +1549,7 @@ GET = {
     "/api/launch/log": get_launch_log,
     "/api/mocap": get_mocap,
     "/api/localization": get_localization,
+    "/api/link": get_link,
     "/api/jobs": lambda q: [j.to_json() for j in sorted(JOBS.values(), key=lambda j: -j.started)],
     "/api/job": lambda q: JOBS[q["id"]].to_json(full=True),
 }
@@ -1322,7 +1616,12 @@ def main():
     args = ap.parse_args()
     DEFAULT_MODE = args.mode
     print(f"fleet UI on http://{args.host}:{args.port} (fleet: {ROOT}, mode {args.mode})")
-    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
+    try:
+        ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        LINK.stop_all()  # its pings and the base station's link_monitor.py would outlive the server
 
 
 if __name__ == "__main__":

@@ -74,7 +74,10 @@ def main():
         return 130
     finally:
         node.destroy_node()
-        rclpy.try_shutdown()  # rclpy's SIGINT handler may already have shut the context down
+        try:
+            rclpy.try_shutdown()
+        except Exception:
+            pass  # rclpy's SIGINT handler shut the context down meanwhile
 
 
 def wait_result(node, client, goal, timeout, label):
