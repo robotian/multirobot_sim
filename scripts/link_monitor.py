@@ -13,6 +13,10 @@ Per robot (namespace), subscribed here so the data crosses the robot's link like
                 whether joint_states flow on the robot: joint_states itself is 1 kHz / 400 KB/s on a300_00036 and is
                 deliberately not subscribed -- measured cost: +8 % of a robot core in its zenoh router, ~30 % of a core
                 here, 3.2 Mbit/s of WiFi)
+  round trip    every RTT_EVERY_S, get_parameter_types (empty request) on the robot's robot_state_publisher: a
+                request and its reply through zenoh both ways (the topics only show robot -> here, ping doesn't
+                involve zenoh); mean / max over the last 60 s and the share of calls unanswered in RTT_TIMEOUT_S.
+                ~2 ms on a300_00036 (18 ms on the first call)
 For a topic: rate (last 5 s), its usual rate (median of the last 60 one-second rates), longest gap between messages
 in the last 30 s (the current silence included), age = receive time - header stamp (mean over the last second;
 this machine's clock minus the robot's, measured by the UI over SSH, is not corrected here). For a TF chain: the
@@ -27,9 +31,11 @@ import json
 import re
 import sys
 import time
+import warnings
 
 import rclpy
 from nav_msgs.msg import Odometry
+from rcl_interfaces.srv import GetParameterTypes
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import NavSatFix
 from tf2_msgs.msg import TFMessage
@@ -39,6 +45,11 @@ ARM_FRAME = "arm_0_base_link"
 GAP_WINDOW_S = 30
 RATE_WINDOW_S = 5
 HISTORY_S = 60
+# Ctrl+C mid-spin leaves one of the executor's coroutines un-awaited: harmless, not worth a warning at exit
+warnings.filterwarnings("ignore", message="coroutine .* was never awaited", category=RuntimeWarning)
+RTT_NODE = "robot_state_publisher"  # in the robot's namespace: always there, light, answers from its own executor
+RTT_EVERY_S = 2.0
+RTT_TIMEOUT_S = 2.0
 
 
 class Stream:
@@ -95,6 +106,11 @@ class Robot:
         self.topics = {"odom": Stream(now)}
         self.edges = {}         # child -> (parent, static)
         self.edge_streams = {}  # child -> Stream (moving edges only)
+        self.rtt_client = None  # created once the node shows up in the graph
+        self.rtt_pending = None  # (future, sent at)
+        self.rtt_next = 0.0
+        self.rtt_warm = True
+        self.rtts = collections.deque()  # (time, ms or None: no answer)
         self.subs = [
             node.create_subscription(Odometry, f"/{ns}/platform/odom/filtered",
                                      lambda m: self.topics["odom"].add(time.time(), stamp_of(m.header)),
@@ -124,6 +140,37 @@ class Robot:
         self.subs.append(self.node.create_subscription(
             NavSatFix, topic, lambda m: self.topics[name].add(time.time(), stamp_of(m.header)),
             qos_profile_sensor_data))
+
+    def rtt_step(self, now):
+        """Collect a finished / timed-out round trip, start the next one when due."""
+        if self.rtt_client is None:
+            return
+        if self.rtt_pending:
+            future, sent = self.rtt_pending
+            if future.done():
+                if self.rtt_warm:  # the first call sets the route up (208 ms on a300_00036, then ~2 ms): not counted
+                    self.rtt_warm = False
+                else:
+                    self.rtts.append((now, (time.monotonic() - sent) * 1000 if future.result() is not None else None))
+                self.rtt_pending = None
+            elif time.monotonic() - sent > RTT_TIMEOUT_S:
+                self.rtt_client.remove_pending_request(future)
+                self.rtts.append((now, None))
+                self.rtt_pending = None
+        if self.rtt_pending is None and now >= self.rtt_next and self.rtt_client.service_is_ready():
+            self.rtt_pending = (self.rtt_client.call_async(GetParameterTypes.Request(names=[])), time.monotonic())
+            self.rtt_next = now + RTT_EVERY_S
+        while self.rtts and now - self.rtts[0][0] > HISTORY_S:
+            self.rtts.popleft()
+
+    def rtt_report(self):
+        if self.rtt_client is None:
+            return {"error": f"no /{self.ns}/{RTT_NODE} in the ROS graph"}
+        answered = [ms for _, ms in self.rtts if ms is not None]
+        return {"node": RTT_NODE, "count": len(self.rtts),
+                "rtt_ms": round(sum(answered) / len(answered), 2) if answered else None,
+                "max_ms": round(max(answered), 1) if answered else None,
+                "timeouts_pct": round(100 * (len(self.rtts) - len(answered)) / len(self.rtts), 1) if self.rtts else None}
 
     def path_to_root(self, frame):
         path = [frame]
@@ -165,7 +212,8 @@ class Robot:
             if target == ARM_FRAME and ARM_FRAME not in self.edges:
                 continue  # no arm (tf_static never had its base)
             chains[f"{target}->{source}"] = self.chain(target, source, now)
-        return {"topics": {k: s.summary(now) for k, s in self.topics.items()}, "tf": chains}
+        return {"topics": {k: s.summary(now) for k, s in self.topics.items()}, "tf": chains,
+                "round_trip": self.rtt_report()}
 
 
 def main():
@@ -179,12 +227,18 @@ def main():
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=max(0.0, min(next_tick - time.time(), 0.2)))
             now = time.time()
-            if now >= next_scan:  # GPS topics a robot publishes (the graph is cheap to read)
+            if now >= next_scan:  # GPS topics and the round-trip node a robot has (the graph is cheap to read)
                 for topic, _ in node.get_topic_names_and_types():
                     m = gps_re.match(topic)
                     if m:
                         robots[m.group(1)].add_gps(topic)
+                present = {f"{n_ns.rstrip('/')}/{n}" for n, n_ns in node.get_node_names_and_namespaces()}
+                for ns, r in robots.items():
+                    if r.rtt_client is None and f"/{ns}/{RTT_NODE}" in present:
+                        r.rtt_client = node.create_client(GetParameterTypes, f"/{ns}/{RTT_NODE}/get_parameter_types")
                 next_scan = now + 10.0
+            for r in robots.values():
+                r.rtt_step(now)
             if now >= next_tick:
                 for r in robots.values():
                     r.tick(now)
@@ -199,6 +253,13 @@ def main():
         if rclpy.ok():
             raise
     finally:
+        # a request still in flight at exit made rclpy's teardown fail ("Unable to convert call argument"):
+        # drop it and the clients first
+        for r in robots.values():
+            if r.rtt_client is not None:
+                if r.rtt_pending:
+                    r.rtt_client.remove_pending_request(r.rtt_pending[0])
+                node.destroy_client(r.rtt_client)
         node.destroy_node()
         try:
             rclpy.try_shutdown()

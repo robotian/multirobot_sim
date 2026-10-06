@@ -1204,7 +1204,7 @@ CLOCK_TRUSTED_MS = 25  # a robot's clock offset is used only if measured to with
 PING_WINDOW_S = 60
 LINK_LIMITS = {
     "rtt_ms": (20, 100), "loss_pct": (1, 5), "signal_dbm": (-67, -75),  # signal: below these
-    "router_queue": (1, 10), "clock_ms": (50, 500),
+    "router_queue": (1, 10), "clock_ms": (50, 500), "ros_rtt_ms": (50, 250), "ros_timeouts_pct": (1, 5),
     "age_s": (0.2, 1.0), "gap_s": (0.5, 2.0), "silent_s": (1.0, 2.0), "rate_ratio": (0.8, 0.5),  # rate: below
 }
 # One SSH round per robot every LINK_SSH_EVERY_S: the interface toward this machine and, if it is WiFi, its link;
@@ -1461,6 +1461,15 @@ class LinkWatch:
                             v["levels"]["age"] = judge(f"{name} age", v.get("age"), LINK_LIMITS["age_s"], " s",
                                                        fmt="{:.3f}")
                     ros[group][name] = v
+            # request + reply through zenoh both ways (link_monitor.py: robot_state_publisher's parameter service)
+            rt = dict(report.get("round_trip") or {}, levels={})
+            if rt.get("error"):
+                reasons.append(("warn", rt["error"]))
+            else:
+                rt["levels"]["rtt_ms"] = judge("ROS round trip", rt.get("rtt_ms"), LINK_LIMITS["ros_rtt_ms"], " ms")
+                rt["levels"]["timeouts_pct"] = judge("ROS round trips unanswered", rt.get("timeouts_pct"),
+                                                     LINK_LIMITS["ros_timeouts_pct"], " %")
+            ros["round_trip"] = rt
         elif not ros["error"]:
             ros["error"] = "waiting for the base station's link monitor..."
 

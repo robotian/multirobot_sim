@@ -667,6 +667,13 @@ function renderLink() {
     else {
       rows.push(['ROS', Object.entries(ros.topics || {}).map(([k, s]) => streamText(k, s)).join('<br>')]);
       rows.push(['TF', Object.entries(ros.tf || {}).map(([k, s]) => streamText(k.replace('->', '→'), s)).join('<br>')]);
+      const rt = ros.round_trip || {};
+      rows.push(['Round trip', rt.error ? lv(esc(rt.error), 'warn') : rt.rtt_ms === null || rt.rtt_ms === undefined
+        ? '<span class="muted">starting...</span>'
+        : lv(`${fmt(rt.rtt_ms, 1)} ms`, rt.levels.rtt_ms, 'request + reply through zenoh both ways, every 2 s; ' + limitsTitle('ros_rtt_ms', ' ms'))
+          + ` <span class="muted">(max ${fmt(rt.max_ms, 1)})</span> · unanswered `
+          + lv(`${fmt(rt.timeouts_pct, 1)} %`, rt.levels.timeouts_pct, 'no reply within 2 s; ' + limitsTitle('ros_timeouts_pct', ' %'))
+          + ` <span class="muted">(${rt.count} calls to ${esc(rt.node)}'s parameter service)</span>`]);
     }
     return `<div class="robot"><div class="row"><h3>${esc(name)}</h3><span class="pill ${r.level}">${LINK_LABEL[r.level]}</span>
       <span class="muted" style="font-size:12px">${esc(r.reasons.slice(0, 3).join('; '))}${r.reasons.length > 3 ? ' ...' : ''}</span></div>
