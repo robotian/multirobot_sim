@@ -1235,6 +1235,7 @@ class Pinger:
 
     def __init__(self, host):
         self.host = host
+        self.started = time.time()
         self.samples = collections.deque()  # (time, rtt ms or None for no answer)
         self.error = None
         self.proc = subprocess.Popen(["ping", "-n", "-O", "-i", "1", "-W", "1", host], stdin=subprocess.DEVNULL,
@@ -1373,7 +1374,10 @@ class LinkWatch:
             for name in set(self.pingers) - set(names):
                 self.pingers.pop(name).stop()
             for t in targets:
-                if t.name not in self.pingers or self.pingers[t.name].host != t.host:
+                p = self.pingers.get(t.name)
+                # a new robot, a changed host, or a ping process that ended (killed, or the host didn't resolve):
+                # start it (again); a dead one is retried at most every 10 s
+                if p is None or p.host != t.host or (p.proc.poll() is not None and time.time() - p.started > 10):
                     if t.name in self.pingers:
                         self.pingers[t.name].stop()
                     self.pingers[t.name] = Pinger(t.host)
@@ -1390,6 +1394,7 @@ class LinkWatch:
     # -- one robot: values + a level per value + the overall verdict and its reasons
     def robot_report(self, t):
         reasons = []
+        sensor_faults = []  # robot-side: shown, not counted against the link
 
         def judge(label, value, limits, unit="", lower_is_worse=False, fmt="{:g}"):
             lv = level_of(value, limits, lower_is_worse)
@@ -1449,6 +1454,12 @@ class LinkWatch:
                                  for k in ("ref", "gps"))
                 no_source = f"not published: ref_localizer has no localization source (source {loc.get('source')}; {ages})"
             ros["localizer"] = loc
+            # Streams of this robot that do arrive: if some do, the link works, and a topic that delivers nothing
+            # is the robot's sensor / driver (a200_0284's GPS, 2026-10-06), not the link -- a sensor fault, shown
+            # apart. If nothing arrives at all, it stays a link problem.
+            alive = {n for g in ("topics", "tf") for n, s in report[g].items()
+                     if not s.get("broken") and s.get("silent") is not None
+                     and s["silent"] <= LINK_LIMITS["silent_s"][1]}
             for group, items in (("topics", report["topics"]), ("tf", report["tf"])):
                 ros[group] = {}
                 for name, v in items.items():
@@ -1465,8 +1476,15 @@ class LinkWatch:
                             v["age"] = round(v["age"] + correct, 4)
                         silent = v.get("silent")
                         if silent is None or silent > LINK_LIMITS["silent_s"][1]:
-                            reasons.append(("bad", f"{name}: no data for {silent if silent is not None else '?'} s"))
-                            v["levels"]["rate"] = "bad"
+                            since = "since the monitor started" if silent is None else f"for {silent:.0f} s"
+                            if group == "topics" and alive - {name}:
+                                v["sensor_fault"] = (f"no data {since} while the robot's other data arrive: "
+                                                     "its sensor or driver on the robot, not the link")
+                                v["levels"]["rate"] = "sensor"
+                                sensor_faults.append(f"{name}: no data {since}")
+                            else:
+                                reasons.append(("bad", f"{name}: no data {since}"))
+                                v["levels"]["rate"] = "bad"
                         else:
                             ratio = v["rate"] / v["usual_rate"] if v.get("usual_rate") else None
                             v["levels"]["rate"] = judge(f"{name} rate", ratio, LINK_LIMITS["rate_ratio"], "x usual",
@@ -1491,7 +1509,10 @@ class LinkWatch:
             # unreachable: everything else follows from that
             reasons = [("bad", "unreachable: " + (ping.get("error") or "no ping replies"))]
         worst = "bad" if any(l == "bad" for l, _ in reasons) else "warn" if reasons else "ok"
+        if reasons and reasons[0][1].startswith("unreachable"):
+            sensor_faults = []  # can't tell while the robot is unreachable
         return {"host": t.host, "level": worst, "reasons": [r for _, r in sorted(reasons, key=lambda r: r[0] != "bad")],
+                "sensor_faults": sensor_faults,
                 "network": net, "wifi": wifi, "zenoh": zenoh, "clock": clock, "ros": ros}
 
 

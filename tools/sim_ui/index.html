@@ -540,7 +540,8 @@ function renderRobots() {
         <span class="pill ${up ? 'ok' : 'bad'}" title="${esc(r.error || r.status || '')}">${esc(r.state)}</span>
         ${real ? (up ? `<span class="pill ${extras === 'active' ? 'ok' : 'bad'}" title="${esc(Object.entries(r.services || {}).map(([s, v]) => `${s}: ${v}`).join('\n'))}">services ${esc(extras || '?')}</span>` : '')
           : `<span class="pill ${r.launch ? 'ok' : ''}">upstart ${r.launch ? 'running' : 'stopped'}</span>`}
-        ${real ? `<span class="pill linkpill" data-link="${esc(r.name)}" title="communication (see the Communication card)"></span>` : ''}
+        ${real ? `<span class="pill linkpill" data-link="${esc(r.name)}" title="communication (see the Communication card)"></span>
+          <span class="pill warn sensorpill" data-sensor="${esc(r.name)}" hidden></span>` : ''}
         ${real && up && r.rmw && r.rmw !== status.fleet_rmw ? `<span class="pill warn" title="the fleet uses ${esc(status.fleet_rmw)}">${esc(r.rmw)}</span>` : ''}
         ${r.cutting ? '<span class="pill ok">cutting</span>' : ''}
         ${r.conflict ? '<span class="pill bad" title="a sim robot and an online real robot share this name (and every ROS name): actions are refused">name clash</span>' : ''}</div>
@@ -619,6 +620,12 @@ function applyLinkPills() {
     p.textContent = r ? LINK_LABEL[r.level] : 'link ?';
     p.title = r && r.reasons.length ? r.reasons.join('\n') : 'communication: see the Communication card';
   });
+  document.querySelectorAll('.sensorpill').forEach(p => {
+    const faults = (link && link.robots[p.dataset.sensor] && link.robots[p.dataset.sensor].sensor_faults) || [];
+    p.hidden = !faults.length;
+    p.textContent = 'sensor fault: ' + faults.map(f => f.split(':')[0]).join(', ');
+    p.title = faults.join('\n') + '\non the robot (sensor / driver), not the link';
+  });
 }
 // one value, coloured by its level, its limits on hover
 function lv(text, level, title = '') {
@@ -631,6 +638,8 @@ function limitsTitle(key, unit, lower) {
 }
 function streamText(name, s) {
   if (s.info) return `${esc(name)}: <span class="muted" title="information, not counted against the link">${esc(s.info)}</span>`;
+  if (s.sensor_fault) return `${esc(name)}: ` + lv('sensor fault', 'warn', s.sensor_fault + ' (not counted against the link)')
+    + ` <span class="muted">${esc(s.sensor_fault)}</span>`;
   if (s.broken) return lv(`${esc(name)}: broken (${esc(s.broken)})`, 'bad');
   if (s.static) return `${esc(name)}: static`;
   const L = s.levels || {}, ms = x => x === null || x === undefined ? '-' : Math.round(x * 1000);
@@ -676,7 +685,9 @@ function renderLink() {
           + lv(`${fmt(rt.timeouts_pct, 1)} %`, rt.levels.timeouts_pct, 'no reply within 2 s; ' + limitsTitle('ros_timeouts_pct', ' %'))
           + ` <span class="muted">(${rt.count} calls to ${esc(rt.node)}'s parameter service)</span>`]);
     }
+    const faults = r.sensor_faults || [];
     return `<div class="robot"><div class="row"><h3>${esc(name)}</h3><span class="pill ${r.level}">${LINK_LABEL[r.level]}</span>
+      ${faults.length ? `<span class="pill warn" title="${esc(faults.join('\n'))}&#10;on the robot (sensor / driver), not the link">sensor fault: ${esc(faults.map(f => f.split(':')[0]).join(', '))}</span>` : ''}
       <span class="muted" style="font-size:12px">${esc(r.reasons.slice(0, 3).join('; '))}${r.reasons.length > 3 ? ' ...' : ''}</span></div>
       <table class="linktab">${rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('')}</table></div>`;
   }).join('');
