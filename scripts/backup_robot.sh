@@ -13,7 +13,8 @@
 #                calibration, crontabs; root.tar.gz is the same with owners and modes, for restoring
 #   home/        dotfiles, ~/.ssh authorized_keys/known_hosts/config, ~/*_config/ (zenoh, cyclonedds),
 #                diagnostic_captures/, every other file in ~ up to 20 MB (robot.yaml.*.bak, rtk.txt, ...)
-#   ws/<ws>/     every ~/<ws> with a src/ except ~/colcon_ws (this repo's), .git included; no build/install/log,
+#   ws/<ws>/     every ~/<ws> with a src/ except ~/colcon_ws (this repo's) and ~/colcon_ws_backup (the robot's
+#                workspace before the first deploy, kept there as is), .git included; no build/install/log,
 #                .venv (pip freeze instead)
 #   system/      packages, pip freezes, enabled services, network, git_state.tsv, git/*.diff (uncommitted
 #                edits), not_in_git.txt, unowned_files.txt, modified_conffiles.txt
@@ -21,13 +22,14 @@
 #   RESTORE.md   where things go back
 # Unchanged files are hard links into the previous snapshot (rsync --link-dest): a repeat run transfers and
 # stores only what changed. Snapshots hold secrets (WiFi passwords in netplan, NTRIP): mode 700, gitignored.
-# Not backed up: rosbags, ~/.cache, editor servers, SDK installers, ~/colcon_ws (deploy_robot.sh's).
+# Not backed up: rosbags, ~/.cache, editor servers, SDK installers, ~/colcon_ws (deploy_robot.sh's),
+# ~/colcon_ws_backup.
 set -euo pipefail
 umask 077
 cd "$(dirname "$0")/.."
 repo=$PWD
 
-usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }
+usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }
 
 id="" host="" user=robot sudo=1
 while [ $# -gt 0 ]; do
@@ -124,8 +126,10 @@ systemctl list-units --type=service --state=running --no-legend --no-pager > ser
 { ip -br addr; echo; ip route; echo; nmcli -t -f NAME,TYPE,DEVICE,AUTOCONNECT connection show 2>/dev/null; } > network.txt
 crontab -l > crontab.txt 2>&1
 cat ~/colcon_ws/DEPLOYED > colcon_ws_DEPLOYED.txt 2>/dev/null
-# workspaces: every ~/<dir> with a src/, except ~/colcon_ws (scripts/deploy_robot.sh's copy of multirobot_sim)
-for w in ~/*/; do w=${w%/}; [ -d "$w/src" ] && [ "$w" != "$HOME/colcon_ws" ] && echo "${w#$HOME/}"; done > workspaces.txt
+# workspaces: every ~/<dir> with a src/, except ~/colcon_ws (scripts/deploy_robot.sh's copy of multirobot_sim) and
+# ~/colcon_ws_backup (the robot's workspace from before the first deploy: stays on the robot, 3.5 GB on a300_00036)
+skip_ws() { [ "$1" = "$HOME/colcon_ws" ] || [ "$1" = "$HOME/colcon_ws_backup" ]; }
+for w in ~/*/; do w=${w%/}; [ -d "$w/src" ] && ! skip_ws "$w" && echo "${w#$HOME/}"; done > workspaces.txt
 srcfind() {  # find in every workspace's src, skipping build output and (unless VENVS=1) venvs
     local v=-name\ .venv; [ "${VENVS:-0}" = 0 ] || v=-false
     while read -r w; do
@@ -133,7 +137,7 @@ srcfind() {  # find in every workspace's src, skipping build output and (unless 
     done < workspaces.txt 2>/dev/null
 }
 # git repos: ~/<dir> itself, or in a workspace's src
-repos=$( { for w in ~/*/; do [ -e "$w/.git" ] && echo "${w%/}"; done; srcfind -name .git -printf '%h\n'; } | LC_ALL=C sort -u)
+repos=$( { for w in ~/*/; do [ -e "$w/.git" ] && ! skip_ws "${w%/}" && echo "${w%/}"; done; srcfind -name .git -printf '%h\n'; } | LC_ALL=C sort -u)
 printf 'path\tremote\tbranch\tcommit\tupstream\tahead\tbehind\tchanged\n' > git_state.tsv
 while read -r r; do
     [ -n "$r" ] || continue
@@ -221,7 +225,7 @@ pname=${prev##*/}; pname=${pname:-none}
         echo
     fi
     grep -v -e 'Permission denied' -e '^$' "$S/tar_warnings.txt" | head -5 | sed 's/^/- /' || true
-    echo "- not backed up: ~/rosbags, ~/.cache, ~/.local, editor servers, files over 20 MB in ~, ~/colcon_ws (scripts/deploy_robot.sh)"
+    echo "- not backed up: ~/rosbags, ~/.cache, ~/.local, editor servers, files over 20 MB in ~, ~/colcon_ws (scripts/deploy_robot.sh), ~/colcon_ws_backup"
     echo
     echo "## Changed since $pname"
     echo
