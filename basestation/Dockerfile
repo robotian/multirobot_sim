@@ -18,6 +18,12 @@ RUN install -d /usr/share/postgresql-common/pgdg \
     && echo 'create_main_cluster = false' > /etc/postgresql-common/createcluster.d/no-main.conf \
     && apt-get update && apt-get install -y --no-install-recommends postgresql-${PG_MAJOR} \
     && rm -rf /var/lib/apt/lists/*
+
+# Cyclone DDS for a real robot that runs it (BASESTATION_RMW=rmw_cyclonedds_cpp, basestation.compose.yml). Here
+# rather than in the robot image: adding it there re-runs that image's apt layer, which pulls newer Clearpath
+# packages (2026-10-07: its RealSense xacro patch no longer applied).
+RUN apt-get update && apt-get install -y --no-install-recommends ros-jazzy-rmw-cyclonedds-cpp \
+    && rm -rf /var/lib/apt/lists/*
 ENV PATH=/usr/lib/postgresql/${PG_MAJOR}/bin:$PATH \
     PGDATA=/var/lib/postgresql/data \
     PGHOST=/run/postgresql

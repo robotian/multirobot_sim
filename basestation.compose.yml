@@ -26,7 +26,9 @@ services:
     stdin_open: true
     tty: true
     environment:
-      RMW_IMPLEMENTATION: ${FLEET_RMW:-rmw_zenoh_cpp}
+      # BASESTATION_RMW: the base station's own middleware when it differs from the fleet's, e.g.
+      # rmw_cyclonedds_cpp for a real robot on Cyclone DDS while the sim stays on zenoh (they can't talk across)
+      RMW_IMPLEMENTATION: ${BASESTATION_RMW:-${FLEET_RMW:-rmw_zenoh_cpp}}
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
       # rmw_zenoh_cpp: sessions are clients of the base station's own router (entrypoint.sh, port 7447), which
       # dials the routers listed here, space-separated: the sim's zenoh-router (published on 127.0.0.1:7448) and
