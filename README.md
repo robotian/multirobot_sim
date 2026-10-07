@@ -75,7 +75,7 @@ What to expect on the **first start**:
 
 ### Real robots need `robot_data/`
 
-`ROBOT_MODEL_<i>` values containing `_` (`j100_0921`, `a300_00037`, ...) are MTU's real robots. Their own `robot.yaml` files live in `robot_data/<id>/robot.yaml`, which is **not in git** (private robot data). Their sim models are in `sim/assets/`, so the sim spawns them anyway, but their robot container exits immediately with `sed: can't read /opt/clearpath/robot.<id>.yaml.tmpl`. Either copy `robot_data/` from a machine that has it, or use the generic models. See *Adding a real robot configuration file*.
+`ROBOT_MODEL_<i>` values containing `_` (`j100_0921`, `a300_00037`, ...) are MTU's real robots. Their own `robot.yaml` files live in `robot_data/<id>/robot.yaml`. `j100_0921`, `j100_0922`, `a200_0284`, `a300_00036` and `a300_00037` are in git; the others (`a200_0333`, `j100_0936`, ...) are not. Their sim models are in `sim/assets/`, so the sim spawns them anyway, but a robot without its `robot_data/<id>/` has a container that exits immediately with `sed: can't read /opt/clearpath/robot.<id>.yaml.tmpl`. Either copy `robot_data/` from a machine that has it, or use the generic models. See *Adding a real robot configuration file*.
 
 ### File permissions
 
@@ -166,7 +166,7 @@ ROBOT_MODEL_2=r100   # slot 2 becomes a Ridgeback, r100_0002
 then `scripts/fleet.sh` to apply it (not a plain `docker compose up -d`: it keeps the slot's container name and hostname in `.env` in sync). `scripts/gen_urdf.sh` generates every model's URDF unconditionally (the four generic ones plus one per `robot_data/<id>/` folder that has a `robot.yaml`), so nothing needs regenerating when you change `ROBOT_MODEL_<i>`.
 
 Two things worth knowing:
-- **A slot's numeric suffix is its slot index, not a per-model count.** Two Jackals in slots 1 and 4 show up as `j100_0001` and `j100_0004`, not `j100_0000`/`j100_0001`.
+- **A slot's numeric suffix is its slot index, not a per-model count.** Two Jackals in slots 1 and 4 show up as `j100_0001` and `j100_0004`, not `j100_0000`/`j100_0001`. Real robots (a model id containing `_`) take their id with no suffix: `j100_0921`, both as the container name and as the ROS namespace.
 - **Ridgeback is Clearpath's holonomic mecanum-wheel platform and drives omnidirectionally here** — it can strafe sideways and combine translation with rotation, unlike the other three models. Forward/back and rotation use the same real `diff_4wd.yaml` OmniGraph as the others; sideways motion is patched in separately (a script node sets the chassis's lateral velocity directly each tick), because Ridgeback's own URDF gives every wheel a plain cylinder collision shape — the angled-roller detail is mesh-only — which can't physically produce sideways thrust no matter how it's driven kinematically. See `BODY_DRIVE_SCRIPT` in `sim/scripts/setup_scene.py` and r100 in `sim/config/model_params.yaml` for the full reasoning. One known limitation: a small *pure* in-place rotation command from a standstill (e.g. 0.5 rad/s alone) is mostly absorbed by static friction between the wheels and ground and barely turns the robot; a larger command, or any rotation combined with translation, comes through close to correctly.
 - **Running all four distinct models at once (4 robots, no repeats) crashed the sim with a `PhysX Internal CUDA error`** on the machine this was built on. Every individual model, and every combination of up to 3 distinct models tried, worked fine; only the specific 4-distinct-model combination reproduced it. Not root-caused — if you hit it, try fewer distinct models simultaneously.
 - Robots also keep a fixed spacing regardless of model size (fine for A300/A200/Jackal; Ridgeback is larger and might feel tight next to another robot).
@@ -406,6 +406,19 @@ Without the first rule, `status_server` in a robot times out connecting to the d
 
 **ROS.** `colcon_ws` is mounted as in the robots. Build it from a robot container (`scripts/colcon_build.sh`), not here, so the files stay yours. `USE_SIM_TIME` comes from `.env`: true with the simulated robots, set it false with real ones.
 
+## Real robots: deploy and backup
+
+The same `colcon_ws/src` runs on MTU's real robots. Robot-specific details are in `scripts/CLAUDE.md`.
+
+```bash
+scripts/deploy_robot.sh <id> [--dry-run]  # rsync colcon_ws/src to the robot's ~/colcon_ws and build it there (over its ~/robot_ws)
+scripts/deploy_robot.sh <id> --pull       # copy files edited on the robot since the last deploy back into colcon_ws/src (deploys nothing)
+scripts/backup_robot.sh <id> [--no-sudo]  # snapshot /etc, middleware configs, its own workspaces (with .git) and package lists
+                                          # into robot_data/<id>/backups/ (gitignored); asks for the robot's sudo password once
+```
+
+On a real robot, the arm tools are `ros2 run moveit_sim_bridge arm_goto <state>` (no `--direct`), and `arm_joints` reports observed joints only. The web UI's *real* mode (`python3 tools/sim_ui/server.py --mode real`, robots listed in `tools/sim_ui/real_robots.json`) wraps services, deploy, arm moves and *Cut stem* over SSH.
+
 ## Configuration
 
 Edit `.env`, then `docker restart a300-isaac-sim` for sim variables, or `scripts/fleet.sh` for anything about the robots (count, models, middleware).
@@ -600,6 +613,18 @@ The values are authored on the shader prims in `SM_Lavender_Nanite_01.usd`; the 
 - **MoveIt collision matrix (robots with an arm):** `robot/bin/generate_srdf` writes `/etc/clearpath/robot.srdf` at every container start. It uses `moveit_collision_updater` with `--trials 10000` and retries, because Clearpath's own default (100000 trials) crashes in this container, and too few trials wrongly mark arm-vs-body link pairs as never colliding, so MoveIt plans through the robot. Details in `robot/CLAUDE.md`. Editing that script needs a robot image rebuild.
 - **More than 8 robots:** `docker-compose.yml` defines eight robot services (`robot0` … `robot7`, container-named from `ROBOT_MODEL_<i>` + the slot index), each active for the profiles `n<k>` with `k` above its index. Copy the last block for `robot8`, give it the next Foxglove port and a profile list extended by `n9`, raise `MAX` in `scripts/fleet.sh`, and use `NUM_ROBOTS=9`. The sim needs no change.
 
+## Architecture
+
+How the pieces connect; each directory's `CLAUDE.md` has the details.
+
+- **URDF pipeline** (host, `scripts/gen_urdf.sh`): `robot/config/robot.<model>.yaml.tmpl` or a real `robot_data/<id>/robot.yaml` → Clearpath `generate_description` + `xacro` (run inside the robot image) → `scripts/flatten_urdf.py` (meshes copied, Collada→OBJ, visual-only links merged, dangling joints pruned) → a self-contained `sim/assets/<model>/`. Build the robot image before running it; it skips a real robot whose `robot_data/<id>/` is missing. The real robots' `platform.extras` xacro (`mtu32_description`) comes from `colcon_ws/src/mtu32_husky`, the same source the robots build; after changing it, rerun `gen_urdf.sh` and restart the sim.
+- **Sim** (`sim/scripts/setup_scene.py`, run in Isaac with `./sim` mounted at `/sim`): imports every model (USD cached in `sim/generated/`), builds the scene chosen by `SIM_SCENE` with the timeline stopped, then spawns the robots from `spawn_request.json` and plays. Per robot an OmniGraph handles `cmd_vel` → closed-loop velocity control → wheel drives, plus odometry, joint states, TF, camera, IMU/GPS/lidar and the arm. Per-model parameters (drive, sensors, arm, `chassis_link`) are derived at sim start from the model's `robot.yaml` and flattened URDF; hand tuning lives only in `sim/config/model_params.yaml`.
+- **Robot containers** (`robot/`): `entrypoint.sh` writes `/etc/clearpath/robot.yaml` (forcing the fleet's `ROS_DOMAIN_ID` and middleware), runs Clearpath's `generate_bash`/`generate_params` and `generate_srdf`, then supervises `robot_state`, `ekf`, `foxglove` and `pruner_stub` in restart loops.
+- **ROS workspace** (`colcon_ws/src/`): MTU's `sim_robot_upstart.launch.py` (MoveIt, `cut_stem`, perception), `moveit_sim_bridge` (the arm's execution path, since the sim has no `ros2_control`), Nav2 and dual-GPS localization. The same tree is deployed to the real robots.
+- **TF:** `odom→base_link` comes from each robot's EKF on the sim's `platform/odom`. The sim's exact pose is published separately as `ground_truth→base_link_ground_truth` (zero at spawn) and, in world coordinates, `ref_frame→base_link_ref` with the `ref_pose` topic (`SIM_REF_POSE`, the sim's stand-in for motion capture). `map→odom` has a single publisher, `mocap_fake_localizer`'s `ref_localizer.py` (started by `bringup_main`), from `ref_pose` (the sim, or OptiTrack via `natnet_ref_pose.py` on a real robot) or from GPS (`ekf_global_node` with `publish_tf: false`); `ref_frame→map` is its anchor. Anything else that publishes `map→odom` (AMCL, slam_toolbox, `sim_nav2.launch.py`'s static identity) needs `ref_source:=external`.
+- **Base station** (`basestation.compose.yml`): a separate compose project on the host network, so it sits on the LAN like a real base station; see *Base station*.
+- **Web UI** (`tools/sim_ui/`): drives sim robots through `docker exec` and real robots over SSH.
+
 ## Layout
 
 | Path | Purpose |
@@ -607,7 +632,7 @@ The values are authored on the shader prims in `SM_Lavender_Nanite_01.usd`; the 
 | `docker-compose.yml`, `.env` | the whole stack (`.env` holds this machine's LAN IP in `ISAACSIM_HOST`) |
 | `robot/` | robot container image: `Dockerfile`, `entrypoint.sh`, per-model config templates `config/robot.a300/a200/j100/r100/j100_0936.yaml.tmpl` and the generic `config/robot.rviz.tmpl`. Real robots in `robot_data/` use their own `robot.yaml` directly, no template. Everything here is baked into the image: rebuild after editing (*Rebuilding after a change*) |
 | `robot/bin/` | commands installed in every robot: `teleop`, `camera_view`, `rviz`, `foxglove`, `restart_ros` and the boot-time/background helpers `robot_state`, `generate_params`, `generate_srdf` (MoveIt collision matrix), `pruner_stub` (fake pruner serial device); arm tools `arm_goto` and `arm_joints` |
-| `robot_data/<id>/robot.yaml` | the real MTU robots' own Clearpath configs (`j100_0921`, `j100_0922`, `a200_0284`, `a300_00036`, ...), used unmodified. Not in git (private lab material); gitignored |
+| `robot_data/<id>/robot.yaml` | the real MTU robots' own Clearpath configs (`j100_0921`, `j100_0922`, `a200_0284`, `a300_00036`, ...), used unmodified. Tracked in git except each robot's `backups/` (secrets, see *Real robots: deploy and backup*) and `colcon_ws/` |
 | `sim/scripts/setup_scene.py` | builds the Isaac Sim scene and ROS 2 graphs (`./sim` is mounted into the sim container: edit, then `docker restart a300-isaac-sim`) |
 | `sim/assets/<model>/`, `sim/generated/<model>/` | generated URDF and meshes (in git, through LFS; regenerate with `gen_urdf.sh` and commit), cached USD (not in git, the first start creates it), one set per model |
 | `scripts/` | `fleet.sh` (scene, spawn, stop) + `fleet_ctl.py` (spawn/reset protocol), `stop_sim.sh`, `colcon_build.sh`, `gen_urdf.sh` + `flatten_urdf.py` (URDF generation), `x11_auth.sh`, `foxglove_layout.sh`, `drive_test.py`, `calibrate_velocity.py`. Mounted read-only into the robots, so edits need no rebuild |
@@ -619,10 +644,17 @@ The values are authored on the shader prims in `SM_Lavender_Nanite_01.usd`; the 
 | `docker/fastdds_udp.xml` | FastDDS profile (UDP only, since containers don't share `/dev/shm`) |
 | `docker/isaac-sim.Dockerfile`, `docker/isaac-entrypoint.sh` | Isaac Sim image with a system ROS 2 Jazzy (needed for zenoh) |
 | `docs/images/` | images used by this README |
-| `CLAUDE.md` + `scripts/`, `sim/`, `robot/`, `colcon_ws/`, `tools/sim_ui/CLAUDE.md`, `.claude/skills/add-real-robot/` | architecture notes: the root file is an overview, each directory's file has the details (read the relevant one before changing that area) |
+| `CLAUDE.md` + `scripts/`, `sim/`, `robot/`, `colcon_ws/`, `tools/sim_ui/CLAUDE.md`, `.claude/skills/add-real-robot/` | instructions for Claude Code: the root file holds the rules and gotchas that apply everywhere, each directory's file has the details for that area |
 | `last_session.md` | the latest session log |
 
-See `CLAUDE.md` and the per-directory `CLAUDE.md` files for more detail on how the pieces fit together.
+The per-directory `CLAUDE.md` files go into more detail on each area.
+
+## Working on the repository
+
+- **Submodules:** several packages in `colcon_ws/src/` are git submodules. `mtu32_husky` and `mocap_fake_localizer` track a `sim` branch of their own repositories: commit and push inside the submodule first, then commit the new submodule pointer here.
+- **Git LFS:** binaries under `sim/assets/` (usd, png, jpg, hdr, dae, obj, stl; see `.gitattributes`) are LFS files. Run `git lfs install` once per machine.
+- **Ignored:** `sim/generated/`, `robot_data/**/colcon_ws/`, `robot_data/**/backups/` (secrets) and colcon's `build/`/`install/`/`log/`. `.env` is tracked: it holds no secrets, but it does hold the committer's LAN IP in `ISAACSIM_HOST`.
+- **No build system or test suite:** checks are scripts run against the live sim: `drive_test.py` (after any URDF or drive change), `calibrate_velocity.py`, `arm_joints`.
 
 ## Troubleshooting
 
