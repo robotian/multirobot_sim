@@ -70,7 +70,7 @@ if [[ "$ROBOT_MODEL" == *_* && -f "/robot_data/$ROBOT_MODEL/robot.yaml" ]]; then
     fi
 else
     sed -e "s/__NS__/${ROBOT_NAMESPACE}/g" -e "s/__SERIAL__/${ROBOT_SERIAL}/g" \
-        -e "s/__RMW__/${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}/g" \
+        -e "s/__RMW__/${RMW_IMPLEMENTATION:-rmw_zenoh_cpp}/g" \
         -e "s/__DOMAIN__/${ROS_DOMAIN_ID:-0}/g" \
         "/opt/clearpath/robot.${ROBOT_MODEL}.yaml.tmpl" > /etc/clearpath/robot.yaml
 fi
