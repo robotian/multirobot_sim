@@ -24,6 +24,7 @@
 # stores only what changed. Snapshots hold secrets (WiFi passwords in netplan, NTRIP): mode 700, gitignored.
 # Not backed up: rosbags, ~/.cache, editor servers, SDK installers, ~/colcon_ws (deploy_robot.sh's),
 # ~/colcon_ws_backup.
+{  # read the whole script before running it: editing it mid-run can't break a run
 set -euo pipefail
 umask 077
 cd "$(dirname "$0")/.."
@@ -61,7 +62,9 @@ prev=""; [ -L "$base/latest" ] && [ -d "$base/latest/" ] && prev=$(readlink -f "
 ts=$(date +%Y-%m-%d_%H%M%S)
 snap=$base/$ts.partial
 mkdir -p "$snap"/{system,home,ws}
-link() { [ -n "$prev" ] && [ -d "$prev/$1" ] && echo "--link-dest=$prev/$1"; true; }
+# an interrupted run's snapshot: its files are good, link them too instead of transferring them again
+stale=$(ls -d "$base"/*.partial 2>/dev/null | grep -vxF "$snap" || true)
+link() { local d; for d in $prev $stale; do [ -d "$d/$1" ] && echo "--link-dest=$d/$1"; done; true; }
 echo "== $id: $target -> ${snap#$repo/}${prev:+ (unchanged files linked to ${prev##*/})}"
 
 # --- root pass: /etc and other system files, as root (sudo) or, with --no-sudo, whatever the user can read
@@ -77,7 +80,7 @@ LC_ALL=C comm -23 all owned > report/unowned_files.txt
 # conffiles edited since their package installed them (or unreadable without sudo)
 dpkg-query -W -f='${Conffiles}\n' | awk 'NF >= 2 && $3 != "obsolete" { print $2 "  " $1 }' \
     | md5sum -c 2>/dev/null | grep -v ': OK$' > report/modified_conffiles.txt
-find /etc -xdev ! -readable 2>/dev/null | grep -vE '^/etc/g?shadow-?$' > report/unreadable.txt
+find /etc -xdev ! -type l ! -readable 2>/dev/null | grep -vE '^/etc/g?shadow-?$' > report/unreadable.txt
 extra=$( { grep -E '^/usr/lib/(systemd/system|udev/rules\.d)/' report/unowned_files.txt
            ls -d /usr/local/zed/settings /var/spool/cron/crontabs 2>/dev/null; } | sed 's#^/##')
 tar -czf root.tar.gz --ignore-failed-read --exclude='etc/shadow*' --exclude='etc/gshadow*' \
@@ -267,5 +270,8 @@ EOF
 
 mv "$snap" "$base/$ts"
 ln -sfn "$ts" "$base/latest"
+for d in $stale; do rm -rf "$d"; done
 echo "== done: ${base#$repo/}/$ts ($(du -sh "$base/$ts" | cut -f1)${prev:+, new: $(du -sh "$prev" "$base/$ts" | tail -1 | cut -f1)})"
 sed -n '/^## Code that exists only/,$p' "$base/$ts/SUMMARY.md"
+exit
+}
