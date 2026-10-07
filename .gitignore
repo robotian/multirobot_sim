@@ -10,6 +10,8 @@ colcon_ws/log/
 # their `sim` branch), the rest as plain files.
 robot_data/**/colcon_ws/
 robot_data/pictures/**
+# scripts/backup_robot.sh snapshots of the real robots: hold WiFi passwords and other secrets
+robot_data/**/backups/
 # Per-robot Foxglove layouts written by scripts/foxglove_layout.sh
 foxglove/
 # sim/assets/ is tracked, its binaries through Git LFS (.gitattributes); hand-made backups of them are not

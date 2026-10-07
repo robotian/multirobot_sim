@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A simulated fleet of Clearpath robots in Isaac Sim 6.0, driven over ROS 2 Jazzy. Isaac Sim runs in one container (WebRTC streaming or a headed window); each robot is its own ROS 2 container standing in for the robot's onboard computer. Robots are either a generic model (`a300`/`a200`/`j100`/`r100`, with a RealSense D435i) or one of MTU's real robots from `robot_data/<id>/robot.yaml` (`j100_0921`, `j100_0922`, `a200_0284`, `a200_0333`, `a300_00036`, ...), chosen per slot by `ROBOT_MODEL_<i>` in `.env`.
 
-There is no build system, test suite or linter: Docker Compose plus scripts. Git: `main`, remote `origin` = github.com/robotian/multirobot_sim. `colcon_ws/src/` holds git submodules; `mtu32_husky` and `mocap_fake_localizer` track a `sim` branch of their own repos, so commit/push there first, then commit the submodule pointer here. `sim/generated/`, `robot_data/` and the colcon `build/`/`install/`/`log/` dirs are gitignored; `sim/assets/` is tracked, its binaries (usd, png, jpg, hdr, dae, obj, stl) through Git LFS (`.gitattributes`, run `git lfs install` once per machine). `.env` is tracked (no secrets, but holds this machine's LAN IP in `ISAACSIM_HOST`).
+There is no build system, test suite or linter: Docker Compose plus scripts. Git: `main`, remote `origin` = github.com/robotian/multirobot_sim. `colcon_ws/src/` holds git submodules; `mtu32_husky` and `mocap_fake_localizer` track a `sim` branch of their own repos, so commit/push there first, then commit the submodule pointer here. `sim/generated/`, `robot_data/**/colcon_ws/` and `robot_data/**/backups/` (secrets) and the colcon `build/`/`install/`/`log/` dirs are gitignored; `sim/assets/` is tracked, its binaries (usd, png, jpg, hdr, dae, obj, stl) through Git LFS (`.gitattributes`, run `git lfs install` once per machine). `.env` is tracked (no secrets, but holds this machine's LAN IP in `ISAACSIM_HOST`).
 
 ## Commands
 
@@ -36,6 +36,7 @@ docker exec j100_0921 bash -c 'arm_joints [--record 12]'  # commanded vs observe
 scripts/foxglove_layout.sh [ns...]        # foxglove/<ns>.json layout with the robot's URDF in a 3D panel
 scripts/deploy_robot.sh <id> [--dry-run]  # rsync colcon_ws/src to a real robot's ~/colcon_ws and build it there (over its ~/robot_ws); see scripts/CLAUDE.md
 scripts/deploy_robot.sh <id> --pull       # copy files edited on the robot since the last deploy back into colcon_ws/src (deploys nothing)
+scripts/backup_robot.sh <id> [--no-sudo]  # snapshot a real robot's /etc, middleware configs, own workspaces (with .git) and package lists into robot_data/<id>/backups/ (gitignored); asks for its sudo password once
 ```
 
 ## Conventions
