@@ -1,7 +1,3 @@
-[submodule "colcon_ws/src/apriltag_ros"]
-	path = colcon_ws/src/apriltag_ros
-	url = https://github.com/christianrauch/apriltag_ros.git
-	branch = master
 [submodule "colcon_ws/src/clearpath_desktop"]
 	path = colcon_ws/src/clearpath_desktop
 	url = https://github.com/clearpathrobotics/clearpath_desktop.git

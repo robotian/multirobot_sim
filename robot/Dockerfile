@@ -29,8 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-jazzy-pcl-ros \
         ros-jazzy-moveit-ros-move-group \
         ros-jazzy-moveit-servo \
-        ros-jazzy-apriltag \
-        ros-jazzy-apriltag-msgs \
+        ros-jazzy-apriltag-ros \
         ros-jazzy-camera-ros \
         ros-jazzy-navigation2 \
         ros-jazzy-nav2-bringup \
@@ -46,9 +45,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # pcl_ros/moveit_ros_move_group/moveit_servo: mtu32_bringup's bringup_main.launch.py/pcl_filter.launch.py/
 # moveit.launch.py need these -- generic ROS/MoveIt2 framework packages, not vendored in robot_data/j100_0921/
 # colcon_ws/src (unlike the MTU-custom and forked-public packages copied into colcon_ws/src/, see that folder).
-# apriltag/apriltag-msgs/camera-ros: colcon_ws/src/apriltag_ros (copied from robot_data, needed by
-# bringup_main.launch.py) depends on these at CMake config time; likewise generic framework packages, not
-# vendored alongside it.
+# apriltag-ros: bringup_main.launch.py's apriltag_node (unmodified upstream; was vendored in colcon_ws/src
+# until 3.4.0, whose only change is a quaternion fix). camera-ros: generic framework package, not vendored.
 # python3-serial: colcon_ws/src/pruner_action_server's own node does `import serial` (pyserial, for the real
 # pruner actuator's serial link) -- a plain Python dependency, not a ROS package, so it's not caught by any
 # colcon build step; only surfaces as a runtime ModuleNotFoundError when the node actually starts.
@@ -65,7 +63,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # this image too, so the sim's USD gets the same frames.
 RUN f=/opt/ros/jazzy/share/clearpath_sensors_description/urdf/intel_realsense.urdf.xacro \
     && sed -i -E 's|(<xacro:sensor_d4[0-9a-z]+ name="\$\{name\}" parent="\$\{parent_link\}")>|\1 use_nominal_extrinsics="true">|' "$f" \
-    && test "$(grep -c 'use_nominal_extrinsics="true"' "$f")" -eq 5
+    && n="$(grep -c '<xacro:sensor_d4[0-9a-z]* ' "$f")" \
+    && test "$n" -gt 0 && test "$(grep -c 'use_nominal_extrinsics="true"' "$f")" -eq "$n"
 
 # clearpath_generator_robot + clearpath_sensors: the real per-robot param/launch generator a physical Clearpath
 # robot runs (github.com/clearpathrobotics/clearpath_robot, jazzy branch) -- NOT packaged in the public Jazzy apt
