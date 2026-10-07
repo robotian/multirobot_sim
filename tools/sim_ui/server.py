@@ -512,6 +512,13 @@ def host_ip(host):
     return ip
 
 
+def known_ip(host):
+    """host_ip() without a lookup: a literal IP, or the last one resolved (None if never)."""
+    if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
+        return host
+    return (HOST_IPS.get(host) or (0, None))[1]
+
+
 DEPLOY_CURRENT = {}  # (deployed commit, HEAD) -> bool or None
 
 
@@ -1003,6 +1010,161 @@ def act_basestation_link(body):
         return j.run(["docker", "compose", "-f", "basestation.compose.yml", "up", "-d"]) == 0
 
     return start_job(f"base station: link {t.name} ({endpoint})", fn)
+
+
+# ---------------------------------------------------------------- base station card
+
+BASESTATION_COMPOSE = ["docker", "compose", "-f", "basestation.compose.yml"]
+BASESTATION_IMAGE = "basestation:jazzy"
+BASESTATION_EVERY_S = 10
+BASESTATION_IDLE_S = 30
+ENDPOINT_RE = re.compile(r"^tcp/[A-Za-z0-9.-]+:\d{1,5}$")
+
+
+class BasestationWatch:
+    """The Base station card's slow half: scripts/basestation_probe.py in the container (zenoh router and its links,
+    PostgreSQL, ROS programs, the graph) and `docker stats`, refreshed in the background every 10 s while the card
+    polls, so a poll never waits on them (~1 s each)."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.data, self.t, self.busy = {}, 0.0, False
+
+    def poll(self, running):
+        with self.lock:
+            if not running:
+                self.data, self.t = {}, 0.0
+            elif not self.busy and time.time() - self.t > BASESTATION_EVERY_S:
+                self.busy = True
+                threading.Thread(target=self.refresh, daemon=True).start()
+            return dict(self.data)
+
+    def refresh(self):
+        data = {}
+        try:
+            # stats first: sampled right after the probe, they'd measure the probe's own ros2 CLI
+            code, out = sh(["docker", "stats", "--no-stream", "--format", "{{json .}}", BASESTATION], timeout=15)
+            data["stats"] = json.loads(out) if code == 0 else None
+            code, out = sh(["docker", "exec", BASESTATION, "bash", "-c", "python3 /scripts/basestation_probe.py"],
+                           timeout=25)
+            try:
+                data["probe"] = json.loads(out.strip().splitlines()[-1]) if code == 0 else None
+            except (ValueError, IndexError):
+                data["probe"] = None
+            if data["probe"] is None:
+                data["probe_error"] = out.strip()[-400:] or f"exit {code}"
+        except (subprocess.TimeoutExpired, ValueError) as e:
+            data.setdefault("probe_error", repr(e))
+        finally:
+            with self.lock:
+                self.data, self.t, self.busy = dict(data, probed=time.time()), time.time(), False
+
+
+BASESTATION_WATCH = BasestationWatch()
+
+
+def unquote(value):
+    return (value or "").strip().strip("\"'")
+
+
+def get_basestation(q):
+    """The container (state, health, image, settings it was created with vs. .env's) on every poll; the probe's
+    report as of its last background run."""
+    env = read_env()
+    code, out = sh(["docker", "inspect", BASESTATION], timeout=10)
+    info = json.loads(out)[0] if code == 0 else None
+    # what basestation.compose.yml would give the container now (compose treats an empty value as unset)
+    want = {"RMW_IMPLEMENTATION": unquote(env.get("BASESTATION_RMW")) or unquote(env.get("FLEET_RMW")) or "rmw_zenoh_cpp",
+            "ROS_DOMAIN_ID": unquote(env.get("ROS_DOMAIN_ID")) or "0",
+            "USE_SIM_TIME": unquote(env.get("USE_SIM_TIME")) or "true",
+            "BASESTATION_ZENOH_CONNECT": " ".join(zenoh_endpoints(env))}
+    r = {"exists": info is not None, "want": want, "endpoints_env": zenoh_endpoints(env)}
+    if info is None:
+        return r
+    st = info["State"]
+    have = dict(e.split("=", 1) for e in info["Config"]["Env"] if "=" in e)
+    code, image = sh(["docker", "image", "inspect", "-f", "{{.Id}}\t{{.Created}}", BASESTATION_IMAGE], timeout=10)
+    image_id, image_created = (image.strip().split("\t") + [""])[:2] if code == 0 else ("", "")
+    r.update(state=st["Status"], health=(st.get("Health") or {}).get("Status"), started_at=st["StartedAt"],
+             finished_at=st["FinishedAt"], exit_code=st["ExitCode"], restart_count=info["RestartCount"],
+             have={k: have.get(k) for k in want},
+             drift=[k for k in want if have.get(k, "") != want[k]],
+             # the image was rebuilt since the container was created: Recreate runs the new one
+             image_outdated=bool(image_id) and image_id != info["Image"], image_created=image_created)
+    r.update(BASESTATION_WATCH.poll(st["Status"] == "running"))
+    # name the router's endpoints (the container's own list, not .env's) and whether each has a live link
+    # labels only: IPs already known (literal, or resolved earlier by a status poll), never a lookup here -- an
+    # mDNS name that doesn't resolve (cpr-j100-0921.local) takes 5 s
+    names = {"127.0.0.1": "sim (zenoh-router)"}
+    config = real_config()
+    for name in config:
+        ip = known_ip(real_target(name, config).host)
+        if ip:
+            names[ip] = name
+    probe = r.get("probe") or {}
+    links = (probe.get("router") or {}).get("links") or []
+    endpoints = []
+    for e in (have.get("BASESTATION_ZENOH_CONNECT") or "").split():
+        host, _, port = e.removeprefix("tcp/").rpartition(":")
+        ip = known_ip(host) or host
+        endpoints.append({"endpoint": e, "name": names.get(ip, ""), "in_env": e in r["endpoints_env"],
+                          "linked": any(l["dir"] == "out" and l["remote"] == f"{ip}:{port}" for l in links)
+                          if probe.get("router") else None})
+    r["endpoints"] = endpoints
+    # incoming links: robots' routers dialling this one; local ones are this container's own sessions
+    r["sessions_local"] = sum(1 for l in links if l["dir"] == "in" and l["remote"].startswith("127."))
+    r["incoming"] = [dict(l, name=names.get(l["remote"].rsplit(":", 1)[0], "")) for l in links
+                     if l["dir"] == "in" and not l["remote"].startswith("127.")]
+    return r
+
+
+def get_basestation_log(q):
+    which = q.get("which", "container")
+    if which == "container":
+        code, out = sh(["docker", "logs", "--tail", "300", BASESTATION], timeout=15)
+    elif which == "router":
+        code, out = sh(["docker", "exec", BASESTATION, "tail", "-n", "300", "/tmp/zenoh_router.log"], timeout=15)
+    else:
+        raise ValueError("which must be container or router")
+    return {"log": re.sub(r"\x1b\[[0-9;]*m", "", out)}
+
+
+def act_basestation(body):
+    """Start / stop / restart / recreate (.env applied) / rebuild the base station container, restart its zenoh
+    router, or add / remove one of the endpoints its router dials (BASESTATION_ZENOH_CONNECT, then recreate)."""
+    action = body.get("action")
+    if action in ("link", "unlink"):
+        endpoint = (body.get("endpoint") or "").strip()
+        if not ENDPOINT_RE.match(endpoint):
+            raise ValueError("endpoint must look like tcp/<host or ip>:<port>")
+        endpoints = zenoh_endpoints(read_env())
+        if (endpoint in endpoints) == (action == "link"):
+            raise ValueError(f"{endpoint} is {'already' if action == 'link' else 'not'} in BASESTATION_ZENOH_CONNECT")
+        new = endpoints + [endpoint] if action == "link" else [e for e in endpoints if e != endpoint]
+
+        def fn(j):
+            value = '"' + " ".join(new) + '"'
+            write_env({"BASESTATION_ZENOH_CONNECT": value})
+            j.log(f".env: BASESTATION_ZENOH_CONNECT={value}")
+            return j.run(BASESTATION_COMPOSE + ["up", "-d"]) == 0
+
+        return start_job(f"base station: {action} {endpoint}", fn)
+    commands = {
+        "start": BASESTATION_COMPOSE + ["up", "-d"],
+        "stop": BASESTATION_COMPOSE + ["stop"],
+        "restart": ["docker", "restart", BASESTATION],
+        "recreate": BASESTATION_COMPOSE + ["up", "-d", "--force-recreate"],
+        "rebuild": BASESTATION_COMPOSE + ["up", "-d", "--build"],
+        # entrypoint.sh runs the router in a loop: it is back 2 s after it ends; sessions reconnect on their own
+        "router": ["docker", "exec", BASESTATION, "pkill", "-f", "[r]mw_zenohd"],
+    }
+    if action not in commands:
+        raise ValueError(f"action must be one of {sorted(commands) + ['link', 'unlink']}")
+    if action != "start" and container_state(BASESTATION) is None:
+        raise ValueError("there is no base station container: Start creates it")
+    with BASESTATION_WATCH.lock:
+        BASESTATION_WATCH.t = 0.0  # probe again at the next poll
+    return start_job(f"base station: {action}", lambda j: j.run(commands[action]) == 0)
 
 
 # ---------------------------------------------------------------- motion capture / localization
@@ -1599,6 +1761,7 @@ POST = {
     "/api/real/remove": act_real_remove,
     "/api/deploy": act_deploy,
     "/api/basestation/link": act_basestation_link,
+    "/api/basestation/action": act_basestation,
     "/api/arm/goto": act_arm_goto,
     "/api/cutstem/start": act_cutstem_start,
     "/api/cutstem/stop": act_cutstem_stop,
@@ -1616,6 +1779,8 @@ GET = {
     "/api/mocap": get_mocap,
     "/api/localization": get_localization,
     "/api/link": get_link,
+    "/api/basestation": get_basestation,
+    "/api/basestation/log": get_basestation_log,
     "/api/jobs": lambda q: [j.to_json() for j in sorted(JOBS.values(), key=lambda j: -j.started)],
     "/api/job": lambda q: JOBS[q["id"]].to_json(full=True),
 }

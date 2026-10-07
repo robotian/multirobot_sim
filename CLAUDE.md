@@ -21,7 +21,7 @@ scripts/fleet_ctl.py state|wait-scene|spawn|clear|reset   # host side of the spa
 scripts/colcon_build.sh [colcon args...]  # colcon build ~/colcon_ws (as `robot`) in every running robot container
 scripts/make_farm_scene.py                # sim/scene/lavender_farm.usd from the farm DB's object_data (use: SIM_SCENE=lavender_farm.usd)
 docker compose -f basestation.compose.yml up -d --build   # base station: ROS 2 + the farm PostgreSQL (port 5433); `docker exec -it basestation psql`
-python3 tools/sim_ui/server.py [--mode sim|real|both]   # web UI on http://127.0.0.1:8090: sim (start/stop/reset, spawn at poses), real robots (tools/sim_ui/real_robots.json, over SSH: services, deploy), both (arm moves, Cut stem, Stop motion, RViz, localization)
+python3 tools/sim_ui/server.py [--mode sim|real|both]   # web UI on http://127.0.0.1:8090: sim (start/stop/reset, spawn at poses), real robots (tools/sim_ui/real_robots.json, over SSH: services, deploy), both (arm moves, Cut stem, Stop motion, RViz, localization); base station card in every mode (state, database, zenoh links, start/stop/recreate)
 SIM_MODE=headed scripts/fleet.sh          # Isaac's desktop window instead of WebRTC (needs x11_auth.sh; ~3 min to start)
 docker compose logs -f isaac-sim          # sim's own lines are prefixed [fleet]
 docker exec -it a300_0000 bash            # robot shell (ROS env sourced); add `-u robot` for ~/colcon_ws work

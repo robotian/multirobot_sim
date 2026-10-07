@@ -68,11 +68,18 @@ log "PostgreSQL $PG_MAJOR ready on port $PGPORT (database $PGDATABASE, user $PGU
 # each reconnection resends all declarations and deadlocks again. So the web UI's per-robot tools (the
 # Communication monitor, a real robot's RViz) don't go through this router: each is a zenoh client of that robot's
 # own router. List real robots here only for base station programs that need several robots in one graph.
+# Fix (2026-10-07): tx queues of 16 batches per priority instead of 2. With the defaults and two real robots
+# (a300_00036 + a200_0284), the links flapped (the "Unable to push non droppable network message ... Closing
+# transport!" above, ~5 s apart) and a200's routing stayed broken afterwards: "Received router declaration with
+# unknown routing context id 0" on both routers, the base station seeing 0 of a200's 171 topics while a client of
+# a200's own router saw them all. With 16: both robots' topics and data, no push errors.
+TX_QUEUES="control real_time interactive_high interactive_low data_high data data_low background"
 if [ "${RMW_IMPLEMENTATION:-}" = rmw_zenoh_cpp ]; then
-    endpoints=""
+    endpoints="" tx=""
     for e in ${BASESTATION_ZENOH_CONNECT:-}; do endpoints+="${endpoints:+,}\"$e\""; done
+    for q in $TX_QUEUES; do tx+=";transport/link/tx/queue/size/$q=16"; done
     (
-        export ZENOH_CONFIG_OVERRIDE="connect/endpoints=[$endpoints]"
+        export ZENOH_CONFIG_OVERRIDE="connect/endpoints=[$endpoints]$tx"
         set +u; source /opt/ros/jazzy/setup.bash
         while true; do ros2 run rmw_zenoh_cpp rmw_zenohd || true; sleep 2; done
     ) > /tmp/zenoh_router.log 2>&1 &

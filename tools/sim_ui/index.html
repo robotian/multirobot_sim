@@ -148,6 +148,31 @@
   </div>
 
   <div class="col">
+    <section class="card" id="bsCard">
+      <h2>Base station</h2>
+      <div class="row">
+        <span id="bsPill" class="pill">?</span>
+        <span id="bsInfo" class="muted" style="font-size:12px"></span>
+      </div>
+      <div class="row">
+        <button id="bsStart" onclick="bsAct('start')" title="docker compose -f basestation.compose.yml up -d (creates it if needed)">Start</button>
+        <button id="bsStop" class="danger" onclick="bsAct('stop', 'Stop the base station? The database goes offline, real robots\' RViz windows close and the Communication monitors stop.')"
+          title="docker compose -f basestation.compose.yml stop (the database stays in its volume)">Stop</button>
+        <button class="ghost bsUp" onclick="bsAct('restart', 'Restart the base station container? The database, its zenoh router, RViz windows and monitors restart (settings unchanged).')"
+          title="docker restart basestation: same settings, .env changes NOT applied">Restart</button>
+        <button class="ghost bsAny" onclick="bsAct('recreate', 'Recreate the base station container with .env\'s current settings? Everything in it restarts.')"
+          title="docker compose up -d --force-recreate: applies .env (middleware, zenoh endpoints, sim time) and a rebuilt image">Recreate</button>
+        <button class="ghost" onclick="bsAct('rebuild', 'Rebuild the base station image and recreate the container if it changed?')"
+          title="docker compose up -d --build (needs the robot image clearpath-robot:jazzy)">Rebuild</button>
+        <button class="ghost bsUp" onclick="bsAct('router', 'Restart the base station\'s zenoh router? Its links drop for ~2 s, then everything reconnects.')"
+          title="ends rmw_zenohd; entrypoint.sh starts it again 2 s later (e.g. after the router-to-router deadlock)">Restart router</button>
+        <button class="ghost bsAny" onclick="bsLog('container')">Container log</button>
+        <button class="ghost bsUp" onclick="bsLog('router')">Router log</button>
+      </div>
+      <div id="bsDrift" class="banner" style="margin:6px 0"></div>
+      <div id="bsBody" class="muted">loading...</div>
+    </section>
+
     <section class="card">
       <h2>Motion capture</h2>
       <div class="row">
@@ -693,6 +718,94 @@ function renderLink() {
   }).join('');
 }
 
+// ------------------------------------------------------------ base station container (/api/basestation)
+// Polled every 5 s while the page is visible; the server probes inside the container every 10 s meanwhile.
+let bsTimer = null;
+async function pollBasestation() {
+  clearTimeout(bsTimer);
+  if (document.visibilityState === 'visible') {
+    try { renderBasestation(await api('/api/basestation')); } catch (e) {
+      // index.html is read on every load, server.py only at start: a server older than this page has no such API
+      document.getElementById('bsBody').innerHTML = `<span class="lv-warn">${e.message === 'not found'
+        ? 'this server is older than the page: restart tools/sim_ui/server.py' : esc(e.message)}</span>`;
+    }
+  }
+  bsTimer = setTimeout(pollBasestation, 5000);
+}
+document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && pollBasestation());
+function bsAct(action, question = null, extra = {}) {
+  if (question && !confirm(question)) return;
+  post('/api/basestation/action', { action, ...extra });
+  setTimeout(pollBasestation, 1500);
+}
+async function bsLog(which) {
+  try {
+    const { log } = await api('/api/basestation/log?which=' + which);
+    showPanel(which === 'router' ? 'base station: zenoh router log (/tmp/zenoh_router.log, last 300 lines)'
+      : 'base station: docker logs (last 300 lines)', `<pre>${esc(log || '(empty)')}</pre>
+      <div class="row"><button class="ghost" onclick="bsLog('${which}')">Refresh</button></div>`);
+  } catch (e) { toast(e.message); }
+}
+const fmtBytes = b => b < 1e6 ? (b / 1e3).toFixed(0) + ' kB' : b < 1e9 ? (b / 1e6).toFixed(1) + ' MB' : (b / 1e9).toFixed(2) + ' GB';
+function renderBasestation(b) {
+  const running = b.state === 'running';
+  const pill = document.getElementById('bsPill');
+  pill.textContent = !b.exists ? 'not created' : running && b.health ? `${b.state}, ${b.health}` : b.state;
+  pill.className = 'pill ' + (!b.exists ? 'warn' : !running ? 'bad' : b.health && b.health !== 'healthy' ? 'warn' : 'ok');
+  document.getElementById('bsStart').disabled = running;
+  document.getElementById('bsStop').disabled = !running;
+  document.querySelectorAll('#bsCard .bsUp').forEach(x => x.disabled = !running);
+  document.querySelectorAll('#bsCard .bsAny').forEach(x => x.disabled = !b.exists);
+  const since = t => fmtAge(Math.max(0, (Date.now() - Date.parse(t)) / 1000));
+  document.getElementById('bsInfo').textContent = !b.exists ? 'docker compose -f basestation.compose.yml up -d --build'
+    : (running ? `up ${since(b.started_at)}` : `exited ${b.exit_code}, ${since(b.finished_at)} ago`)
+      + (b.restart_count ? ` · ${b.restart_count} restart(s)` : '')
+      + (b.image_created ? ` · image built ${new Date(b.image_created).toLocaleString()}` : '');
+  // settings the container was created with vs. what .env would give it now
+  const notes = [];
+  if (b.exists && b.drift.length) notes.push('Differs from .env (Recreate applies it): '
+    + b.drift.map(k => `${k} = ${b.have[k] ?? '(unset)'} → ${b.want[k]}`).join('; '));
+  if (b.image_outdated) notes.push('The image was rebuilt since this container was created: Recreate runs the new one.');
+  document.getElementById('bsDrift').innerHTML = notes.map(esc).join('<br>');
+  const body = document.getElementById('bsBody');
+  if (!running) { body.innerHTML = `<span class="muted">${b.exists ? 'not running' : 'no base station container'}</span>`; return; }
+  const p = b.probe;
+  if (!p) { body.innerHTML = `<span class="muted">${b.probe_error ? 'probe failed: ' + esc(b.probe_error) : 'probing...'}</span>`; return; }
+  body.classList.remove('muted');
+  const rows = [], s = b.stats, db = p.postgres, z = p.router, g = p.graph, pr = p.programs;
+  if (s) rows.push(['Container', `CPU ${esc(s.CPUPerc)} · memory ${esc(s.MemUsage.split(' / ')[0])} · ${esc(s.PIDs)} processes`]);
+  rows.push(['Database', !db.ready ? lv('not ready', 'bad', 'pg_isready failed')
+    : db.error ? lv(esc(db.error), 'warn')
+    : `${lv('ready', 'ok')} · PostgreSQL ${esc(db.version)} · ${esc(db.database)} on port ${db.port} · ${fmtBytes(db.size_bytes)} · ${db.clients} client(s)`]);
+  const zenoh = p.env.RMW_IMPLEMENTATION === 'rmw_zenoh_cpp';
+  rows.push(['Middleware', `${esc(p.env.RMW_IMPLEMENTATION)} · domain ${esc(p.env.ROS_DOMAIN_ID)} · sim time ${esc(p.env.USE_SIM_TIME)}`]);
+  if (zenoh) {
+    rows.push(['Router', !z.running ? lv('not running', 'bad', 'rmw_zenohd is not running (entrypoint.sh restarts it every 2 s)')
+      : `${lv('running', 'ok')} · up ${fmtAge(z.uptime_s)} · errors `
+        + lv(String(z.errors), z.errors ? 'bad' : 'ok', 'ERROR lines in its log in the last 60 s')
+        + (z.last_error ? ` <span class="muted" title="${esc(z.last_error)}">(last ${fmtAge(z.last_error_age_s)} ago)</span>` : '')
+        + ` · ${b.sessions_local} local session(s)`]);
+    const ep = b.endpoints.map(e => `<div class="row" style="margin:2px 0">`
+      + `<span class="pill ${e.linked ? 'ok' : e.linked === false ? 'bad' : ''}" title="${e.linked ? 'TCP link established' : 'no TCP link from the router to it'}">${e.linked ? 'linked' : e.linked === false ? 'no link' : '?'}</span>`
+      + ` <code>${esc(e.endpoint)}</code> <span class="muted">${esc(e.name)}</span>`
+      + (e.in_env ? ` <button class="ghost" style="padding:1px 8px" onclick="bsAct('unlink', 'Remove ${esc(e.endpoint)} from BASESTATION_ZENOH_CONNECT and recreate the base station?', {endpoint: '${esc(e.endpoint)}'})">Remove</button>` : ' <span class="muted">(not in .env)</span>')
+      + `</div>`).join('');
+    const incoming = b.incoming.map(l => `<div class="muted">incoming from ${esc(l.remote)} ${esc(l.name)}</div>`).join('');
+    rows.push(['Dials', (ep || '<span class="muted">nothing</span>') + incoming
+      + `<div class="row" style="margin:4px 0 0"><input id="bsEndpoint" placeholder="tcp/192.168.50.x:7447" style="width:200px">
+         <button class="ghost" style="padding:1px 8px" onclick="const v=document.getElementById('bsEndpoint').value.trim(); v && bsAct('link', 'Add ' + v + ' to BASESTATION_ZENOH_CONNECT and recreate the base station?', {endpoint: v})">Add</button></div>`]);
+  }
+  rows.push(['ROS graph', g.error ? lv(esc(g.error), 'warn')
+    : `${g.topics} topics: ` + Object.entries(g.namespaces).map(([ns, n]) => `${esc(ns)} <span class="muted">${n}</span>`).join(' · ')]);
+  const progs = [...pr.rviz.map(r => `RViz ${esc(r.view)} (${esc(r.robot)})`),
+                 ...pr.link_monitors.map(r => `link monitor (${esc(r)})`),
+                 ...pr.other.map(o => `<span title="pid ${o.pid}">${esc(o.cmd)}</span>`)];
+  rows.push(['Running', progs.length ? progs.join('<br>') : '<span class="muted">nothing besides the database and the router</span>']);
+  const age = Math.round(Date.now() / 1000 - b.probed);
+  body.innerHTML = `<table class="linktab">${rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('')}</table>
+    <div class="muted" style="font-size:12px">probed ${age} s ago</div>`;
+}
+
 // ------------------------------------------------------------ localization (ref_localizer, per robot)
 async function loadLoc(robot) {
   const el = document.querySelector(`details[data-loc="${robot}"]`);
@@ -913,6 +1026,7 @@ function plot(samples) {
 
 refreshStatus(); setInterval(refreshStatus, 4000);
 pollLink();
+pollBasestation();
 refreshJobs();
 </script>
 </body>
