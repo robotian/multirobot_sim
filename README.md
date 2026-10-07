@@ -381,6 +381,8 @@ Back up with `docker exec basestation pg_dump -Fc > farm.dump`. The user, databa
 
 **Network.** The container uses host networking, so it is on this machine's LAN the way a real base station is. It uses the fleet's `FLEET_RMW` and `ROS_DOMAIN_ID` from `.env`.
 
+**After editing `.env`**, run `docker compose -f basestation.compose.yml up -d` (add `--build` if `basestation/` or the robot image changed). It's safe while the container is running: if the configuration changed, compose stops and recreates the container; otherwise it leaves it alone. The database (the `basestation_pgdata` volume) and `colcon_ws` survive. Anything started by hand inside the container (a `ros2 launch`, a shell) is lost. `docker restart basestation` does not pick up `.env` changes, because it reuses the container's old environment.
+
 **Zenoh (the default, as on the real robots).** Like each real robot, the base station runs its own zenoh router, listening on port 7447 of this machine. Its own ROS sessions are clients of that router. The router dials every router listed in `BASESTATION_ZENOH_CONNECT` (space-separated) and keeps retrying any that are down, so one list covers the sim, real robots or both. The default is the sim's `zenoh-router`, which the fleet publishes on `127.0.0.1:7448`. To add real robots, put their routers in `.env`, then run `docker compose -f basestation.compose.yml up -d`:
 
 ```bash
