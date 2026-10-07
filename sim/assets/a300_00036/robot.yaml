@@ -21,7 +21,7 @@ system:
     namespace: a300_00036  
     domain_id: 0
     middleware:
-      implementation: rmw_fastrtps_cpp  #rmw_zenoh_cpp
+      implementation: rmw_zenoh_cpp
       # discovery: server
       # servers:
       #   - hostname: cpr-a200-0284

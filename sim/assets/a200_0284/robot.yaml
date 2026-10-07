@@ -21,7 +21,7 @@ system:
     namespace: a200_0284
     domain_id: 1
     middleware:
-      implementation: rmw_fastrtps_cpp
+      implementation: rmw_zenoh_cpp
       # discovery: server
       # servers:
       #   - hostname: cpr-a200-0284

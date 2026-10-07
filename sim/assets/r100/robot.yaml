@@ -22,7 +22,7 @@ system:
     namespace: r100_0000
     domain_id: 0
     middleware:
-      implementation: rmw_fastrtps_cpp  
+      implementation: rmw_zenoh_cpp
     # The shared colcon workspace (see docker-compose.yml); generate_bash then sources it from setup.bash.
     # Must be the *install* dir, not .../install/setup.bash or the workspace root: installed
     # clearpath_generator_common 2.9.15 builds the path with `workspace.strip('setup.bash')`, which (being

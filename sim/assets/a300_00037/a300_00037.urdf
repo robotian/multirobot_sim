@@ -753,19 +753,26 @@
       </geometry>
       <origin rpy="0 0 0" xyz="0 -0.265 0.18" />
     </collision>
-  <visual>
-      <origin xyz="-3.9801021e-18 -0.275 0.275" rpy="0 -0 -1.57079633" /><geometry>
-        
-        <mesh filename="meshes/clearpath_sensors_description/meshes/hokuyo_ust.stl" />
-      </geometry>
-      <material name="clearpath_dark_grey" />
-    </visual>
   </link>
   <joint name="wireless_charger_wireless_charger_joint" type="fixed">
     <parent link="chassis_link" />
     <child link="wireless_charger_link" />
     <origin rpy="0 -0 0" xyz="0 0 0" />
   </joint>
+  <link name="wireless_charger_face" />
+  <joint name="wireless_charger_face_joint" type="fixed">
+    <parent link="wireless_charger_link" />
+    <child link="wireless_charger_face" />
+    <origin rpy="0 0 -1.5707963267948966" xyz="0 -0.34 0.15" />
+  </joint>
+  <link name="wireless_charger_lidar_mount" />
+  <joint name="wireless_charger_lidar_link" type="fixed">
+    <parent link="wireless_charger_face" />
+    <child link="wireless_charger_lidar_mount" />
+    <origin rpy="0 0 0" xyz="-0.065 0 0.125" />
+  </joint>
+  
+  
   <link name="fath_pivot_0_link">
     <visual>
       <geometry>
@@ -817,6 +824,22 @@
     <origin rpy="0 0 0" xyz="0 0 0.0225" />
   </joint>
   
+  <link name="lidar2d_0_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        
+        <mesh filename="meshes/clearpath_sensors_description/meshes/hokuyo_ust.stl" />
+      </geometry>
+      <material name="clearpath_dark_grey" />
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0.0 0.0 0.04" />
+      <geometry>
+        <box size="0.06 0.06 0.08" />
+      </geometry>
+    </collision>
+  </link>
   <link name="lidar2d_0_laser">
     <inertial>
       <mass value="1.1" />
@@ -824,9 +847,15 @@
       <inertia ixx="0.00307156543804" ixy="0.0" ixz="0.0" iyy="0.0031284904152700005" iyz="0.0" izz="0.00196432421427" />
     </inertial>
   </link>
+  <joint name="lidar2d_0_joint" type="fixed">
+    <origin rpy="0.0 0.0 0.0" xyz="0.0 0.0 0.0" />
+    <parent link="wireless_charger_lidar_mount" />
+    <child link="lidar2d_0_link" />
+  </joint>
   <joint name="lidar2d_0_laser_joint" type="fixed">
     
-    <origin xyz="-3.9801021e-18 -0.275 0.3224" rpy="0 -0 -1.57079633" /><parent link="wireless_charger_link" />
+    <origin rpy="0 0 0" xyz="0 0 0.0474" />
+    <parent link="lidar2d_0_link" />
     <child link="lidar2d_0_laser" />
   </joint>
   <joint name="camera_0_joint" type="fixed">
@@ -934,9 +963,10 @@
     </collision>
   </link>
   <joint name="charger_0_joint" type="fixed">
-    <origin xyz="-1.8369702e-19 -0.337 0.16" rpy="3.14159265 2.65358979e-06 1.57079633" /><child link="charger_0_link" />
-    <parent link="wireless_charger_link" />
-    </joint>
+    <child link="charger_0_link" />
+    <parent link="wireless_charger_face" />
+    <origin rpy="0.0 3.14159 0.0" xyz="-0.003 0.0 0.01" />
+  </joint>
   <link name="gps_0_link">
     <visual>
       <material name="clearpath_white" />
