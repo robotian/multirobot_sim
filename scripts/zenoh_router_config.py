@@ -29,13 +29,20 @@ RULES = [
     # cameras: compressed color is ~2.5 MB/s each at 30 fps
     ('sensors/camera_0/color/compressed', 10.0),
     ('sensors/camera_1/color/compressed', 10.0),
+    # Kinova Gen3 wrist camera (a200_0284): raw color ~9 MB/s at 10 Hz, ~19 MB/s with its transports and depth.
+    # '<topic>/*/*' is the topic alone (type + hash): image_raw/** would also match image_raw/zstd etc.
+    ('manipulators/arm_0_color_camera/image_raw', 2.0),
+    ('manipulators/arm_0_color_camera/image_raw/zstd', 10.0),
+    ('manipulators/arm_0_color_camera/image_raw/compressed', 10.0),
+    ('manipulators/arm_0_depth_camera/image_raw', 2.0),
+    ('manipulators/arm_0_depth_camera/color/points', 2.0),
 ]
 
 t = open(DEFAULT).read()
 anchor = '  // /// The downsampling declaration.\n'
 assert t.count(anchor) == 1, f'{DEFAULT}: downsampling comment not found once (rmw_zenoh_cpp changed?)'
 assert '\n  downsampling:' not in t, f'{DEFAULT} already has an active downsampling block'
-rules = ''.join(f'        {{ key_expr: "*/*/{topic}/**", freq: {hz} }},\n' for topic, hz in RULES)
+rules = ''.join(f'        {{ key_expr: "*/*/{topic}/*/*", freq: {hz} }},\n' for topic, hz in RULES)
 block = (
     '  /// Rate limits on what leaves this robot over WiFi, written by multirobot_sim scripts/zenoh_router_config.py\n'
     '  downsampling: [\n'
