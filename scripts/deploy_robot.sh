@@ -70,7 +70,7 @@ if [ $force = 0 ]; then
                     <(ssh_ "cat ~/colcon_ws/$SAVED") <(ssh_ "cd ~/colcon_ws/src && $MANIFEST") | sort -k2)
     elif [ $pull = 1 ]; then
         echo "no ~/colcon_ws/$SAVED on the robot (deployed before the edit check): compare by hand with" >&2
-        echo "  rsync -rlnci --exclude .git --exclude __pycache__ $target:colcon_ws/src/ colcon_ws/src/" >&2
+        echo "  rsync -rlnci --exclude .git --exclude .claude --exclude __pycache__ $target:colcon_ws/src/ colcon_ws/src/" >&2
         exit 1
     fi
 fi
@@ -123,7 +123,7 @@ fi
 echo "multirobot_sim $(git rev-parse --short HEAD)"
 ssh_ 'mkdir -p ~/colcon_ws/src'
 
-RSYNC=(rsync -rlptc --delete --exclude .git --exclude __pycache__ -e "ssh -o BatchMode=yes")
+RSYNC=(rsync -rlptc --delete --exclude .git --exclude .claude --exclude __pycache__ -e "ssh -o BatchMode=yes")
 changes=$("${RSYNC[@]}" -n --itemize-changes colcon_ws/src/ "$target:colcon_ws/src/")
 deletes=$(grep '^\*deleting' <<<"$changes" || true)
 echo "$(grep -v '^\*deleting' <<<"$changes" | grep -c . || true) file(s) to update, $(grep -c . <<<"$deletes" || true) to delete"
