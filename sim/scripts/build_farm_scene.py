@@ -19,6 +19,7 @@ import os
 import random
 import sys
 
+import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade, Vt
 
 ASSETS = "/sim/assets"
@@ -42,6 +43,14 @@ PLANT_SINK = 0.02  # lowest point below z=0, so no plant floats
 BARRIER_WIDTH = 0.9
 BARRIER_END_M = 0.5
 BARRIER_Z = 0.004  # above the ground box's top (z=0), no z-fighting
+# Mounds: the asset's stems converge ~3.5 cm above its lowest (drooping) leaves, so on flat ground the crown floated
+# over the fabric. Each plant gets a soil mound, MOUND_HEIGHT at its centre falling to 0 at MOUND_RADIUS (cos^2),
+# that buries the stem bases; neighbours (0.44 m apart) merge into a wavy ridge (the higher of the two, ~2 cm
+# between plants). The fabric is laid over them: each strip is a grid (MOUND_GRID_M cells) following the mounds,
+# flat on the ground at its edges (MOUND_RADIUS < BARRIER_WIDTH / 2). Visual only, like the flat strip.
+MOUND_HEIGHT = 0.06
+MOUND_RADIUS = 0.35
+MOUND_GRID_M = 0.03
 BARRIER_TEX = "weed_barrier"  # folder in sim/assets: albedo.png, normal.png, roughness.png
 BARRIER_TILE_M = 0.3  # make_weed_barrier_textures.TILE_M
 BARRIER_COLOR = (0.03, 0.03, 0.032)  # displayColor only (the textures give the look)
@@ -173,8 +182,8 @@ def add_plants(stage, plants):
 
 
 def row_strips(plants):
-    """Per row: (row_id, start xy, end xy, unit direction xy) of its weed barrier, on the least-squares line
-    through the row's plants (the DB rows are straight to < 1 mm), BARRIER_END_M past the outermost plants."""
+    """Per row: (row_id, start xy, end xy, unit direction xy, plant xys) of its weed barrier, on the least-squares
+    line through the row's plants (the DB rows are straight to < 1 mm), BARRIER_END_M past the outermost plants."""
     rows = {}
     for p in plants:
         rows.setdefault(p["row_id"], []).append((p["x"], p["y"]))
@@ -189,12 +198,13 @@ def row_strips(plants):
         d = (math.cos(a), math.sin(a))
         ts = [(x - mx) * d[0] + (y - my) * d[1] for x, y in pts]
         t0, t1 = min(ts) - BARRIER_END_M, max(ts) + BARRIER_END_M
-        strips.append((row_id, (mx + t0 * d[0], my + t0 * d[1]), (mx + t1 * d[0], my + t1 * d[1]), d))
+        strips.append((row_id, (mx + t0 * d[0], my + t0 * d[1]), (mx + t1 * d[0], my + t1 * d[1]), d, pts))
     return strips
 
 
 def add_weed_barrier(stage, strips):
-    """One flat quad per row under /World/weed_barrier/row_<row_id>, the woven-fabric textures, no collider."""
+    """One mesh per row under /World/weed_barrier/row_<row_id>, laid over the plants' mounds, the woven-fabric
+    textures, no collider."""
     mat_path = "/World/Materials/weed_barrier"
     surface = UsdShade.Material.Define(stage, mat_path)
     shader = UsdShade.Shader.Define(stage, f"{mat_path}/shader")
@@ -242,24 +252,39 @@ def add_weed_barrier(stage, strips):
 
     UsdGeom.Xform.Define(stage, "/World/weed_barrier")
     h = BARRIER_WIDTH / 2
-    # v: the guide line (the tile's middle) on the strip's centre line; u: one tile per BARRIER_TILE_M along the row
-    v0, v1 = 0.5 - h / BARRIER_TILE_M, 0.5 + h / BARRIER_TILE_M
-    for row_id, (x0, y0), (x1, y1), (dx, dy) in strips:
-        nx, ny = -dy * h, dx * h  # half-width across the row
-        u1 = math.hypot(x1 - x0, y1 - y0) / BARRIER_TILE_M
+    for row_id, (x0, y0), (x1, y1), (dx, dy), plant_xy in strips:
+        length = math.hypot(x1 - x0, y1 - y0)
+        # strip-local grid: t along the row from its start, s across (+s = left of the direction)
+        t = np.linspace(0.0, length, max(2, round(length / MOUND_GRID_M) + 1))
+        s_ = np.linspace(-h, h, max(2, round(BARRIER_WIDTH / MOUND_GRID_M) + 1))
+        T, S = np.meshgrid(t, s_, indexing="ij")
+        pxy = np.array(plant_xy) - (x0, y0)
+        pt, ps = pxy @ (dx, dy), pxy @ (-dy, dx)
+        r = np.hypot(T[..., None] - pt, S[..., None] - ps)
+        Z = BARRIER_Z + MOUND_HEIGHT * (np.cos(np.minimum(r / MOUND_RADIUS, 1.0) * np.pi / 2) ** 2).max(-1)
+        # smooth normals from the height field
+        gz_t, gz_s = np.gradient(Z, t, s_)
+        nt, ns = -gz_t, -gz_s
+        nrm = np.stack([nt * dx - ns * dy, nt * dy + ns * dx, np.ones_like(Z)], -1)
+        nrm /= np.linalg.norm(nrm, axis=-1, keepdims=True)
+        X, Y = x0 + T * dx - S * dy, y0 + T * dy + S * dx
+        nt_, ns_ = len(t), len(s_)
+        idx = np.arange(nt_ * ns_).reshape(nt_, ns_)
+        # quads counter-clockwise seen from above: (t, s) -> (t+1, s) -> (t+1, s+1) -> (t, s+1)
+        quads = np.stack([idx[:-1, :-1], idx[1:, :-1], idx[1:, 1:], idx[:-1, 1:]], -1).reshape(-1)
         mesh = UsdGeom.Mesh.Define(stage, f"/World/weed_barrier/row_{row_id}")
-        pts = [(x0 - nx, y0 - ny), (x1 - nx, y1 - ny), (x1 + nx, y1 + ny), (x0 + nx, y0 + ny)]
-        mesh.CreatePointsAttr([Gf.Vec3f(x, y, BARRIER_Z) for x, y in pts])
-        mesh.CreateFaceVertexCountsAttr([4])
-        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])  # counter-clockwise seen from above: normal +Z
-        mesh.CreateNormalsAttr([Gf.Vec3f(0, 0, 1)] * 4)
+        mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(np.stack([X, Y, Z], -1).reshape(-1, 3).astype(np.float32)))
+        mesh.CreateFaceVertexCountsAttr(Vt.IntArray.FromNumpy(np.full(len(quads) // 4, 4, np.int32)))
+        mesh.CreateFaceVertexIndicesAttr(Vt.IntArray.FromNumpy(quads.astype(np.int32)))
+        mesh.CreateNormalsAttr(Vt.Vec3fArray.FromNumpy(nrm.reshape(-1, 3).astype(np.float32)))
         mesh.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
         mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+        # u: one tile per BARRIER_TILE_M along the row; v: the guide line (the tile's middle) on the centre line
+        uv = np.stack([T / BARRIER_TILE_M, 0.5 + S / BARRIER_TILE_M], -1).reshape(-1, 2).astype(np.float32)
         UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray,
-                                                UsdGeom.Tokens.vertex).Set(
-            [Gf.Vec2f(0, v0), Gf.Vec2f(u1, v0), Gf.Vec2f(u1, v1), Gf.Vec2f(0, v1)])
-        mesh.CreateExtentAttr([Gf.Vec3f(min(x for x, _ in pts), min(y for _, y in pts), BARRIER_Z),
-                               Gf.Vec3f(max(x for x, _ in pts), max(y for _, y in pts), BARRIER_Z)])
+                                                UsdGeom.Tokens.vertex).Set(Vt.Vec2fArray.FromNumpy(uv))
+        mesh.CreateExtentAttr([Gf.Vec3f(float(X.min()), float(Y.min()), float(Z.min())),
+                               Gf.Vec3f(float(X.max()), float(Y.max()), float(Z.max()))])
         mesh.CreateDisplayColorAttr([Gf.Vec3f(*BARRIER_COLOR)])
         UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(surface)
 
@@ -276,7 +301,7 @@ def hide_grass_under(stage, strips, center):
         ids = []
         for i, p in enumerate(pi.GetPositionsAttr().Get()):
             x, y = p[0] + center[0], p[1] + center[1]
-            for _, (x0, y0), (x1, y1), (dx, dy) in strips:
+            for _, (x0, y0), (x1, y1), (dx, dy), _ in strips:
                 t = (x - x0) * dx + (y - y0) * dy
                 if 0.0 <= t <= math.hypot(x1 - x0, y1 - y0) and abs(-(x - x0) * dy + (y - y0) * dx) <= h:
                     ids.append(i)
