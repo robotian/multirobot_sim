@@ -27,15 +27,16 @@ REL_ASSETS = "../assets"  # as seen from sim/scene/<file>
 
 LAVENDER = "lavender/SM_Lavender_Nanite_01.usd"
 # Plant size. The asset is a ~2 m wide, 1.34 m tall clump in cm, scaled uniformly (its own proportions; a
-# taller-than-wide scale looked squeezed) to this width, so it ends up ~0.5 m tall. Rows are ~1.85 m apart and
-# plants ~0.44 m apart in a row, so the clumps overlap into a hedge and leave a ~1.1 m lane (the map,
-# status_server, treats a row as 0.45 m thick; 0.5 m wide plants were only ~0.33 m tall).
-PLANT_DIAMETER = 0.75
+# taller-than-wide scale looked squeezed) to this width, so it ends up ~0.55 m tall. Rows are ~1.85 m apart and
+# plants ~0.44 m apart in a row, so the clumps overlap into a hedge and leave a ~1.03 m lane (the map,
+# status_server, treats a row as 0.45 m thick; 0.5 m wide plants were only ~0.33 m tall; 0.75 m was made 10%
+# bigger at the user's request).
+PLANT_DIAMETER = 0.825
 PLANT_SINK = 0.02  # lowest point below z=0, so no plant floats
 
 # Weed barrier: the black woven landscape fabric laid under each real row (farm photo: a dark strip just past the
-# foliage, no grass on it). One flat strip per row along the row's fitted line, a common 3 ft (0.9 m) roll (~7 cm
-# past the 0.75 m plants each side; 1.1 m looked too wide to the user), running BARRIER_END_M past the end plants'
+# foliage, no grass on it). One flat strip per row along the row's fitted line, a common 3 ft (0.9 m) roll (~4 cm
+# past the 0.825 m plants each side; 1.1 m looked too wide to the user), running BARRIER_END_M past the end plants'
 # centres. Visual only (no collider: driving and the lidars are unchanged); the grass blades rooted on it are hidden
 # (hide_grass_under). Textured like a photo of the fabric, sparsely dusted with sand/dirt (more towards its edges):
 # sim/assets/weed_barrier/, written by make_farm_textures.py; one tile spans the strip's width (BARRIER_TILE_M =
