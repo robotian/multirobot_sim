@@ -593,7 +593,7 @@ The values are authored on the shader prims in `SM_Lavender_Nanite_01.usd`; the 
 ## Known limitations
 
 - **Frame rate:** the sim renders the robots' cameras and the scene (including the lavender plants) through a path tracer, so the real-time factor is the limit. Zenoh adds about 3–4 fps of cost over FastDDS; the lavender rows (~1.26M triangles per plant) cost a similar amount.
-- **Simulation time and third-party loops:** `moveit_servo` integrates its output on a wall-clock loop, so in a sim at real-time factor 0.5 a servo command moves the arm about twice as far per simulated second; `grid_cutter_action_server` closes the loop on the arm's TF, so it still converges. `/clock` ticks once per sim frame (~15-25 Hz), so a node's timer faster than that fires in bursts.
+- **Simulation time and third-party loops:** upstream `moveit_servo` integrates its output on a wall-clock loop, so in a sim at real-time factor 0.6 a servo command moved the arm ~1.6x as far per simulated second. `colcon_ws/src/moveit_servo` is a patched copy (2.12.4, `MTU_PATCH.md`) that, with `use_sim_time`, steps the loop on the node clock instead; on wall time (real robots) it is unchanged. `/clock` ticks once per sim frame (~15-25 Hz), so a node's timer faster than that fires in bursts.
 - **One router:** all zenoh sessions share a single `zenoh-router`. A real fleet would have a router per robot; that topology is not simulated.
 - **Raw images:** colour and depth are published uncompressed (about 30 MB/s per robot at 20 Hz), which is fine on the local machine but heavy for Wi-Fi Foxglove clients.
 - **Not tested against real robots:** interoperability with the real robots' zenoh router (`ZENOH_ROUTER`) has not been tried.
