@@ -128,6 +128,9 @@ services:
       # the world: empty = ground plane + lights, "lavender" = the lavender farm, else a USD file in ./sim/scene/
       # (path relative to it). The web UI's Scene selector writes it to .env; a change recreates the sim.
       SIM_SCENE: ${SIM_SCENE:-}
+      # 1: two farm workers crouched at a lavender row, working and chatting (sim/scripts/farm_workers.py);
+      # off by default: NVIDIA digital humans cost frame rate and memory
+      FARM_WORKERS: ${FARM_WORKERS:-0}
       # 1: robots pass through lavender foliage (lidars still see it), a small rigid core per plant stops them;
       # 0: the whole plant is solid (setup_scene.soften_lavender)
       LAVENDER_SOFT: ${LAVENDER_SOFT:-1}

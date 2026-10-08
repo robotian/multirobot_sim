@@ -38,6 +38,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade
 sys.path.insert(0, "/sim/scripts")
 import fleet_nodes  # noqa: E402  (ScriptNodes' rclpy nodes, destroyed on respawn)
 import robot_looks  # noqa: E402  (ROBOT_LOOKS: photo-realistic robot materials)
+import farm_workers  # noqa: E402  (FARM_WORKERS=1: two people sitting at a lavender row)
 
 # ROBOTS: one (namespace, model) pair per robot currently in the scene, in slot order (empty until a spawn
 # request arrives); ROBOT_POSES: their spawn poses as (x, y, yaw in degrees), same order.
@@ -2721,6 +2722,8 @@ async def main():
         await omni.usd.get_context().new_stage_async()
         stage = omni.usd.get_context().get_stage()
         layout = build_world(stage)
+        if farm_workers.ENABLED:  # FARM_WORKERS=1: two people sitting at a lavender row (costs fps)
+            farm_workers.add(stage, layout.get("lavender_rows"))
         build_clock_graph(og)
         aim_viewport()
         set_viewport_resolution()
