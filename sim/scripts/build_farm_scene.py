@@ -32,18 +32,24 @@ LAVENDER = "lavender/SM_Lavender_Nanite_01.usd"
 PLANT_DIAMETER = 0.75
 PLANT_SINK = 0.02  # lowest point below z=0, so no plant floats
 
-# Weed barrier: the black woven landscape fabric laid under each real row (photo: a dark strip showing a hand's
-# width either side of the foliage, no grass on it). One flat strip per row along the row's fitted line, 1.1 m wide
-# (~17 cm past the 0.75 m plants each side, a 0.75 m grass lane between strips at the farm's 1.85 m row spacing),
-# running BARRIER_END_M past the end plants' centres. Visual only (no collider: driving and the lidars are
-# unchanged); the grass blades rooted on it are hidden (hide_grass_under).
-BARRIER_WIDTH = 1.1
+# Weed barrier: the black woven landscape fabric laid under each real row (farm photo: a dark strip just past the
+# foliage, no grass on it). One flat strip per row along the row's fitted line, a common 3 ft (0.9 m) roll (~7 cm
+# past the 0.75 m plants each side; 1.1 m looked too wide to the user), running BARRIER_END_M past the end plants'
+# centres. Visual only (no collider: driving and the lidars are unchanged); the grass blades rooted on it are hidden
+# (hide_grass_under). Textured like a photo of the fabric: sim/assets/weed_barrier/ (woven ~2.3 mm tapes, a green
+# guide line along the roll), written by make_weed_barrier_textures.py, one tile = BARRIER_TILE_M square with the
+# guide line along its middle, so the lines run along the row at the strip's centre and every BARRIER_TILE_M.
+BARRIER_WIDTH = 0.9
 BARRIER_END_M = 0.5
 BARRIER_Z = 0.004  # above the ground box's top (z=0), no z-fighting
-BARRIER_COLOR = (0.02, 0.02, 0.022)
-# matte woven plastic: at roughness 0.7 with the default specular it mirrored the sky like wet asphalt
-BARRIER_ROUGHNESS = 0.95
-BARRIER_SPECULAR = 0.01
+BARRIER_TEX = "weed_barrier"  # folder in sim/assets: albedo.png, normal.png, roughness.png
+BARRIER_TILE_M = 0.3  # make_weed_barrier_textures.TILE_M
+BARRIER_COLOR = (0.03, 0.03, 0.032)  # displayColor only (the textures give the look)
+# RTX renders the OmniPBR (MDL) version; UsdPreviewSurface stays as the fallback for other renderers. Seen from a
+# Jackal's camera (~25 cm up, grazing) a UsdPreviewSurface strip mirrored the sky white even at specular 0.01 /
+# roughness 0.95 (its Fresnel always reaches 1 at grazing); OmniPBR's specular_level weights the whole reflection.
+BARRIER_SPECULAR = 0.03  # UsdPreviewSurface specularColor
+BARRIER_SPECULAR_LEVEL = 0.1  # OmniPBR, default 0.5
 
 GROUND_COVER = "Ground_cover/ground_cover.usd"  # 100 x 100 m of grass blades, geometry really in metres
 GROUND_COVER_SCALE_Z = 0.6
@@ -188,19 +194,59 @@ def row_strips(plants):
 
 
 def add_weed_barrier(stage, strips):
-    """One flat quad per row under /World/weed_barrier/row_<row_id>, matte black fabric, no collider."""
-    surface = UsdShade.Material.Define(stage, "/World/Materials/weed_barrier")
-    shader = UsdShade.Shader.Define(stage, "/World/Materials/weed_barrier/shader")
+    """One flat quad per row under /World/weed_barrier/row_<row_id>, the woven-fabric textures, no collider."""
+    mat_path = "/World/Materials/weed_barrier"
+    surface = UsdShade.Material.Define(stage, mat_path)
+    shader = UsdShade.Shader.Define(stage, f"{mat_path}/shader")
     shader.CreateIdAttr("UsdPreviewSurface")
-    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*BARRIER_COLOR))
-    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(BARRIER_ROUGHNESS)
     shader.CreateInput("useSpecularWorkflow", Sdf.ValueTypeNames.Int).Set(1)
     shader.CreateInput("specularColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(BARRIER_SPECULAR))
     surface.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    st = UsdShade.Shader.Define(stage, f"{mat_path}/st")
+    st.CreateIdAttr("UsdPrimvarReader_float2")
+    st.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+    st_out = st.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+
+    def texture(name, color_space, output, out_type, **inputs):
+        tex = UsdShade.Shader.Define(stage, f"{mat_path}/{name}")
+        tex.CreateIdAttr("UsdUVTexture")
+        tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(f"{REL_ASSETS}/{BARRIER_TEX}/{name}.png")
+        tex.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set(color_space)
+        tex.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(st_out)
+        for wrap in ("wrapS", "wrapT"):
+            tex.CreateInput(wrap, Sdf.ValueTypeNames.Token).Set("repeat")
+        for k, v in inputs.items():
+            tex.CreateInput(k, Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(*v))
+        return tex.CreateOutput(output, out_type)
+
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+        texture("albedo", "sRGB", "rgb", Sdf.ValueTypeNames.Float3))
+    shader.CreateInput("normal", Sdf.ValueTypeNames.Normal3f).ConnectToSource(
+        texture("normal", "raw", "rgb", Sdf.ValueTypeNames.Float3, scale=(2, 2, 2, 1), bias=(-1, -1, -1, 0)))
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).ConnectToSource(
+        texture("roughness", "raw", "r", Sdf.ValueTypeNames.Float))
+
+    mdl = UsdShade.Shader.Define(stage, f"{mat_path}/omnipbr")
+    mdl.SetSourceAsset("OmniPBR.mdl", "mdl")
+    mdl.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
+    mdl.CreateIdAttr("")
+    mdl.GetPrim().GetAttribute("info:implementationSource").Set("sourceAsset")
+    for name, key, space in (("albedo", "diffuse_texture", "sRGB"), ("roughness", "reflectionroughness_texture", "raw"),
+                             ("normal", "normalmap_texture", "raw")):
+        mdl.CreateInput(key, Sdf.ValueTypeNames.Asset).Set(f"{REL_ASSETS}/{BARRIER_TEX}/{name}.png")
+        mdl.GetInput(key).GetAttr().SetColorSpace(space)
+    mdl.CreateInput("reflection_roughness_texture_influence", Sdf.ValueTypeNames.Float).Set(1.0)
+    mdl.CreateInput("specular_level", Sdf.ValueTypeNames.Float).Set(BARRIER_SPECULAR_LEVEL)
+    mdl.CreateInput("uv_space_index", Sdf.ValueTypeNames.Int).Set(0)  # the strip's st
+    surface.CreateSurfaceOutput("mdl").ConnectToSource(mdl.ConnectableAPI(), "out")
+
     UsdGeom.Xform.Define(stage, "/World/weed_barrier")
     h = BARRIER_WIDTH / 2
+    # v: the guide line (the tile's middle) on the strip's centre line; u: one tile per BARRIER_TILE_M along the row
+    v0, v1 = 0.5 - h / BARRIER_TILE_M, 0.5 + h / BARRIER_TILE_M
     for row_id, (x0, y0), (x1, y1), (dx, dy) in strips:
         nx, ny = -dy * h, dx * h  # half-width across the row
+        u1 = math.hypot(x1 - x0, y1 - y0) / BARRIER_TILE_M
         mesh = UsdGeom.Mesh.Define(stage, f"/World/weed_barrier/row_{row_id}")
         pts = [(x0 - nx, y0 - ny), (x1 - nx, y1 - ny), (x1 + nx, y1 + ny), (x0 + nx, y0 + ny)]
         mesh.CreatePointsAttr([Gf.Vec3f(x, y, BARRIER_Z) for x, y in pts])
@@ -209,6 +255,9 @@ def add_weed_barrier(stage, strips):
         mesh.CreateNormalsAttr([Gf.Vec3f(0, 0, 1)] * 4)
         mesh.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
         mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray,
+                                                UsdGeom.Tokens.vertex).Set(
+            [Gf.Vec2f(0, v0), Gf.Vec2f(u1, v0), Gf.Vec2f(u1, v1), Gf.Vec2f(0, v1)])
         mesh.CreateExtentAttr([Gf.Vec3f(min(x for x, _ in pts), min(y for _, y in pts), BARRIER_Z),
                                Gf.Vec3f(max(x for x, _ in pts), max(y for _, y in pts), BARRIER_Z)])
         mesh.CreateDisplayColorAttr([Gf.Vec3f(*BARRIER_COLOR)])
