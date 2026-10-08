@@ -542,6 +542,19 @@ Measured with one A300 in a lane:
 - The robot drove straight down the lane.
 - Every 2D lidar hit inside the field fell on a database plant position.
 
+**Charging stations.** `scripts/make_charger_scene.py` writes `sim/scene/lavender_farm_chargers.usda`: the farm file plus one charger per row of the database's `public.charging_stations`. The farm file is its sublayer, so rebuilding the farm keeps the chargers; rerun it when the charger rows change, and use it with `SIM_SCENE=lavender_farm_chargers.usda`.
+
+```bash
+scripts/make_charger_scene.py                                        # lavender_farm.usd + chargers
+scripts/make_charger_scene.py --farm other.usd --out other_chargers.usda
+```
+
+- **Pose:** `x_coord`/`y_coord` is the charger's footprint centre on the ground and `yaw_coord_deg` the direction its front (the AprilTag side) faces, counter-clockwise from the frame's +X. Only `frame` = `map` (the sim's world frame) is known; other static frames go in `FRAMES` in `sim/scripts/add_chargers.py`.
+- **Model:** `charger_model` picks the asset (`CHARGER_MODELS` in `sim/scripts/add_chargers.py`). `TR-302` is the WiBotic TR-302 Edge, `sim/assets/wibotic_tr302_edge/`. A new model needs an entry there.
+- **AprilTag:** `apriltag_id` selects the asset's `AprilTag_ID` variant (tag36h11, ids 0–586), so each charger shows its own tag. `apriltag_sz_mm` is the black square's edge, `apriltag_ros`'s size; the TR-302's tag is 80 mm, another size scales it in place. The robots' `tags_36h11.yaml` must list the id and size too.
+- **Clearance:** border rocks, shrubs and trees within 3 m of a charger are left out (deactivated), so nothing sits in the charger or its approach.
+- Rows with a missing pose, model, tag id or frame stop the script with a list of them.
+
 ### Robot materials
 
 The URDF importer gives every robot part one flat colour with the same plastic-like shine, so the robots looked smooth and factory-clean. `sim/scripts/robot_looks.py` replaces those materials at sim start, modelled on photos of the real robots (`robot_data/pictures/`, untracked like the rest of `robot_data/`):
