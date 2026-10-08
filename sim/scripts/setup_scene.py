@@ -66,11 +66,15 @@ def robot_namespace(slot, model):
 
 CAM_W = int(os.environ.get("CAMERA_WIDTH", "640"))
 CAM_H = int(os.environ.get("CAMERA_HEIGHT", "360"))
-# Robot cameras' far clipping plane (colour and depth). Was 30 m: the farm scene's tree line, pushed back near its
-# ground's edge (sim/scripts/build_farm_scene.py BORDER, 21-37 m past the field), was cut off and the horizon
-# showed sky. Depth beyond a real D435's range is still published; depth consumers clip it with their own
-# range_max (depthimage_to_laserscan).
+# Robot cameras' far clipping plane. Was 30 m: the farm scene's tree line, pushed back near its ground's edge
+# (sim/scripts/build_farm_scene.py BORDER, 21-37 m past the field), was cut off and the horizon showed sky. Colour and
+# depth render from the same camera, so depth is limited separately to each sensor's real range (DEPTH_RANGE_M).
 CAM_FAR_CLIP = 120.0
+# Published depth range per sensor (m): outside it a pixel is 0, as the RealSense/ZED drivers publish "no depth".
+# D435i: min-Z ~0.28 m, Intel's stated maximum ~10 m (accurate within ~3 m). D405: rated 7-50 cm, kept to 1 m
+# (the wrist camera looks at plants within reach). ZED 2i: Stereolabs' 0.3-20 m.
+DEPTH_RANGE_M = {"d435i": (0.28, 10.0), "d405": (0.07, 1.0), "zed2i": (0.3, 20.0)}
+_depth_ranges = {}  # (namespace, topic) -> (min, max), filled when a robot's camera graph is built
 CAM_FRAME_SKIP = int(os.environ.get("CAMERA_FRAME_SKIP", "0"))  # 0 = publish every simulation frame
 # Each camera-equipped robot costs ~12 ms of frame time, so 3 robots cannot render at the app's default 60 Hz.
 # The stage runs at SIM_RATE_HZ instead and PhysX substeps at PHYSICS_HZ inside each frame, which keeps
@@ -1110,6 +1114,65 @@ def add_omniverse_collection():
     log(f"content browser: Omniverse collection with {len(OMNIVERSE_FOLDERS)} folders")
 
 
+def install_depth_range_limit():
+    """Limit every robot depth image to its sensor's real range (_depth_ranges, DEPTH_RANGE_M): pixels outside it
+    become 0. ROS2CameraHelper(type=depth) has no range input. The node writer it takes from rep.writers.get
+    (DistanceToImagePlaneSDROS2[SystemTime]PublishImage) feeds ROS2PublishImage a GPU pointer
+    (...IsaacPassthroughImagePtr), which can't be augmented; once the writer is initialized for a registered topic,
+    that annotator is swapped for `distance_to_image_plane` with a Warp augmentation, feeding the node's `data`
+    input (the route of NVIDIA's camera-noise tutorial). The timestamp connection is kept. A depth topic with no
+    registered range is published unchanged; any failure leaves the writer as it was (logged)."""
+    import omni.replicator.core as rep
+    import warp as wp
+
+    @wp.kernel
+    def depth_window(data_in: wp.array2d(dtype=wp.float32), data_out: wp.array2d(dtype=wp.float32),
+                     min_m: float, max_m: float):
+        i, j = wp.tid()
+        d = data_in[i, j]
+        data_out[i, j] = wp.where(d >= min_m and d <= max_m, d, 0.0)
+
+    orig_get = rep.writers.get
+    registered = set()
+
+    def get(name, *args, **kwargs):
+        writer = orig_get(name, *args, **kwargs)
+        if not (name.startswith("DistanceToImagePlaneSDROS2") and name.endswith("PublishImage")):
+            return writer
+        orig_init = writer.initialize
+
+        def initialize(**init):
+            orig_init(**init)
+            key = (str(init.get("nodeNamespace", "")).strip("/"), str(init.get("topicName", "")).strip("/"))
+            rng = _depth_ranges.get(key)
+            if rng is None:
+                return
+            try:
+                annos = list(writer.annotators)
+                idx = [i for i, a in enumerate(annos) if isinstance(a, str) and "IsaacPassthroughImagePtr" in a]
+                if not idx:
+                    log(f"depth range: no depth pointer annotator on /{key[0]}/{key[1]} ({annos}), unlimited")
+                    return
+                # registered by name: the helper deep-copies the writer, an Annotator object doesn't copy
+                anno_name = f"fleet_depth_{rng[0]}_{rng[1]}"
+                if anno_name not in registered:
+                    aug = rep.annotators.Augmentation.from_function(depth_window, min_m=float(rng[0]),
+                                                                    max_m=float(rng[1]))
+                    rep.annotators.register(name=anno_name, annotator=rep.annotators.augment_compose(
+                        source_annotator="distance_to_image_plane", augmentations=[aug]))
+                    registered.add(anno_name)
+                annos[idx[0]] = anno_name
+                writer._annotators = annos
+                log(f"depth range: /{key[0]}/{key[1]} limited to {rng[0]}-{rng[1]} m")
+            except Exception:
+                log(f"depth range: /{key[0]}/{key[1]} left unlimited:\n" + traceback.format_exc())
+
+        writer.initialize = initialize
+        return writer
+
+    rep.writers.get = get
+
+
 def enable_extensions(names):
     em = omni.kit.app.get_app().get_extension_manager()
     for n in names:
@@ -1923,6 +1986,9 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
                 continue
             pub, info = f"Pub{stream.title()}", f"Pub{stream.title()}Info"
             nodes += [(pub, "isaacsim.ros2.bridge.ROS2CameraHelper"), (info, "isaacsim.ros2.bridge.ROS2CameraInfoHelper")]
+            if stream == "depth":  # install_depth_range_limit
+                _depth_ranges[(ns.strip("/"), f"sensors/camera_0/{stream}/image")] = \
+                    DEPTH_RANGE_M["zed2i" if optical_link else "d435i"]
             for name, topic, extra in (
                 (pub, f"sensors/camera_0/{stream}/image", [(f"{pub}.inputs:type", kind)]),
                 (info, f"sensors/camera_0/{stream}/camera_info", []),
@@ -1957,6 +2023,8 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
                 continue
             pub, info = f"Pub1{stream.title()}", f"Pub1{stream.title()}Info"
             nodes += [(pub, "isaacsim.ros2.bridge.ROS2CameraHelper"), (info, "isaacsim.ros2.bridge.ROS2CameraInfoHelper")]
+            if stream == "depth":  # install_depth_range_limit
+                _depth_ranges[(ns.strip("/"), f"sensors/camera_1/{stream}/image")] = DEPTH_RANGE_M["d405"]
             for name, topic, extra in (
                 (pub, f"sensors/camera_1/{stream}/image", [(f"{pub}.inputs:type", kind)]),
                 (info, f"sensors/camera_1/{stream}/camera_info", []),
@@ -2707,6 +2775,10 @@ async def main():
             # isaacsim.sensors.experimental.rtx (j100_0936's 2D lidar) deliberately NOT enabled -- broken in
             # this Isaac Sim 6.0 install, see add_lidar2d's docstring.
         ])
+        try:
+            install_depth_range_limit()
+        except Exception:
+            log("depth range: limit not installed, depth published unlimited:\n" + traceback.format_exc())
         # Every model that could be spawned later is imported now: the importer can't run once the scene is open.
         # A cached, current import only costs a stat.
         load_model_params([m for m in MODEL_ASSETS if os.path.isfile(f"{_ASSET_ROOT}/{m}/robot.yaml")])
