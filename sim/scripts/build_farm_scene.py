@@ -32,6 +32,19 @@ LAVENDER = "lavender/SM_Lavender_Nanite_01.usd"
 PLANT_DIAMETER = 0.75
 PLANT_SINK = 0.02  # lowest point below z=0, so no plant floats
 
+# Weed barrier: the black woven landscape fabric laid under each real row (photo: a dark strip showing a hand's
+# width either side of the foliage, no grass on it). One flat strip per row along the row's fitted line, 1.1 m wide
+# (~17 cm past the 0.75 m plants each side, a 0.75 m grass lane between strips at the farm's 1.85 m row spacing),
+# running BARRIER_END_M past the end plants' centres. Visual only (no collider: driving and the lidars are
+# unchanged); the grass blades rooted on it are hidden (hide_grass_under).
+BARRIER_WIDTH = 1.1
+BARRIER_END_M = 0.5
+BARRIER_Z = 0.004  # above the ground box's top (z=0), no z-fighting
+BARRIER_COLOR = (0.02, 0.02, 0.022)
+# matte woven plastic: at roughness 0.7 with the default specular it mirrored the sky like wet asphalt
+BARRIER_ROUGHNESS = 0.95
+BARRIER_SPECULAR = 0.01
+
 GROUND_COVER = "Ground_cover/ground_cover.usd"  # 100 x 100 m of grass blades, geometry really in metres
 GROUND_COVER_SCALE_Z = 0.6
 GROUND_SIZE = 100.0
@@ -153,6 +166,77 @@ def add_plants(stage, plants):
             for _, ps in sorted(rows.items())]
 
 
+def row_strips(plants):
+    """Per row: (row_id, start xy, end xy, unit direction xy) of its weed barrier, on the least-squares line
+    through the row's plants (the DB rows are straight to < 1 mm), BARRIER_END_M past the outermost plants."""
+    rows = {}
+    for p in plants:
+        rows.setdefault(p["row_id"], []).append((p["x"], p["y"]))
+    strips = []
+    for row_id, pts in sorted(rows.items()):
+        n = len(pts)
+        mx, my = sum(x for x, _ in pts) / n, sum(y for _, y in pts) / n
+        sxx = sum((x - mx) ** 2 for x, _ in pts)
+        syy = sum((y - my) ** 2 for _, y in pts)
+        sxy = sum((x - mx) * (y - my) for x, y in pts)
+        a = 0.5 * math.atan2(2 * sxy, sxx - syy) if n > 1 else 0.0  # principal axis
+        d = (math.cos(a), math.sin(a))
+        ts = [(x - mx) * d[0] + (y - my) * d[1] for x, y in pts]
+        t0, t1 = min(ts) - BARRIER_END_M, max(ts) + BARRIER_END_M
+        strips.append((row_id, (mx + t0 * d[0], my + t0 * d[1]), (mx + t1 * d[0], my + t1 * d[1]), d))
+    return strips
+
+
+def add_weed_barrier(stage, strips):
+    """One flat quad per row under /World/weed_barrier/row_<row_id>, matte black fabric, no collider."""
+    surface = UsdShade.Material.Define(stage, "/World/Materials/weed_barrier")
+    shader = UsdShade.Shader.Define(stage, "/World/Materials/weed_barrier/shader")
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*BARRIER_COLOR))
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(BARRIER_ROUGHNESS)
+    shader.CreateInput("useSpecularWorkflow", Sdf.ValueTypeNames.Int).Set(1)
+    shader.CreateInput("specularColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(BARRIER_SPECULAR))
+    surface.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    UsdGeom.Xform.Define(stage, "/World/weed_barrier")
+    h = BARRIER_WIDTH / 2
+    for row_id, (x0, y0), (x1, y1), (dx, dy) in strips:
+        nx, ny = -dy * h, dx * h  # half-width across the row
+        mesh = UsdGeom.Mesh.Define(stage, f"/World/weed_barrier/row_{row_id}")
+        pts = [(x0 - nx, y0 - ny), (x1 - nx, y1 - ny), (x1 + nx, y1 + ny), (x0 + nx, y0 + ny)]
+        mesh.CreatePointsAttr([Gf.Vec3f(x, y, BARRIER_Z) for x, y in pts])
+        mesh.CreateFaceVertexCountsAttr([4])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])  # counter-clockwise seen from above: normal +Z
+        mesh.CreateNormalsAttr([Gf.Vec3f(0, 0, 1)] * 4)
+        mesh.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+        mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+        mesh.CreateExtentAttr([Gf.Vec3f(min(x for x, _ in pts), min(y for _, y in pts), BARRIER_Z),
+                               Gf.Vec3f(max(x for x, _ in pts), max(y for _, y in pts), BARRIER_Z)])
+        mesh.CreateDisplayColorAttr([Gf.Vec3f(*BARRIER_COLOR)])
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(surface)
+
+
+def hide_grass_under(stage, strips, center):
+    """invisibleIds on the ground cover's PointInstancers for every blade rooted on a weed barrier. The patch is
+    at /World/GroundCover translated to `center`, unscaled in x/y, its positions in metres. Returns the count."""
+    hidden = 0
+    h = BARRIER_WIDTH / 2
+    for prim in Usd.PrimRange(stage.GetPrimAtPath("/World/GroundCover")):
+        if not prim.IsA(UsdGeom.PointInstancer):
+            continue
+        pi = UsdGeom.PointInstancer(prim)
+        ids = []
+        for i, p in enumerate(pi.GetPositionsAttr().Get()):
+            x, y = p[0] + center[0], p[1] + center[1]
+            for _, (x0, y0), (x1, y1), (dx, dy) in strips:
+                t = (x - x0) * dx + (y - y0) * dy
+                if 0.0 <= t <= math.hypot(x1 - x0, y1 - y0) and abs(-(x - x0) * dy + (y - y0) * dx) <= h:
+                    ids.append(i)
+                    break
+        pi.CreateInvisibleIdsAttr().Set(Vt.Int64Array(ids))
+        hidden += len(ids)
+    return hidden
+
+
 def band_points(box, dist, spacing, rng):
     """Points spaced ~`spacing` apart along a rounded rectangle `dist` m outside box (x0, y0, x1, y1), jittered
     across the band (dist = (min, max))."""
@@ -229,6 +313,9 @@ def main(plants_json, out):
     add_ground(stage, center)
     add_lights(stage)
     rows = add_plants(stage, plants)
+    strips = row_strips(plants)
+    add_weed_barrier(stage, strips)
+    hidden = hide_grass_under(stage, strips, center)
     add_border(stage, box)
 
     # read by setup_scene.build_file_world: the web UI's spawn map draws these rows
@@ -239,7 +326,8 @@ def main(plants_json, out):
     }
     layer.Save()
     os.chmod(out, 0o666)  # written as the image's user; the host user may replace it
-    print(f"wrote {out}: {len(plants)} plants in {len(rows)} rows, field box "
+    print(f"wrote {out}: {len(plants)} plants in {len(rows)} rows, weed barrier under each "
+          f"({hidden} grass blades hidden), field box "
           f"x {box[0]:.2f}..{box[2]:.2f} y {box[1]:.2f}..{box[3]:.2f}")
 
 
