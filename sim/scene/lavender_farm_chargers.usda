@@ -1,0 +1,77 @@
+#usda 1.0
+(
+    customLayerData = {
+        string charger_source = "test_lavender_farming.public.charging_stations @ 2026-10-08T12:36:21"
+        dictionary charging_stations = {
+            dictionary charger_1 = {
+                int apriltag_id = 1
+                double x = -9.654
+                double y = -1.972
+                double yaw_deg = 0
+            }
+        }
+        string farm_file = "lavender_farm.usd"
+        string farm_source = "test_lavender_farming.public.object_data @ 2026-10-02T20:49:51"
+        double4[] lavender_rows = [(-0.08700000000000002, 17.093, -4.040815789473684, 0.75), (-0.518, 17.046, -5.860078947368421, 0.75), (-0.55, 17.108, -7.709105263157896, 0.75), (-0.469, 17.131, -9.44778947368421, 0.75), (-0.545, 17.071, -11.289315789473685, 0.75), (-0.469, 17.078, -13.108315789473684, 0.75), (-0.507, 17.078, -15.006342105263158, 0.75), (-0.452, 17.019, -16.79186842105263, 0.75), (-0.478, 17.069, -18.615184210526316, 0.75), (-0.46099999999999997, 17.165, -20.4505, 0.75)]
+        int plant_count = 380
+    }
+    defaultPrim = "World"
+    doc = "lavender_farm.usd plus its charging stations, written by scripts/make_charger_scene.py from public.charging_stations; don't edit, rerun it."
+    metersPerUnit = 1
+    subLayers = [
+        @./lavender_farm.usd@
+    ]
+    upAxis = "Z"
+)
+
+over "World"
+{
+    def Xform "charging_stations"
+    {
+        def Xform "charger_1" (
+            customData = {
+                int apriltag_id = 1
+                int charging_station_id = 1
+            }
+        )
+        {
+            float xformOp:rotateZ = 90
+            double3 xformOp:translate = (-9.654, -1.972, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZ"]
+
+            def Xform "asset" (
+                prepend references = @../assets/wibotic_tr302_edge/wibotic_tr302_edge.usd@
+                variants = {
+                    string AprilTag_ID = "id_001"
+                }
+            )
+            {
+            }
+        }
+    }
+
+    over "rocks"
+    {
+        over "item_14" (
+            active = false
+        )
+        {
+        }
+    }
+
+    over "shrubs"
+    {
+        over "item_38" (
+            active = false
+        )
+        {
+        }
+
+        over "item_39" (
+            active = false
+        )
+        {
+        }
+    }
+}
+

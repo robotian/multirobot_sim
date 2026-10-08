@@ -28,12 +28,36 @@ USD_ENV = ('L=$(ls -d /isaac-sim/extscache/omni.usd.libs-*/ | head -1); '
            'export PYTHONPATH=$L LD_LIBRARY_PATH=$L/bin:$LD_LIBRARY_PATH; ')
 
 
-def fetch_plants(args):
+def connect(args):
+    """(connection, dbname) for status_server's config.yaml database, overridden by --dbname/--host/--port."""
     db = yaml.safe_load(CONFIG.read_text())["database"]
     host = args.host or ("localhost" if db["host"] == "host.docker.internal" else db["host"])
     dbname = args.dbname or db["dbname"]
-    with psycopg.connect(host=host, port=args.port or db["port"], dbname=dbname, user=db["user"],
-                         password=db.get("password") or None, connect_timeout=db.get("connect_timeout", 5)) as conn:
+    return psycopg.connect(host=host, port=args.port or db["port"], dbname=dbname, user=db["user"],
+                           password=db.get("password") or None,
+                           connect_timeout=db.get("connect_timeout", 5)), dbname
+
+
+def run_usd_script(sim, script, *args):
+    """Run sim/scripts/<script> with Isaac's USD libraries in the Isaac image, sim mounted at /sim."""
+    # as the image's user (uid 1234, like the sim): /isaac-sim is not readable by others
+    cmd = ["docker", "run", "--rm", "--entrypoint", "bash", "-v", f"{sim}:/sim",
+           "-v", f"{ROOT / 'sim/scripts' / script}:/{script}:ro", IMAGE, "-c",
+           USD_ENV + f"exec /isaac-sim/python.sh /{script} " + " ".join(args)]
+    subprocess.run(cmd, check=True)
+
+
+def add_db_args(ap):
+    ap.add_argument("--dbname", help="database (default: status_server's config.yaml)")
+    ap.add_argument("--host", help="database host (default: localhost)")
+    ap.add_argument("--port", type=int, help="database port (default: status_server's config.yaml)")
+    ap.add_argument("--sim-dir", type=Path, default=ROOT / "sim",
+                    help="the sim folder: assets in, scene out (default: this checkout's, %(default)s)")
+
+
+def fetch_plants(args):
+    conn, dbname = connect(args)
+    with conn:
         rows = conn.execute("SELECT object_id, row_id, x_coord, y_coord FROM public.object_data "
                             "WHERE x_coord IS NOT NULL AND y_coord IS NOT NULL "
                             "ORDER BY row_id, object_id").fetchall()
@@ -45,11 +69,7 @@ def fetch_plants(args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default="lavender_farm.usd", help="file name in sim/scene/ (default %(default)s)")
-    ap.add_argument("--dbname", help="database (default: status_server's config.yaml)")
-    ap.add_argument("--host", help="database host (default: localhost)")
-    ap.add_argument("--port", type=int, help="database port (default: status_server's config.yaml)")
-    ap.add_argument("--sim-dir", type=Path, default=ROOT / "sim",
-                    help="the sim folder: assets in, scene out (default: this checkout's, %(default)s)")
+    add_db_args(ap)
     args = ap.parse_args()
 
     data = fetch_plants(args)
@@ -64,12 +84,7 @@ def main():
     out = sim / "scene" / args.out
     if out.exists():
         out.unlink()  # may belong to the sim's user (uid 1234), sim/scene/ is world-writable
-    # as the image's user (uid 1234, like the sim): /isaac-sim is not readable by others
-    cmd = ["docker", "run", "--rm", "--entrypoint", "bash", "-v", f"{sim}:/sim",
-           "-v", f"{ROOT / 'sim/scripts/build_farm_scene.py'}:/build_farm_scene.py:ro", IMAGE, "-c",
-           USD_ENV + f"exec /isaac-sim/python.sh /build_farm_scene.py "
-                     f"/sim/generated/farm/plants.json /sim/scene/{args.out}"]
-    subprocess.run(cmd, check=True)
+    run_usd_script(sim, "build_farm_scene.py", "/sim/generated/farm/plants.json", f"/sim/scene/{args.out}")
 
 
 if __name__ == "__main__":

@@ -369,7 +369,7 @@ docker exec -it basestation bash                             # ROS shell (colcon
 docker compose -f basestation.compose.yml down               # stop; the data stays in the basestation_pgdata volume
 ```
 
-**Database.** PostgreSQL 18 on port `BASESTATION_PG_PORT` (default 5433), database `test_lavender_farming`, superuser `admin`, password `PGPASSWORD` from `db.env`. These are the settings in `status_server`'s `config.yaml`, so its `host.docker.internal:5433` reaches the base station from the robot containers and from the base station itself. A real robot uses `<this machine's LAN IP>:5433`. On the first start, with an empty volume, the container creates the database and loads `basestation/initdb/`: `*.sql`, `*.sql.gz`, `*.dump` (`pg_dump -Fc`) and `*.sh`, in name order. If a file fails, the half-made database is removed and the next start tries again. To copy an existing farm database:
+**Database.** PostgreSQL 18 on port `BASESTATION_PG_PORT` (default 5433), database `test_lavender_farming`, superuser `admin`, password `PGPASSWORD` from `db.env`. These are the settings in `status_server`'s `config.yaml`, so its `host.docker.internal:5433` reaches the base station from the robot containers and from the base station itself. A real robot uses `<this machine's LAN IP>:5433`. On the first start, with an empty volume, the container creates the database and loads `basestation/initdb/`: `*.sql`, `*.sql.gz`, `*.dump` (`pg_dump -Fc`) and `*.sh`, in name order. If a file fails, the half-made database is removed and the next start tries again. To copy an existing farm database, e.g. the old standalone `robotian_database` container (port 5432, which the base station replaces):
 
 ```bash
 docker exec robotian_database pg_dump -U admin -Fc test_lavender_farming > basestation/initdb/10-farm.dump
@@ -378,6 +378,12 @@ docker compose -f basestation.compose.yml up -d             # created again from
 ```
 
 Back up with `docker exec basestation pg_dump -Fc > farm.dump`. The user, database name and password only take effect when the database is created; change them afterwards in `psql`.
+
+**From the host** (VS Code, a GUI client, `psql`, `scripts/make_farm_scene.py`): `localhost:5433`, user `admin`, database `test_lavender_farming`, the `db.env` password. Port 5432 is the old `robotian_database`, not the base station. The VS Code PostgreSQL extension (`ms-ossdata.vscode-pgsql`) can fail with `fe_sendauth: no password supplied` even with the password typed in; give it a `~/.pgpass` instead, which the host scripts use too:
+
+```bash
+echo "localhost:5433:*:admin:$(grep '^PGPASSWORD=' db.env | cut -d= -f2-)" >> ~/.pgpass && chmod 600 ~/.pgpass
+```
 
 **Network.** The container uses host networking, so it is on this machine's LAN the way a real base station is. It uses the fleet's `FLEET_RMW` and `ROS_DOMAIN_ID` from `.env`.
 
@@ -505,7 +511,7 @@ scripts/make_farm_scene.py --dbname NAME --host H --port P   # another database
 
 Requirements:
 
-- The PostgreSQL container (`robotian_database`) is running.
+- The base station is running (`docker compose -f basestation.compose.yml up -d`); its database is `localhost:5433` from the host.
 - `psycopg` and `pyyaml` are installed on the host.
 - The `a300-isaac-sim:6.0.0` image is built.
 - `sim/assets/` is populated: lavender, ground cover, sky, trees, shrubs and rocks.
@@ -535,6 +541,19 @@ Measured with one A300 in a lane:
 - The sim ran at 23–24 render fps with a real-time factor of about 1.05.
 - The robot drove straight down the lane.
 - Every 2D lidar hit inside the field fell on a database plant position.
+
+**Charging stations.** `scripts/make_charger_scene.py` writes `sim/scene/lavender_farm_chargers.usda`: the farm file plus one charger per row of the database's `public.charging_stations`. The farm file is its sublayer, so rebuilding the farm keeps the chargers; rerun it when the charger rows change, and use it with `SIM_SCENE=lavender_farm_chargers.usda`.
+
+```bash
+scripts/make_charger_scene.py                                        # lavender_farm.usd + chargers
+scripts/make_charger_scene.py --farm other.usd --out other_chargers.usda
+```
+
+- **Pose:** `x_coord`/`y_coord` is the charger's footprint centre on the ground and `yaw_coord_deg` the direction its front (the AprilTag side) faces, counter-clockwise from the frame's +X. Only `frame` = `map` (the sim's world frame) is known; other static frames go in `FRAMES` in `sim/scripts/add_chargers.py`.
+- **Model:** `charger_model` picks the asset (`CHARGER_MODELS` in `sim/scripts/add_chargers.py`). `TR-302` is the WiBotic TR-302 Edge, `sim/assets/wibotic_tr302_edge/`. A new model needs an entry there.
+- **AprilTag:** `apriltag_id` selects the asset's `AprilTag_ID` variant (tag36h11, ids 0–586), so each charger shows its own tag. `apriltag_sz_mm` is the black square's edge, `apriltag_ros`'s size; the TR-302's tag is 80 mm, another size scales it in place. The robots' `tags_36h11.yaml` must list the id and size too.
+- **Clearance:** border rocks, shrubs and trees within 3 m of a charger are left out (deactivated), so nothing sits in the charger or its approach.
+- Rows with a missing pose, model, tag id or frame stop the script with a list of them.
 
 ### Robot materials
 
