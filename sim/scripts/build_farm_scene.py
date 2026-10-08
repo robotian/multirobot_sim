@@ -33,6 +33,9 @@ LAVENDER = "lavender/SM_Lavender_Nanite_01.usd"
 # bigger at the user's request).
 PLANT_DIAMETER = 0.825
 PLANT_SINK = 0.02  # lowest point below z=0, so no plant floats
+# The asset's stem/leaf MDL materials (MI_Stem_01, MI_Leaf_01) are translucent, inputs:SubsurfaceOpacity 0.25 in the
+# asset; the plants' shadows looked too faint to the user, who asked for 0.7. Set on the shared prototype.
+LAVENDER_SUBSURFACE_OPACITY = 0.7
 
 # Weed barrier: the black woven landscape fabric laid under each real row (farm photo: a dark strip just past the
 # foliage, no grass on it). One flat strip per row along the row's fitted line, a common 3 ft (0.9 m) roll (~4 cm
@@ -230,6 +233,13 @@ def add_plants(stage, plants):
     uniformly to PLANT_DIAMETER wide and centred on its x/y (the asset's bbox is off its origin). Returns the rows'
     extents [x_min, x_max, y_mean, width] for the web UI's spawn map."""
     proto = add_prototype(stage, "lavender", LAVENDER)
+    n_sss = 0
+    for q in Usd.PrimRange(stage.GetPrimAtPath(proto), Usd.PrimAllPrimsPredicate):  # the prototype is abstract
+        a = q.GetAttribute("inputs:SubsurfaceOpacity")
+        if a and a.HasValue():
+            a.Set(LAVENDER_SUBSURFACE_OPACITY)
+            n_sss += 1
+    print(f"lavender: SubsurfaceOpacity {LAVENDER_SUBSURFACE_OPACITY} on {n_sss} material(s)")
     r = asset_bounds(LAVENDER)
     size, mid = r.GetSize(), r.GetMidpoint()
     k = PLANT_DIAMETER / max(size[0], size[1])
