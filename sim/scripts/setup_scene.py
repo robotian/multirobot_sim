@@ -1067,6 +1067,43 @@ def apply_kit_settings():
         f"aa = {st.get('/rtx/post/aa/op')!r}, timeCodesPerSecond-fixed = {st.get('/app/player/useFixedTimeStepping')!r}")
 
 
+# NVIDIA's general Omniverse libraries, on the same public S3 bucket as the Isaac assets but outside
+# Assets/Isaac/, so the Content tab's "Isaac Sim" collection (isaacsim.gui.content_browser) doesn't list them.
+_OV_CONTENT = "https://omniverse-content-production.s3-us-west-2.amazonaws.com"
+OMNIVERSE_FOLDERS = [f"{_OV_CONTENT}/{p}" for p in (
+    "Assets/ArchVis", "Assets/Characters", "Assets/DigitalTwin", "Assets/Scenes", "Assets/Skies",
+    "Assets/Terrain", "Assets/Vegetation", "Assets/Particles", "Assets/simready_content",
+    "Environments", "Materials", "Samples", "Demos",
+)]
+
+
+def add_omniverse_collection():
+    """An "Omniverse" collection in the Content tab next to "Isaac Sim", listing OMNIVERSE_FOLDERS. Reuses
+    isaacsim.gui.content_browser's read-only collection; its folder list is read at extension startup, so it
+    can't be extended from FLEET_SETTINGS (applied later). No content window (no UI) -> nothing to do."""
+    try:
+        import omni.client
+        from isaacsim.gui.content_browser.impl.isaac_collection import ICON_PATH, IsaacCollection
+        from omni.kit.window.content_browser import get_content_window
+        from omni.kit.window.filepicker import CollectionItem
+    except ImportError:
+        return
+    window = get_content_window()
+    if not window:
+        return
+
+    class OmniverseCollection(IsaacCollection):
+        def __init__(self):  # IsaacCollection's own __init__ fixes the title and reads the Isaac folder list
+            CollectionItem.__init__(self, identifier="Omniverse", title="Omniverse", protocol="https",
+                                    icon=f"{ICON_PATH}/cloud.svg", access=omni.client.AccessFlags.READ,
+                                    populated=False, order=6)  # right after "Isaac Sim" (5)
+            self._asset_root = _OV_CONTENT
+            self._folders = OMNIVERSE_FOLDERS
+
+    window.api.register_collection_item(OmniverseCollection())
+    log(f"content browser: Omniverse collection with {len(OMNIVERSE_FOLDERS)} folders")
+
+
 def enable_extensions(names):
     em = omni.kit.app.get_app().get_extension_manager()
     for n in names:
@@ -2654,6 +2691,10 @@ async def main():
         for _ in range(5):
             await app.next_update_async()
         apply_kit_settings()
+        try:
+            add_omniverse_collection()
+        except Exception:
+            log("content browser: Omniverse collection failed (the sim is unaffected):\n" + traceback.format_exc())
         enable_extensions([
             "isaacsim.ros2.bridge", "isaacsim.robot.wheeled_robots.nodes", "omni.graph.action", "omni.graph.nodes", "omni.graph.scriptnode",
             "isaacsim.sensors.experimental.physics",  # real MTU robots' IMU (ImuRead script)
