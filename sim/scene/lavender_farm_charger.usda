@@ -1,0 +1,30 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "lavender_farm.usd plus a WiBotic TR-302 Edge charging station. The farm file is generated (scripts/make_farm_scene.py), so additions live in this wrapper."
+    metersPerUnit = 1
+    upAxis = "Z"
+    subLayers = [
+        @./lavender_farm.usd@
+    ]
+)
+
+over "World"
+{
+    def Xform "charging_station"
+    {
+        # North of the spawn line (robots at x=0, y -1.6..1.6); lid and AprilTag face -Y, toward the robots
+        double3 xformOp:translate = (0.5, 3.8, 0)
+        float xformOp:rotateZ = 0
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZ"]
+
+        def Xform "asset" (
+            prepend references = @../assets/wibotic_tr302_edge/wibotic_tr302_edge.usd@
+            variants = {
+                string AprilTag_ID = "id_001"
+            }
+        )
+        {
+        }
+    }
+}
