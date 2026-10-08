@@ -77,19 +77,21 @@ SUN_INTENSITY = 5000
 SUN_ROTATE_XYZ = (20, 2.0, -50)  # degrees, the distant light's rotateXYZ (user's choice; was (-60, 33, -30) at 10000)
 
 # Border vegetation (setup_scene.py's add_horizon_vegetation, here a band around the field instead of an arc ahead
-# of the robots): (assets, spacing along the band m, distance band outside the field's plants m, height m, seed).
-# The rocks start 7 m out: the fleet's default spawn poses (x=0, y up to +1.6) are ~5.5 m north of row 1.
-# The border stands back near the ground's edge (GROUND_SIZE: ~41 m past the field on each side) and covers the
-# horizon (user's requests): rocks in front, then a dense hedge of tall Holly/Lilac/Privet/Yew that fills the gaps
-# under the tree crowns, then a deep band of big trees. Trunks stay >= 4 m inside the edge; the widest oak crowns
-# (1.3x their height) may reach past it, which also hides the edge. The robot cameras see it from the whole field
-# (setup_scene.CAM_FAR_CLIP). Before: trees 7-11 m tall every 3 m 13-17 m out, shrubs (Rhododendron, Lilac,
-# Goldflame Spirea, Barberry, 1-2.2 m) 9-14 m out, rocks 0.4-1 m 7-11 m out.
+# of the robots): (assets, count, min distance from the field's plants m, margin to the ground's edge m, height m,
+# footprint radius m, seed). Each group is scattered at random (no band, user's request) over the ground outside
+# that distance, corners included (scatter_points), no two items closer than the sum of their footprint radii (so
+# trunks, shrubs and rocks don't overlap). The clearing around the field stays open (the fleet's default spawn poses
+# at x=0, y up to +1.6, and the charger ~9 m west of the field). The robot cameras see the trees from the whole
+# field (setup_scene.CAM_FAR_CLIP); enough of them stand between the field and the edge to cover the horizon.
+# Trunks stay >= 4 m inside the edge; the widest oak crowns (1.3x their height) may reach past it, which hides the
+# edge. History: a band around the field (trees 7-11 m tall every 3 m 13-17 m out; later 10-16 m every 2 m 28-37 m
+# out, shrubs 24-30 m, rocks 21-25 m).
 BORDER = {
-    "trees": ([f"trees/{n}.usd" for n in ("Douglas_Fir", "Black_Oak", "Douglas_Fir")], 2.0, (28.0, 37.0), (10.0, 16.0), 7),
-    "shrubs": ([f"shrubs/{n}.usd" for n in ("Holly", "Lilac", "Privet", "Yew")], 1.5, (24.0, 30.0), (2.0, 4.0), 11),
-    "rocks": ([f"rocks/rock_small_{i:02d}.usda" for i in range(1, 7)], 3.0, (21.0, 25.0), (0.6, 1.4), 13),
+    "trees": ([f"trees/{n}.usd" for n in ("Douglas_Fir", "Black_Oak", "Douglas_Fir")], 200, 23.0, 4.0, (10.0, 16.0), 1.5, 7),
+    "shrubs": ([f"shrubs/{n}.usd" for n in ("Holly", "Lilac", "Privet", "Yew")], 220, 20.0, 2.0, (2.0, 4.0), 0.8, 11),
+    "rocks": ([f"rocks/rock_small_{i:02d}.usda" for i in range(1, 7)], 80, 18.0, 1.0, (0.6, 1.4), 0.6, 13),
 }
+EDGE_JITTER_M = 3.0
 
 _bbox = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
 
@@ -342,46 +344,42 @@ def hide_grass_under(stage, strips, center):
     return hidden
 
 
-def band_points(box, dist, spacing, rng):
-    """Points spaced ~`spacing` apart along a rounded rectangle `dist` m outside box (x0, y0, x1, y1), jittered
-    across the band (dist = (min, max))."""
-    x0, y0, x1, y1 = box
-    d_mid = sum(dist) / 2
-    w, h = x1 - x0, y1 - y0
-    arc = math.pi / 2 * d_mid
-    # perimeter pieces, counter-clockwise from the south-east corner: (length, point(t in 0..1, d))
-    pieces = [
-        (h, lambda t, d: (x1 + d, y0 + t * h)),
-        (arc, lambda t, d: (x1 + d * math.cos(t * math.pi / 2), y1 + d * math.sin(t * math.pi / 2))),
-        (w, lambda t, d: (x1 - t * w, y1 + d)),
-        (arc, lambda t, d: (x0 - d * math.sin(t * math.pi / 2), y1 + d * math.cos(t * math.pi / 2))),
-        (h, lambda t, d: (x0 - d, y1 - t * h)),
-        (arc, lambda t, d: (x0 - d * math.cos(t * math.pi / 2), y0 - d * math.sin(t * math.pi / 2))),
-        (w, lambda t, d: (x0 + t * w, y0 - d)),
-        (arc, lambda t, d: (x1 + d * math.sin(t * math.pi / 2), y0 - d * math.cos(t * math.pi / 2))),
-    ]
-    total = sum(length for length, _ in pieces)
-    n = max(1, round(total / spacing))
+def scatter_points(box, ground, count, min_dist, margin, radius, rng, placed):
+    """Up to `count` random points on the ground square `ground` (x0, y0, x1, y1), at least `margin` inside its
+    edge and at least `min_dist` from the field box `box` (distance to the rectangle, so the clearing has rounded
+    corners), none closer than radius + r to a point already in `placed` [(x, y, r)], which it extends."""
+    bx0, by0, bx1, by1 = box
+    gx0, gy0, gx1, gy1 = (ground[0] + margin, ground[1] + margin, ground[2] - margin, ground[3] - margin)
     out = []
-    for i in range(n):
-        s = (i + rng.uniform(-0.3, 0.3)) * total / n % total
-        for length, f in pieces:
-            if s <= length:
-                out.append(f(s / length if length else 0.0, rng.uniform(*dist)))
-                break
-            s -= length
+    for _ in range(count * 200):
+        if len(out) == count:
+            break
+        x, y = rng.uniform(gx0, gx1), rng.uniform(gy0, gy1)
+        # +-EDGE_JITTER_M per candidate: a ragged forest edge instead of a sharp rounded rectangle
+        if (math.hypot(max(bx0 - x, 0.0, x - bx1), max(by0 - y, 0.0, y - by1))
+                < min_dist + rng.uniform(-EDGE_JITTER_M, EDGE_JITTER_M)):
+            continue
+        if any((x - px) ** 2 + (y - py) ** 2 < (radius + pr) ** 2 for px, py, pr in placed):
+            continue
+        placed.append((x, y, radius))
+        out.append((x, y))
+    if len(out) < count:
+        print(f"scatter: placed {len(out)} of {count} (no room left)")
     return out
 
 
-def add_border(stage, box):
-    for group, (assets, spacing, dist, height, seed) in BORDER.items():
+def add_border(stage, box, center):
+    h = GROUND_SIZE / 2
+    ground = (center[0] - h, center[1] - h, center[0] + h, center[1] + h)
+    placed = []  # shared, so no group lands on another's items
+    for group, (assets, count, min_dist, margin, height, radius, seed) in BORDER.items():
         rng = random.Random(seed)
         protos = {}
         for a in dict.fromkeys(assets):
             name = f"{group}_{os.path.splitext(os.path.basename(a))[0]}"
             protos[a] = (add_prototype(stage, name, a), asset_bounds(a).GetSize()[2])
         UsdGeom.Xform.Define(stage, f"/World/{group}")
-        for t, (x, y) in enumerate(band_points(box, dist, spacing, rng)):
+        for t, (x, y) in enumerate(scatter_points(box, ground, count, min_dist, margin, radius, rng, placed)):
             proto, z_size = protos[assets[rng.randrange(len(assets))]]
             k = rng.uniform(*height) / max(z_size, 1e-6)
             # the asset's root carries its own xform ops, so it goes on a child of the placement Xform
@@ -421,7 +419,7 @@ def main(plants_json, out):
     strips = row_strips(plants)
     add_weed_barrier(stage, strips)
     hidden = hide_grass_under(stage, strips, center)
-    add_border(stage, box)
+    add_border(stage, box, center)
 
     # read by setup_scene.build_file_world: the web UI's spawn map draws these rows
     layer.customLayerData = {
