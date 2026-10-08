@@ -1,5 +1,7 @@
 # Rebuilt by scripts/gen_urdf.sh and the sim's first start
 sim/generated/
+# Isaac Sim's Edit > Capture Screenshot (FLEET_SETTINGS in .env)
+sim/captures/
 __pycache__/
 # colcon build artifacts (source packages under colcon_ws/src/ are tracked)
 colcon_ws/build/

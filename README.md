@@ -452,7 +452,7 @@ Edit `.env`, then `docker restart a300-isaac-sim` for sim variables, or `scripts
 | `SIM_MODE` | `stream` | `stream` (WebRTC) or `headed` (Isaac's desktop window on this machine's X display; needs `scripts/x11_auth.sh`) |
 | `FLEET_DEBUG` | `0` | `1` logs real-time factor, render fps and robot pose every few seconds |
 | `FORCE_REIMPORT` | `0` | `1` re-imports the URDF into USD |
-| `FLEET_SETTINGS` | (none) | extra Kit settings, `"/path/a=1;/path/b=text"`; this repo's `.env` sets `/app/asyncRendering=true` and `/app/asyncRenderingLowLatency=true`, see *Faster streaming* |
+| `FLEET_SETTINGS` | (none) | extra Kit settings, `"/path/a=1;/path/b=text"`; this repo's `.env` sets `/app/asyncRendering=true` and `/app/asyncRenderingLowLatency=true` (see *Faster streaming*), and `/persistent/app/captureFrame/path=/sim/captures/` so Edit > Capture Screenshot saves into `sim/captures/` |
 | `FLEET_VIEWPORT_RES` | (client window size) | e.g. `1280x720`: render the streamed viewport at a fixed size |
 | `ROBOT_LOOKS` | `full` | robot materials, see *Robot materials*: `full` (textured, dusty, worn), `basic` (realistic materials without textures), `0` (the importer's flat colours) |
 | `FLEET_SNAPSHOT` | (none) | e.g. `/sim/generated/snapshots`: once the sim runs, save viewport PNGs of every robot from three angles (`<ns>_<view>_<ROBOT_LOOKS>.png`) |

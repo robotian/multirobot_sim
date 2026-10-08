@@ -65,13 +65,15 @@ x-robot: &robot
 services:
   # One-shot: named volumes are created root-owned, Isaac Sim runs as uid 1234. ./sim/generated (gitignored, so
   # missing in a fresh clone) is written by both the sim (uid 1234) and the host user (fleet_ctl.py's spawn
-  # requests in fleet/), so it and fleet/ are made world-writable whoever created them.
+  # requests in fleet/), so it and fleet/ are made world-writable whoever created them. ./sim/captures (gitignored)
+  # is where Isaac Sim's Edit > Capture Screenshot saves (FLEET_SETTINGS in .env), so it is made writable too.
   volume-init:
     image: alpine:3.16.3
     user: root
-    command: sh -c 'chown -R 1234:1234 /cache /ov-data /logs /config /compute && mkdir -p /generated/fleet && chmod a+rwx /generated /generated/fleet'
+    command: sh -c 'chown -R 1234:1234 /cache /ov-data /logs /config /compute && mkdir -p /generated/fleet && chmod a+rwx /generated /generated/fleet /captures'
     volumes:
       - ./sim/generated:/generated
+      - ./sim/captures:/captures
       - isaac-cache:/cache
       - isaac-ov-data:/ov-data
       - isaac-logs:/logs
