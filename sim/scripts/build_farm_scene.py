@@ -79,14 +79,16 @@ SUN_ROTATE_XYZ = (20, 2.0, -50)  # degrees, the distant light's rotateXYZ (user'
 # Border vegetation (setup_scene.py's add_horizon_vegetation, here a band around the field instead of an arc ahead
 # of the robots): (assets, spacing along the band m, distance band outside the field's plants m, height m, seed).
 # The rocks start 7 m out: the fleet's default spawn poses (x=0, y up to +1.6) are ~5.5 m north of row 1.
-# Trees and shrubs stand back near the ground's edge (GROUND_SIZE: ~41 m past the field on each side), the trees big
-# and dense (user's request; were 7-11 m tall every 3 m, 13-17 m out, shrubs 9-14 m out): trunks stay >= 6 m inside
-# the edge, the widest oak crowns (1.3x their height) may reach just past it. The robot cameras clip at 30 m
-# (setup_scene.add_camera), so from inside the field they no longer see the tree line; the viewport does.
+# The border stands back near the ground's edge (GROUND_SIZE: ~41 m past the field on each side) and covers the
+# horizon (user's requests): rocks in front, then a dense hedge of tall Holly/Lilac/Privet/Yew that fills the gaps
+# under the tree crowns, then a deep band of big trees. Trunks stay >= 4 m inside the edge; the widest oak crowns
+# (1.3x their height) may reach past it, which also hides the edge. The robot cameras see it from the whole field
+# (setup_scene.CAM_FAR_CLIP). Before: trees 7-11 m tall every 3 m 13-17 m out, shrubs (Rhododendron, Lilac,
+# Goldflame Spirea, Barberry, 1-2.2 m) 9-14 m out, rocks 0.4-1 m 7-11 m out.
 BORDER = {
-    "trees": ([f"trees/{n}.usd" for n in ("Douglas_Fir", "Black_Oak", "Douglas_Fir")], 2.0, (29.0, 35.0), (10.0, 16.0), 7),
-    "shrubs": ([f"shrubs/{n}.usd" for n in ("Rhododendron", "Lilac", "Goldflame_Spirea", "Barberry")], 1.8, (24.0, 29.0), (1.0, 2.2), 11),
-    "rocks": ([f"rocks/rock_small_{i:02d}.usda" for i in range(1, 7)], 4.5, (7.0, 11.0), (0.4, 1.0), 13),
+    "trees": ([f"trees/{n}.usd" for n in ("Douglas_Fir", "Black_Oak", "Douglas_Fir")], 2.0, (28.0, 37.0), (10.0, 16.0), 7),
+    "shrubs": ([f"shrubs/{n}.usd" for n in ("Holly", "Lilac", "Privet", "Yew")], 1.5, (24.0, 30.0), (2.0, 4.0), 11),
+    "rocks": ([f"rocks/rock_small_{i:02d}.usda" for i in range(1, 7)], 3.0, (21.0, 25.0), (0.6, 1.4), 13),
 }
 
 _bbox = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])

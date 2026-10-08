@@ -49,14 +49,5 @@ over "World"
             }
         }
     }
-
-    over "rocks"
-    {
-        over "item_14" (
-            active = false
-        )
-        {
-        }
-    }
 }
 

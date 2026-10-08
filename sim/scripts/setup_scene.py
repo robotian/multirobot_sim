@@ -66,6 +66,11 @@ def robot_namespace(slot, model):
 
 CAM_W = int(os.environ.get("CAMERA_WIDTH", "640"))
 CAM_H = int(os.environ.get("CAMERA_HEIGHT", "360"))
+# Robot cameras' far clipping plane (colour and depth). Was 30 m: the farm scene's tree line, pushed back near its
+# ground's edge (sim/scripts/build_farm_scene.py BORDER, 21-37 m past the field), was cut off and the horizon
+# showed sky. Depth beyond a real D435's range is still published; depth consumers clip it with their own
+# range_max (depthimage_to_laserscan).
+CAM_FAR_CLIP = 120.0
 CAM_FRAME_SKIP = int(os.environ.get("CAMERA_FRAME_SKIP", "0"))  # 0 = publish every simulation frame
 # Each camera-equipped robot costs ~12 ms of frame time, so 3 robots cannot render at the app's default 60 Hz.
 # The stage runs at SIM_RATE_HZ instead and PhysX substeps at PHYSICS_HZ inside each frame, which keeps
@@ -116,7 +121,7 @@ SKY_HDR = "/sim/assets/sky/farm_field_puresky_2k.hdr"
 SKY_INTENSITY = 400
 TREE_USDS = [f"/sim/assets/trees/{n}.usd" for n in ("Douglas_Fir", "Black_Oak", "Douglas_Fir")]
 TREE_COUNT = 36
-TREE_DIST = 22.0  # the cameras clip at 30 m, so the tree line has to sit inside that
+TREE_DIST = 22.0  # chosen when the cameras clipped at 30 m (now CAM_FAR_CLIP)
 TREE_HEIGHT = (7.0, 11.0)  # m
 SHRUB_USDS = [f"/sim/assets/shrubs/{n}.usd" for n in ("Rhododendron", "Lilac", "Goldflame_Spirea", "Barberry")]
 SHRUB_COUNT = 70
@@ -1621,7 +1626,7 @@ def add_camera(stage, robot_root, optical_link=None, hfov_deg=HFOV_DEG, index=0)
     cam.CreateHorizontalApertureAttr(h_aperture)
     cam.CreateVerticalApertureAttr(h_aperture * CAM_H / CAM_W)
     cam.CreateFocalLengthAttr(h_aperture / 2 / math.tan(math.radians(hfov_deg) / 2))
-    cam.CreateClippingRangeAttr(Gf.Vec2f(0.05, 30.0))
+    cam.CreateClippingRangeAttr(Gf.Vec2f(0.05, CAM_FAR_CLIP))
     return cam_path
 
 
