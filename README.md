@@ -721,3 +721,13 @@ The per-directory `CLAUDE.md` files go into more detail on each area.
 
 - **The lidar reports hits at 0.1-0.3 m:** that is the robot's own body. Nav2 needs the `laser_filters` box self-filter (`sim_nav2.launch.py` adds it), otherwise the collision monitor refuses to move.
 - **Raycast sensor values look wrong:** `isaacsim.sensors.experimental.physics.Raycast`'s `depths` are bogus (always `min_range`), and the plugin segfaulted the sim during physics steps. The lidars now cast their own rays through PhysX scene queries; don't switch back. See `sim/CLAUDE.md`.
+
+### Real robots: deploy
+
+- **`deploy_robot.sh` stops with `Permission denied (publickey,password)` / `cannot ssh to robot@<host>`, even with `--dry-run`:** the script needs key login (`BatchMode=yes`, it never asks for a password), and `--dry-run` connects too. Check that this machine has a key (`ls ~/.ssh/id_*`); if not, `ssh-keygen -t ed25519`, then `ssh-copy-id -i ~/.ssh/id_ed25519.pub robot@<host>`, run as the user who runs the deploy. Test with `ssh -o BatchMode=yes robot@<host> true`.
+- **The dry run lists thousands of files to delete (drivers like `zed-ros2-wrapper`, `ros2_kortex`, `clearpath_common`):** the robot still has the old single-workspace layout. Its own packages are in `~/colcon_ws/src`, there is no `~/robot_ws`, and `/etc/clearpath/robot.yaml` lists only `~/colcon_ws`. A deploy would wipe those packages, `.git` and uncommitted edits included. Don't answer yes to the delete prompt or pass `--yes`. Move the robot to the two-workspace layout first (done on a300_00036; details in `scripts/CLAUDE.md`, *Deploying to a real robot*):
+  1. `scripts/backup_robot.sh <id>`.
+  2. Bring the robot's edits to packages this repo also has (e.g. `mtu32_husky`) into `colcon_ws/src`, committing in the submodule first; otherwise the deploy overwrites them.
+  3. On the robot, rename `~/colcon_ws` to `~/colcon_ws_backup` (keep it), copy its `src` to `~/robot_ws/src`, put a `COLCON_IGNORE` in each package this repo's `colcon_ws/src` provides (keep the robot's own `swiftnav_ros2_driver`, and its `status_interfaces` if its packages depend on it), and build `~/robot_ws`.
+  4. Back up `robot.yaml`, then list `~/robot_ws/install/setup.bash` before `~/colcon_ws/install/setup.bash` under `system.ros2.workspaces` (saving it restarts the robot's services).
+  5. Dry run again: only this repo's packages should be updated, with nothing to delete.

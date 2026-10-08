@@ -8,7 +8,7 @@
     "cutter": false
   },
   "j100_0921": {
-    "host": "cpr-j100-0921.local",
-    "cutter": true
+    "host": "192.168.10.177",
+    "cutter": false
   }
 }
