@@ -73,7 +73,8 @@ SOIL_TILE_M = 3.0  # make_farm_textures.SOIL_TILE_M
 SOIL_SPECULAR_LEVEL = 0.15
 SKY_HDR = "sky/farm_field_puresky_2k.hdr"
 SKY_INTENSITY = 400
-SUN_INTENSITY = 10000
+SUN_INTENSITY = 5000
+SUN_ROTATE_XYZ = (20, 2.0, -50)  # degrees, the distant light's rotateXYZ (user's choice; was (-60, 33, -30) at 10000)
 
 # Border vegetation (setup_scene.py's add_horizon_vegetation, here a band around the field instead of an arc ahead
 # of the robots): (assets, spacing along the band m, distance band outside the field's plants m, height m, seed).
@@ -213,7 +214,7 @@ def add_lights(stage):
     dome.CreateTextureFormatAttr("latlong")
     sun = UsdLux.DistantLight.Define(stage, "/World/Lights/sun")
     sun.CreateIntensityAttr(SUN_INTENSITY)
-    UsdGeom.Xformable(sun).AddRotateXYZOp().Set(Gf.Vec3f(-60, 33, -30))
+    UsdGeom.Xformable(sun).AddRotateXYZOp().Set(Gf.Vec3f(*SUN_ROTATE_XYZ))
 
 
 def add_plants(stage, plants):
