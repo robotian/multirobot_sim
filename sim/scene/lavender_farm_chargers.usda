@@ -58,20 +58,5 @@ over "World"
         {
         }
     }
-
-    over "shrubs"
-    {
-        over "item_38" (
-            active = false
-        )
-        {
-        }
-
-        over "item_39" (
-            active = false
-        )
-        {
-        }
-    }
 }
 

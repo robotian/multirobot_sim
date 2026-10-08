@@ -79,9 +79,13 @@ SUN_ROTATE_XYZ = (20, 2.0, -50)  # degrees, the distant light's rotateXYZ (user'
 # Border vegetation (setup_scene.py's add_horizon_vegetation, here a band around the field instead of an arc ahead
 # of the robots): (assets, spacing along the band m, distance band outside the field's plants m, height m, seed).
 # The rocks start 7 m out: the fleet's default spawn poses (x=0, y up to +1.6) are ~5.5 m north of row 1.
+# Trees and shrubs stand back near the ground's edge (GROUND_SIZE: ~41 m past the field on each side), the trees big
+# and dense (user's request; were 7-11 m tall every 3 m, 13-17 m out, shrubs 9-14 m out): trunks stay >= 6 m inside
+# the edge, the widest oak crowns (1.3x their height) may reach just past it. The robot cameras clip at 30 m
+# (setup_scene.add_camera), so from inside the field they no longer see the tree line; the viewport does.
 BORDER = {
-    "trees": ([f"trees/{n}.usd" for n in ("Douglas_Fir", "Black_Oak", "Douglas_Fir")], 3.0, (13.0, 17.0), (7.0, 11.0), 7),
-    "shrubs": ([f"shrubs/{n}.usd" for n in ("Rhododendron", "Lilac", "Goldflame_Spirea", "Barberry")], 1.8, (9.0, 14.0), (1.0, 2.2), 11),
+    "trees": ([f"trees/{n}.usd" for n in ("Douglas_Fir", "Black_Oak", "Douglas_Fir")], 2.0, (29.0, 35.0), (10.0, 16.0), 7),
+    "shrubs": ([f"shrubs/{n}.usd" for n in ("Rhododendron", "Lilac", "Goldflame_Spirea", "Barberry")], 1.8, (24.0, 29.0), (1.0, 2.2), 11),
     "rocks": ([f"rocks/rock_small_{i:02d}.usda" for i in range(1, 7)], 4.5, (7.0, 11.0), (0.4, 1.0), 13),
 }
 
