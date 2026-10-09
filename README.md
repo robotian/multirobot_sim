@@ -298,7 +298,7 @@ All topics live under the robot's namespace (`a300_0000`, `j100_0001`, …, what
 | `tf`, `tf_static` | `tf2_msgs/TFMessage` | `odom → base_link` from the EKF; `ground_truth → base_link_ground_truth` (exact pose) from the sim; the rest from `robot_state_publisher` |
 | `robot_description` | `std_msgs/String` | latched (transient local) |
 | `sensors/camera_0/color/image`, `…/color/camera_info` | `sensor_msgs/Image`, `CameraInfo` | `rgb8`, frame `camera_0_color_optical_frame` |
-| `sensors/camera_0/depth/image`, `…/depth/camera_info` | `sensor_msgs/Image`, `CameraInfo` | (`camera_1/…` too on robots with a second camera) |
+| `sensors/camera_0/depth/image`, `…/depth/camera_info` | `sensor_msgs/Image`, `CameraInfo` | `32FC1` metres, limited to the real sensor's range: D435i 0.28–10 m, ZED 2i 0.3–20 m, wrist D405 0.07–1 m; outside it a pixel is 0, as the real drivers publish (`DEPTH_RANGE_M` in `setup_scene.py`). Colour renders out to 120 m. (`camera_1/…` too on robots with a second camera) |
 | `sensors/imu_<n>/data` | `sensor_msgs/Imu` | robots with an IMU |
 | `sensors/gps_<n>/fix` | `sensor_msgs/NavSatFix` | robots with GPS (flat-earth projection around a fixed origin) |
 | `sensors/lidar2d_0/scan`, `sensors/lidar3d_0/points` | `LaserScan`, `PointCloud2` | robots with a lidar, see *2D lidar* / *3D lidar* |
@@ -492,14 +492,14 @@ Besides the robots, the sim spawns some static scene dressing in `build_world()`
 - a **lavender farm** look, modelled on real photos of the field:
   - **Ground:** the `/World/ground` box (80 x 80 m, physics-material friction for traction) has a dark-brown soil material (`GROUND_SOIL_COLOR`), so soil rather than a bright box shows through the grass. `add_ground_cover()` references one unscaled patch of `sim/assets/Ground_cover/ground_cover.usd` on top of it: a 100 x 100 m grass field of ~73k PointInstancer blades, 9–11 cm tall (the layer says `metersPerUnit=0.01` but its geometry is really in metres; tiling many patches exceeds the renderer's instance limit and nothing draws). Visual only, no collider.
   - **Lavender rows:** `add_lavender()` plants (`SM_Lavender_Nanite_01.usd` under `sim/assets/lavender/`, instanceable, scaled by 0.006) form one overlapping hedge row on each side of the robots' driving lanes (`LAVENDER_ROW_*`, `LAVENDER_PLANT_PITCH`; 10 plants per row along +X). Colliders, but soft for the robots (see *Real lavender field*, Colliders). Each plant is ~1.26M triangles, so row length is what costs fps.
-  - **Horizon:** `add_horizon_vegetation()` scatters NVIDIA Omniverse library assets (`Assets/Vegetation/Trees|Shrub|Rocks` from the public `omniverse-content-production` S3 bucket, downloaded into `sim/assets/trees|shrubs|rocks/` together with their `materials/` or `textures/` folders, which the assets need or the foliage renders red). The shrubs Lilac, Rhododendron and Goldflame Spirea take their bark from `../Trees/materials/` (the library's folder name), so `sim/assets/` also needs the symlink `Trees -> trees` (`ln -s trees sim/assets/Trees`), or their bark renders red on an arc 19–29 m ahead: 36 trees (Douglas fir, black oak), 70 shrubs, 30 boulders (`TREE_*`/`SHRUB_*`/`ROCK_*`). The cameras clip at 30 m, so everything has to sit inside that. Each asset is sized from its own bbox to a random target height, and referenced under its own child prim because the asset roots carry xform ops. Some shrub assets are unusable (`Cedar_Shrub` has an empty bbox).
+  - **Horizon:** `add_horizon_vegetation()` scatters NVIDIA Omniverse library assets (`Assets/Vegetation/Trees|Shrub|Rocks` from the public `omniverse-content-production` S3 bucket, downloaded into `sim/assets/trees|shrubs|rocks/` together with their `materials/` or `textures/` folders, which the assets need or the foliage renders red). The shrubs Lilac, Rhododendron and Goldflame Spirea take their bark from `../Trees/materials/` (the library's folder name), so `sim/assets/` also needs the symlink `Trees -> trees` (`ln -s trees sim/assets/Trees`), or their bark renders red on an arc 19–29 m ahead: 36 trees (Douglas fir, black oak), 70 shrubs, 30 boulders (`TREE_*`/`SHRUB_*`/`ROCK_*`). This arc was placed when the robot cameras clipped at 30 m; they now render colour out to 120 m (`CAM_FAR_CLIP`). Each asset is sized from its own bbox to a random target height, and referenced under its own child prim because the asset roots carry xform ops. Some shrub assets are unusable (`Cedar_Shrub` has an empty bbox).
   - **Sky and light:** the dome light uses `sim/assets/sky/farm_field_puresky_2k.hdr` (a cloud panorama, also the camera background) at `SKY_INTENSITY = 400`; the distant sun is intensity 10000, rotation (-60, 33, -30). The old target boxes, wall and pillars, and the lavender fill light, were removed.
 
 ### Real lavender field (`lavender_farm.usd`)
 
 `sim/scene/lavender_farm.usd` is the real field. It has one lavender plant for each row of the farm database's `public.object_data` table, placed at its `x_coord`/`y_coord`. In 2026-10 that was 380 plants in 10 rows, covering x −0.2…16.8 m and y −20.5…−4.0 m. Those coordinates are in the map frame, which is the sim's world frame: the sim's GPS datum is its world origin, with X = east and Y = north. So a robot's localization in the sim reports the same coordinates as the database.
 
-The file uses the same ground cover, soil, sky and sun as the built-in `lavender` scene, with trees, shrubs and rocks all around the field.
+It uses the built-in `lavender` scene's grass and sky. It adds a textured soil ground, weed-barrier fabric over a mound under each plant, and trees, shrubs and rocks scattered at random around a clearing (see *What's in it*).
 
 **Generate or regenerate it** whenever the plants in the database change:
 
@@ -518,6 +518,17 @@ Requirements:
 
 The script reads the connection settings from `colcon_ws/src/status_server/config/config.yaml`, using `localhost` in place of `host.docker.internal`, and the password from `PGPASSWORD` or `~/.pgpass` (config.yaml holds none; the robot containers get it from the untracked `db.env`). It saves the plant list to `sim/generated/farm/plants.json`, then runs `sim/scripts/build_farm_scene.py` with Isaac's USD libraries in a throwaway container. That needs no GPU, takes a few seconds and doesn't touch a running sim.
 
+**Rebuild without the database** (after changing `build_farm_scene.py`, plants unchanged): run the generator on the saved `plants.json`. `build_farm_scene.py` can't run on the host: it needs Isaac's USD libraries, which are only in the Isaac image. From the repo root:
+
+```bash
+rm -f sim/scene/lavender_farm.usd && docker run --rm --entrypoint bash -v "$PWD/sim:/sim" a300-isaac-sim:6.0.0 -c \
+  'L=$(ls -d /isaac-sim/extscache/omni.usd.libs-*/ | head -1); export PYTHONPATH=$L LD_LIBRARY_PATH=$L/bin:$LD_LIBRARY_PATH;
+   /isaac-sim/python.sh /sim/scripts/build_farm_scene.py /sim/generated/farm/plants.json /sim/scene/lavender_farm.usd'
+docker restart a300-isaac-sim
+```
+
+The textures of the fabric and the soil are generated by `sim/scripts/make_farm_textures.py`, which runs on the host (numpy, Pillow) and writes `sim/assets/weed_barrier/` and `sim/assets/soil/`. Rerun it only after changing its constants.
+
 **Use it:** set `SIM_SCENE=lavender_farm.usd` in `.env` or pick it in the web UI's *Scene* picker, then restart the sim (`scripts/fleet.sh`, or `docker restart a300-isaac-sim` if `SIM_SCENE` was already set). To try it once without editing `.env`, prefix the commands with the variable. Use the same prefix for the spawn, or compose recreates the sim from `.env`:
 
 ```bash
@@ -529,14 +540,23 @@ Spawn robots on the headlands or in a lane, not inside a row. For example, x = �
 
 **What's in it:**
 
-- **Plants:** the same `SM_Lavender_Nanite_01.usd` asset, scaled uniformly to `PLANT_DIAMETER` = 0.75 m wide, which makes them about 0.5 m tall. Each plant gets a fixed random yaw seeded by its `object_id`. Neighbouring plants overlap into a hedge and the lanes are about 1.1 m clear. An A300, about 0.86 m wide, has roughly 12 cm on each side. The navigation map in `status_server` assumes 0.45 m thick rows, so it expects more room than the sim has.
+- **Plants:** the same `SM_Lavender_Nanite_01.usd` asset, scaled uniformly to `PLANT_DIAMETER` = 0.825 m wide, which makes them about 0.55 m tall. Each plant gets a fixed random yaw seeded by its `object_id`. Neighbouring plants overlap into a hedge and the lanes are about 1.03 m clear. An A300, about 0.86 m wide, has roughly 8 cm on each side. The navigation map in `status_server` assumes 0.45 m thick rows, so it expects more room than the sim has. The stem and leaf materials are translucent; `LAVENDER_SUBSURFACE_OPACITY` (0.7; the asset has 0.25) makes them less so, so the plants cast denser shadows.
+- **Mounds and weed barrier:** each plant sits on a 6 cm soil mound (`MOUND_HEIGHT`, `MOUND_RADIUS` 0.35 m). Without it the plant's stems met in the air above flat ground and the plant looked like it was floating. A row's mounds join into a low wavy ridge. Over it lies black woven landscape fabric, as on the real farm: one 0.9 m wide strip per row (`BARRIER_WIDTH`, a 3 ft roll) that follows the mounds and lies flat on the ground at its edges. Its texture is a basket weave with green guide lines along the roll, sparsely dusted with sand, more of it near the edges. The grass under the strips is hidden. Visual only, no collider.
+- **Ground:** a 100 m square centred on the field: a quad with a dark, grainy sandy-soil texture (`/World/ground_surface`), with the grass patch on top. The collider and the grippy physics material are on the ground box underneath, which isn't rendered.
 - **Colliders:** the plants, trees, shrubs and rocks have colliders, so the lidars see them. The colliders are written into the file itself, so it depends only on `sim/assets/` and nothing in `sim/generated/`. Trees, shrubs and rocks stop the robots.
 - **Soft lavender** (`LAVENDER_SOFT=1`, the default, both lavender scenes): real stems are thin and bend, so a robot brushing a plant pushes through it. At load the sim puts every lavender collider in a collision group that ignores the robots, which can drive through the foliage, while the lidars still see it. It also adds a hidden rigid cylinder (20 cm wide, 30 cm tall) at the centre of each plant, standing in for the woody crown. Driving into a plant's centre stops the robot. The farm's plants are 0.45 m apart, so the cores still make a row a barrier you can't cross. `LAVENDER_SOFT=0` makes the whole plant solid again.
-- **Ground:** the ground box and ground cover are centred on the field.
-- **Border:** trees, shrubs and rocks form a band around the field. The rocks start 7 m out, leaving clear headlands at the row ends.
-- **Tuning:** to change the plant size or the border, edit the constants at the top of `sim/scripts/build_farm_scene.py` and run the script again.
+- **Border:** 200 trees (Douglas fir, black oak, 10–16 m), 220 shrubs (Holly, Lilac, Privet, Yew, 2–4 m) and 80 rocks are scattered at random over the ground outside a clearing around the field, out to the edges and corners (`BORDER`, `scatter_points`). Rocks start about 18 m from the field, shrubs about 20 m and trees about 23 m. Each distance varies by ±3 m per item (`EDGE_JITTER_M`), so the forest edge is ragged, and no two items overlap. The clearing keeps the default spawn area and the charger open. From inside the field the trees cover the horizon in the robot cameras.
+- **Sky and sun:** the same sky panorama at `SKY_INTENSITY` 400, and a sun at `SUN_INTENSITY` 5000, rotation `SUN_ROTATE_XYZ` (20, 2, −50), about 70° high. A lower sun gives longer shadows; a dimmer sky darker ones.
+- **Tuning:** to change any of this, edit the constants at the top of `sim/scripts/build_farm_scene.py`, rebuild (above) and restart the sim.
 
-Measured with one A300 in a lane:
+**Editing the scene in Isaac Sim.** The sim doesn't open the scene file for editing: it builds a new, unsaved stage and loads the file into it as a sublayer, so nothing writes to it by accident. To keep changes made in the Isaac Sim window:
+
+- Use **File > Save As** into `sim/scene/`, the one folder there the sim's user (uid 1234) can write. The *Save* button stays greyed out until you type a plain file name in the name box: no folder, no `/`, e.g. `my_farm.usda`. A pre-filled name doesn't count.
+- The saved file contains your edits plus a link to the scene it was built on, so later rebuilds of the farm still show through. Pick it with the web UI's *Scene* picker or `SIM_SCENE`. It also carries settings the sim adds at every start (physics overrides, render settings, `/Graphs/fleet_clock`, `lavender_cores`); robots and graphs saved with it are removed when it loads.
+- It does **not** carry the field's row list unless it is built on `lavender_farm_chargers.usda`. The spawn map reads the rows from the top file, so a file saved over `lavender_farm.usd` alone shows no rows.
+- Don't save over `lavender_farm.usd`: the next rebuild overwrites it. `lavender_farm_chargers.usda` belongs to your host user and isn't writable by the sim. Changes that should survive rebuilds belong in `build_farm_scene.py`.
+
+With the current border, ground and fabric, `j100_0921` alone with its cameras idle ran at 25 fps (`/clock` rate). Measured with one A300 in a lane, before those changes:
 
 - The sim ran at 23–24 render fps with a real-time factor of about 1.05.
 - The robot drove straight down the lane.
