@@ -29,7 +29,7 @@ One image (`Dockerfile`, base `osrf/ros:jazzy-desktop-full`) for every model; on
 - `generate_srdf`: `/etc/clearpath/robot.srdf` for MoveIt (`mtu32_bringup` `moveit.launch.py` fails without it). Same steps as `generate_semantic_description` (`SemanticDescriptionGenerator` + `moveit_collision_updater`), but:
   - `--default --always --trials 10000` instead of Clearpath's `--trials 100000`, because ≥ ~30000 always crashes (stack smashing).
   - Trials = random configurations sampled; a pair that never collides in any sample is disabled for good. Too few (`--trials 1`: ~368 pairs) let MoveIt plan the a200_0284 gripper into `rail_link`. 10000 (~1 s, ~265 pairs) keeps those enabled. Stripping all "Never" pairs (~47 left) made `moveit_servo` jerky.
-  - Still aborts at random (~50% at 10000), so it retries 10000×4, 5000×2, 2000×2, then 1.
+  - Runs on local FastDDS (`RMW_IMPLEMENTATION=rmw_fastrtps_cpp`, discovery `LOCALHOST`, no `ZENOH_*`): under zenoh it writes the SRDF and then aborts at exit (zenoh's Tokio runtime panics in atexit, rc -6), which looked like a random crash (~50%) and on 2026-10-09 failed every attempt on every robot. Retries 10000×3, 5000×2, 2000; a failed attempt's file is deleted, and there is no `--trials 1` fallback (unsafe matrix): no SRDF = upstart refuses with a clear message.
   - Runs `generate_description` itself (`robot_state` starts after it) and prunes dangling joints first.
 - `robot_state`: `generate_description` + xacro → `robot_state_publisher` (namespaced, `joint_states:=platform/joint_states`). Before publishing it:
   - prunes dangling joints (mtu32_description mounts `camera_1` on `arm_0_end_effector_link` even without an arm, e.g. j100_0922; the strict loader aborts);

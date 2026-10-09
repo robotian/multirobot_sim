@@ -16,8 +16,9 @@
 # `--trials 1` (used before) disabled ~368 pairs from ONE sample, including arm-vs-body pairs -- MoveIt then planned
 # straight through the robot (a200_0284: gripper into rail_link / rail_post_left_link, found with GetStateValidity:
 # valid with that matrix, colliding once the "Never" pairs were removed). 10000 (the MoveIt Setup Assistant default)
-# runs in about a second and keeps those pairs enabled (265 disabled pairs vs 415). Values >= ~30000 crash the tool
-# here ("stack smashing detected"), which is why Clearpath's own 100000 can't be used. Don't go the other way and
+# runs in about a second and keeps those pairs enabled (265 disabled pairs vs 415). Values >= ~30000 crashed the tool
+# here ("stack smashing detected"; possibly the same zenoh exit abort as below, not re-tested on local FastDDS), which
+# is why Clearpath's own 100000 isn't used. Don't go the other way and
 # strip every "Never" pair either: with only ~47 pairs disabled moveit_servo's per-cycle collision checks made the
 # cut_stem approach jerky.
 set -e
@@ -83,25 +84,34 @@ try:
     path = get_executable_path(
         executable_name='moveit_collision_updater',
         package_name='clearpath_generator_common')
-    # The tool aborts at random ("stack smashing detected", ~50% of runs at 10000 trials, ~25% at 5000, also seen at
-    # 1000), so a single call can't be trusted at boot: retry, and only then fall back to fewer samples.
+    # The tool is a ROS node only by accident (it creates one to log), so it runs on local FastDDS, not the fleet's
+    # zenoh: under rmw_zenoh_cpp it does its work, writes robot.srdf and then aborts at exit (zenoh's runtime
+    # panics: "The Thread Local Storage inside Tokio is destroyed ... at process exit", rc -6), so every attempt
+    # looked failed. That was the "random stack smashing" seen before (~50% at 10000 trials), and on 2026-10-09 it
+    # failed 9/9 on every robot; the file kept was the --trials 1 fallback's. Same files on local FastDDS: 5/5 at
+    # 10000. A failed attempt's output is removed, and there is no --trials 1 fallback any more: that matrix lets
+    # MoveIt plan through the robot (see the header), so no SRDF (sim_robot_upstart then says so) is safer.
+    env = {k: v for k, v in os.environ.items() if not k.startswith('ZENOH_')}
+    env.update(RMW_IMPLEMENTATION='rmw_fastrtps_cpp', ROS_AUTOMATIC_DISCOVERY_RANGE='LOCALHOST')
     out_path = os.path.join(setup_path, 'robot.srdf')
     if os.path.exists(out_path):
         os.remove(out_path)
-    for trials in (10000, 10000, 10000, 10000, 5000, 5000, 2000, 2000, 1):
+    for trials in (10000, 10000, 10000, 5000, 5000, 2000):
         rc = subprocess.run([
             path,
             '--urdf', cleaned_urdf_path,
             '--srdf', os.path.join(setup_path, 'robot.srdf.xacro'),
             '--output', out_path,
             '--default', '--always', '--trials', str(trials),
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env).returncode
         if rc == 0 and os.path.exists(out_path):
             print(f'[generate_srdf] robot.srdf written with --trials {trials}')
             break
+        if os.path.exists(out_path):
+            os.remove(out_path)
         print(f'[generate_srdf] moveit_collision_updater failed (rc={rc}) with --trials {trials}; retrying')
     else:
-        print('[generate_srdf] ERROR: could not generate robot.srdf')
+        print('[generate_srdf] ERROR: could not generate robot.srdf (MoveIt and sim_robot_upstart need it)')
     os.remove(os.path.join(setup_path, 'package.xml'))
 except (UnsupportedAccessoryException, UnsupportedMiddlewareException, UnsupportedPlatformException) as err:
     print(f'[generate_srdf] skipped: {err}')
