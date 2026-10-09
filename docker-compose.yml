@@ -119,6 +119,10 @@ services:
       ACCEPT_EULA: "Y"
       PRIVACY_CONSENT: "Y"
       NVIDIA_DRIVER_CAPABILITIES: all
+      # No OmniHub (Omniverse's local cache service): /usr/local/bin/hub (2.0.0) exits at once in this container
+      # ("Hub is not running"), and omni.client retried it ~40 times at start ("Hub encountered error ... Hub
+      # failed to launch") before going direct anyway. The Content tab and S3 assets load the same without it.
+      OMNICLIENT_HUB_MODE: disabled
       ISAACSIM_HOST: ${ISAACSIM_HOST:-127.0.0.1}
       <<: *rmw-env
       # The sim starts with the scene only; robots (models, poses) arrive later as a spawn request written by
