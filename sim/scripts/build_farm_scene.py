@@ -32,6 +32,9 @@ LAVENDER = "lavender/SM_Lavender_Nanite_01.usd"
 # status_server, treats a row as 0.45 m thick; 0.5 m wide plants were only ~0.33 m tall; 0.75 m was made 10%
 # bigger at the user's request, then 0.825 m 20% bigger on 2026-10-09: ~0.66 m tall, the lane ~0.86 m clear).
 PLANT_DIAMETER = 0.99
+# Each plant's width is a fixed random fraction of PLANT_DIAMETER (uniform, seeded by its object_id like its yaw, so
+# every rebuild looks the same); identical clumps looked artificial to the user (2026-10-09).
+PLANT_SIZE_RANGE = (0.9, 1.1)
 # Margin around the plant centres for the field box the border (trees, shrubs, rocks) keeps its distance from. Kept
 # at the 0.825 m plants' half width when they grew to 0.99 m, so the random border layout stayed the same.
 FIELD_BOX_MARGIN = 0.4125
@@ -241,8 +244,8 @@ def add_lights(stage):
 
 def add_plants(stage, plants):
     """One instanceable copy of the lavender prototype per plant, under /World/lavender/row_<row_id>, scaled per axis
-    uniformly to PLANT_DIAMETER wide and centred on its x/y (the asset's bbox is off its origin). Returns the rows'
-    extents [x_min, x_max, y_mean, width] for the web UI's spawn map."""
+    uniformly to its own width (PLANT_DIAMETER x PLANT_SIZE_RANGE) and centred on its x/y (the asset's bbox is off
+    its origin). Returns the rows' extents [x_min, x_max, y_mean, width] for the web UI's spawn map."""
     proto = add_prototype(stage, "lavender", LAVENDER)
     n_sss = 0
     for q in Usd.PrimRange(stage.GetPrimAtPath(proto), Usd.PrimAllPrimsPredicate):  # the prototype is abstract
@@ -253,7 +256,7 @@ def add_plants(stage, plants):
     print(f"lavender: SubsurfaceOpacity {LAVENDER_SUBSURFACE_OPACITY} on {n_sss} material(s)")
     r = asset_bounds(LAVENDER)
     size, mid = r.GetSize(), r.GetMidpoint()
-    k = PLANT_DIAMETER / max(size[0], size[1])
+    k = 1.0 / max(size[0], size[1])  # per metre of plant width
     pivot = Gf.Vec3d(-mid[0], -mid[1], -r.GetMin()[2])
     UsdGeom.Xform.Define(stage, "/World/lavender")
     rows = {}
@@ -262,19 +265,22 @@ def add_plants(stage, plants):
         if p["row_id"] not in rows:
             UsdGeom.Xform.Define(stage, row)
             rows[p["row_id"]] = []
-        rows[p["row_id"]].append(p)
+        rng = random.Random(p["object_id"])  # same look on every rebuild
+        yaw = rng.uniform(0.0, 360.0)
+        d = PLANT_DIAMETER * rng.uniform(*PLANT_SIZE_RANGE)
+        rows[p["row_id"]].append((p, d))
         prim = stage.DefinePrim(f"{row}/plant_{p['object_id']}", "Xform")
         prim.GetReferences().AddInternalReference(proto)
         prim.SetInstanceable(True)
         prim.SetCustomDataByKey("object_id", int(p["object_id"]))
+        prim.SetCustomDataByKey("diameter_m", round(d, 4))
         xf = UsdGeom.Xformable(prim)
         xf.AddTranslateOp().Set(Gf.Vec3d(p["x"], p["y"], -PLANT_SINK))
-        xf.AddRotateZOp().Set(random.Random(p["object_id"]).uniform(0.0, 360.0))  # same look on every rebuild
-        xf.AddScaleOp().Set(Gf.Vec3d(k, k, k))
+        xf.AddRotateZOp().Set(yaw)
+        xf.AddScaleOp().Set(Gf.Vec3d(k * d, k * d, k * d))
         xf.AddTranslateOp(opSuffix="pivot").Set(pivot)
-    half = PLANT_DIAMETER / 2
-    return [[min(q["x"] for q in ps) - half, max(q["x"] for q in ps) + half, sum(q["y"] for q in ps) / len(ps),
-             PLANT_DIAMETER]
+    return [[min(q["x"] - d / 2 for q, d in ps), max(q["x"] + d / 2 for q, d in ps),
+             sum(q["y"] for q, _ in ps) / len(ps), max(d for _, d in ps)]
             for _, ps in sorted(rows.items())]
 
 
