@@ -42,6 +42,7 @@ One image (`Dockerfile`, base `osrf/ros:jazzy-desktop-full`) for every model; on
 - `pruner_stub`: fake OpenCR firmware for `pruner_action_server`, stdlib only. PTY with `/dev/ttyOpenCR` symlinked to the slave. On any `<int>\n`, waits 2 s and replies `STATUS:DONE\n`; it never fails.
 - `restart_ros`: `pkill -9` of everything ROS (`ros2 run|launch`, `/opt/ros/*/lib/`, `colcon_ws/install/*/lib/`, pruner_stub). After 5 s it reports whether the four looped services are back. Manually launched stacks stay stopped.
 - `teleop` (TwistStamped, `stamped:=true`), `rviz` (from `robot.rviz.tmpl`), `camera_view` (`rqt_image_view` on `sensors/camera_0/<color|depth>/image`). `arm_goto`/`arm_joints` are shims to `moveit_sim_bridge` in colcon_ws.
+- GUIs (RViz, `camera_view`) render with the NVIDIA driver's OpenGL (compose's GPU reservation + `NVIDIA_DRIVER_CAPABILITIES=graphics`; RViz logs `OpenGl version: 4.6`). Without it they fall back to Mesa's software renderer (`4.5`), whose shader linker rejects RViz's Map display: two nav2 views crashed both RViz. A container from before 2026-10-09 has to be recreated (`scripts/fleet.sh`).
 
 ## Sim time
 

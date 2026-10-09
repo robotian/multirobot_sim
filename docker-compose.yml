@@ -38,6 +38,8 @@ x-robot: &robot
     DISPLAY: ${DISPLAY:-:0}
     XAUTHORITY: /tmp/.x11/xauth
     QT_X11_NO_MITSHM: "1"
+    # the NVIDIA OpenGL/EGL libraries for RViz (see deploy: below); utility = nvidia-smi
+    NVIDIA_DRIVER_CAPABILITIES: graphics,utility
     # uid/gid for the containers' `robot` user (owner of colcon_ws); empty = the owner of this checkout
     HOST_UID: ${HOST_UID:-}
     HOST_GID: ${HOST_GID:-}
@@ -53,16 +55,20 @@ x-robot: &robot
     # robot/entrypoint.sh for a model id it has one for, instead of rendering a stripped-down .tmpl -- read-only
     # since nothing in a robot container should ever write back to this.
     - ./robot_data:/robot_data:ro
-  # /dev/dri: real GPU access for rviz2's OGRE-based 3D viewport (mouse orbit/pan/zoom on the robot model).
-  # Without it (the original setup -- only the isaac-sim service had any GPU device config) RViz's window still
-  # opens and renders over X11 forwarding, but its embedded render-window falls back to indirect GLX or Mesa's
-  # llvmpipe software rasterizer, and mouse-driven camera control on that embedded window is a known-flaky path
-  # under both -- confirmed live: the window worked, the model displayed, but orbit/pan/zoom didn't respond at
-  # all. This is a plain device passthrough (not the NVIDIA container-toolkit GPU reservation isaac-sim uses),
-  # giving Mesa real DRI3/GLX direct rendering; containers run as root here so no extra host group membership
-  # is needed for the card1 (video-group)/renderD128 (render-group) device nodes' permissions.
-  devices:
-    - /dev/dri:/dev/dri
+  # The NVIDIA driver's OpenGL for RViz (and camera_view), like the sim's: the container toolkit mounts
+  # libGLX_nvidia etc. (NVIDIA_DRIVER_CAPABILITIES in environment: above) and glvnd picks it for the host's NVIDIA X server.
+  # Before (2026-10-09) the robots only had /dev/dri, which Mesa can't drive on an NVIDIA card: RViz ran on Mesa's
+  # software renderer (libgallium, "OpenGl version: 4.5"), whose GLSL linker rejects the Map display's shader
+  # ("active samplers with a different type refer to the same texture image unit"); with two robots' nav2 views
+  # open, both RViz died (SIGSEGV after the map loaded, GL_OUT_OF_MEMORY). Same image and map with this: GL 4.6
+  # on libGLX_nvidia, no error.
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
 
 services:
   # One-shot: named volumes are created root-owned, Isaac Sim runs as uid 1234. ./sim/generated (gitignored, so

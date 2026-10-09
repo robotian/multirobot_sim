@@ -44,6 +44,8 @@ services:
       PGUSER: ${BASESTATION_PG_USER:-admin}
       PGDATABASE: ${BASESTATION_PG_DB:-test_lavender_farming}
       DISPLAY: ${DISPLAY:-:0}
+      # the NVIDIA OpenGL libraries for the real robots' RViz (see deploy: below, and docker-compose.yml's x-robot)
+      NVIDIA_DRIVER_CAPABILITIES: graphics,utility
       XAUTHORITY: /tmp/.x11/xauth
       QT_X11_NO_MITSHM: "1"
     volumes:
@@ -60,6 +62,15 @@ services:
       - ./colcon_ws:/home/robot/colcon_ws
       - /tmp/.X11-unix:/tmp/.X11-unix
       - ./.x11:/tmp/.x11:ro
+    # The NVIDIA driver's OpenGL for RViz: without it, Mesa's software renderer (it can't drive an NVIDIA card)
+    # rejects RViz's Map shader and crashes with two views open (docker-compose.yml's x-robot has the details).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "pg_isready", "-q"]
       interval: 5s
