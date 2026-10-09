@@ -80,7 +80,7 @@ SOIL_SPECULAR_LEVEL = 0.15
 SKY_HDR = "sky/farm_field_puresky_2k.hdr"
 SKY_INTENSITY = 400
 SUN_INTENSITY = 5000
-SUN_ROTATE_XYZ = (20, 2.0, -50)  # degrees, the distant light's rotateXYZ (user's choice; was (-60, 33, -30) at 10000)
+SUN_ROTATE_XYZ = (60, 2.0, -50)  # degrees, the distant light's rotateXYZ (user's choice; was (-60, 33, -30) at 10000)
 
 # Border vegetation (setup_scene.py's add_horizon_vegetation, here a band around the field instead of an arc ahead
 # of the robots): (assets, count, min distance from the field's plants m, margin to the ground's edge m, height m,
