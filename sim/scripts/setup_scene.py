@@ -2685,6 +2685,23 @@ async def reset_timeline(app, ctl_id):
     write_state(reset={"id": ctl_id, "state": "done", "time": time.time()})
 
 
+def current_stage(stage):
+    """The stage open in the USD context, logging when it isn't `stage` any more. Isaac's File > Save As closes the
+    stage it saved and reopens the saved file, so the stage main() built is gone (spawning into it failed with
+    "Stage.DefinePrim(Stage, str, str) did not match C++ signature"). The reopened file has what the scene build
+    added (physics settings, collision groups, lavender cores, /Graphs/fleet_clock), so spawning into it works."""
+    cur = omni.usd.get_context().get_stage()
+    if cur is None:
+        raise RuntimeError("no stage is open in Isaac Sim; restart the sim")
+    try:
+        same = stage is not None and stage.GetRootLayer() == cur.GetRootLayer()
+    except Exception:  # an expired stage raises on any call
+        same = False
+    if not same:
+        log(f"the open stage changed (Save As?), now {cur.GetRootLayer().identifier}; spawning into it")
+    return cur
+
+
 async def spawn_loop(app, stage, og, usdrt_sdf, prev_state=None):
     """Spawn the requests found at start, then poll FLEET_REQUEST; a request with a new id replaces the robots.
 
@@ -2729,6 +2746,7 @@ async def spawn_loop(app, stage, og, usdrt_sdf, prev_state=None):
         try:
             robots = parse_request(req)
             log(f"spawn request {last_id}: {len(robots)} robot(s)")
+            stage = current_stage(stage)
             await spawn_fleet(app, stage, og, usdrt_sdf, robots)
             msg = (f"{len(ROBOTS)} robot(s) in {time.time() - t0:.0f} s: {', '.join(ns for ns, _ in ROBOTS)}"
                    if ROBOTS else "no robots")
