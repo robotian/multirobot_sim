@@ -26,3 +26,6 @@ basestation/initdb/*
 !basestation/initdb/README.md
 # scripts/db_sync.sh dumps (backups taken before a pull/restore, pulled copies): farm data, not source
 basestation/backups/
+# Generated from the settings database (scripts/fleetcfg.py render): each PC has its own
+.env
+tools/sim_ui/real_robots.json

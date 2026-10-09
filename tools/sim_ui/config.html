@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet Configuration</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --fg: #1d2330; --muted: #6b7385; --line: #dde1e8;
+    --accent: #2f6fde; --ok: #1f9d55; --warn: #c98a00; --bad: #d64545; --set: #eef3fd;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14171d; --card: #1c2029; --fg: #e4e7ee; --muted: #8a92a5; --line: #2c3240;
+            --accent: #5b8ff0; --set: #212a3b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  header h1 { font-size: 17px; margin: 0; }
+  header a { color: var(--accent); text-decoration: none; }
+  main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; padding: 16px 20px; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; min-width: 0; }
+  .card h2 { font-size: 14px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit; }
+  button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+  button.small { padding: 1px 8px; font-size: 12px; }
+  button.danger { background: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  select, input, textarea { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+  input.dirty, select.dirty { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn); }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .pill.ok { color: var(--ok); border-color: var(--ok); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); }
+  .pill.bad { color: var(--bad); border-color: var(--bad); }
+  .muted { color: var(--muted); }
+  .small { font-size: 12px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { padding: 4px 6px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.key { font: 12px ui-monospace, monospace; white-space: nowrap; }
+  td.act { white-space: nowrap; width: 1%; }
+  tr.set td { background: var(--set); }
+  tr.inactive td { opacity: .55; }
+  .num { width: 70px; }
+  .banner { margin: 12px 20px 0; padding: 8px 12px; border: 1px solid var(--warn); border-radius: 6px; color: var(--warn); }
+  .banner.bad { border-color: var(--bad); color: var(--bad); }
+  .banner:empty { display: none; }
+  .chip { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); margin-right: 3px; }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin: 8px 0 0;
+        max-height: 300px; overflow: auto; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; }
+  .drift { border-left: 3px solid var(--line); padding: 2px 0 2px 10px; margin: 8px 0; }
+  .drift.pending { border-left-color: var(--warn); }
+  .drift.clean { border-left-color: var(--ok); }
+  details summary { cursor: pointer; color: var(--muted); }
+  #toast { position: fixed; bottom: 16px; right: 16px; background: var(--bad); color: #fff; padding: 8px 12px; border-radius: 6px; display: none; max-width: 60ch; }
+  #toast.ok { background: var(--ok); }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="/">Fleet Control</a> › Configuration</h1>
+  <span id="dbPill" class="pill">settings: ?</span>
+  <label>Profile <select id="profileSel" onchange="useProfile(this.value)"></select></label>
+  <button class="ghost" onclick="newProfile()" title="A copy of the active profile under a new name">New…</button>
+  <button class="ghost" onclick="renameProfile()">Rename…</button>
+  <button class="ghost" onclick="deleteProfile()">Delete…</button>
+  <button class="ghost" onclick="exportProfile()" title="Download the active profile as JSON (to share with another PC)">Export</button>
+  <button class="ghost" onclick="document.getElementById('importFile').click()" title="A profile exported on this or another PC, as a new profile">Import…</button>
+  <input type="file" id="importFile" accept=".json,application/json" hidden onchange="importProfile(this)">
+</header>
+<div id="offline" class="banner bad"></div>
+<div id="problems" class="banner"></div>
+<main>
+  <div class="col">
+    <section class="card">
+      <h2>Running vs. settings</h2>
+      <div class="muted small">Containers read the settings when they are created. What runs now with other values,
+        and what applying it does. Changes take effect only when applied (or at the next Start / Spawn).</div>
+      <div id="drift"><span class="muted">loading…</span></div>
+      <pre id="jobLog" hidden></pre>
+    </section>
+
+    <section class="card">
+      <h2>Robot slots</h2>
+      <div class="row">
+        <label title="NUM_ROBOTS: slots 0..N-1 are spawned and get a robot container">Robots started
+          <select id="numRobots" onchange="markSlotsDirty()"></select></label>
+        <button id="slotsSave" onclick="saveSlots()" disabled>Save slots</button>
+        <button class="ghost" onclick="loadConfig(true)">Discard</button>
+      </div>
+      <div class="muted small">Model and spawn pose per slot (x, y in m in the world frame, yaw in degrees; blank =
+        the sim's default layout). Slots past the number started keep their model for later. A real robot (id with
+        "_") can be in one slot only. The Spawn card on the main page saves its robots here too.</div>
+      <div class="scroll"><table id="slots"></table></div>
+    </section>
+
+    <section class="card">
+      <h2>Settings <label class="muted small" style="margin-left:auto;text-transform:none;letter-spacing:0">
+        <input type="checkbox" id="showAdvanced" onchange="renderSettings()"> advanced</label></h2>
+      <div class="row">
+        <button id="settingsSave" onclick="saveSettings()" disabled>Save settings</button>
+        <button class="ghost" onclick="loadConfig(true)">Discard</button>
+        <span class="muted small">Highlighted rows are set by this profile; the others take their default.
+          Applies to: the containers to recreate for a change.</span>
+      </div>
+      <div id="settings"></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="card">
+      <h2>Real robots</h2>
+      <div class="muted small">Reached over SSH (key login) by the main page and scripts. Not per profile.</div>
+      <div class="scroll"><table id="real"></table></div>
+      <div class="row">
+        <input id="realId" list="realIds" placeholder="id, e.g. j100_0921" style="width:140px">
+        <datalist id="realIds"></datalist>
+        <input id="realHost" placeholder="host or IP" style="width:150px">
+        <label class="small"><input type="checkbox" id="realCutter"> cutter</label>
+        <button class="ghost" onclick="saveReal()">Add / update</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Change log</h2>
+      <div class="muted small">Every change to the settings, slots, profiles and real robots, from this page, the main
+        page or scripts/fleetcfg.py. Revert puts the old value back (as a new change).</div>
+      <div class="scroll" style="max-height:420px;overflow:auto"><table id="history"></table></div>
+    </section>
+
+    <section class="card">
+      <h2>Runs</h2>
+      <div class="muted small">Each sim start and spawn through scripts/fleet.sh (the main page's Start and Spawn too),
+        with the variables it ran with. Click one to see them.</div>
+      <div class="scroll" style="max-height:320px;overflow:auto"><table id="runs"></table></div>
+      <pre id="runEnv" hidden></pre>
+    </section>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+let cfg = null, dirtySettings = {}, slotsDirty = false, job = null;
+
+async function api(path, body) {
+  const opt = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  const r = await fetch(path, opt);
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+function toast(msg, ok = false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = ok ? 'ok' : ''; t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', ok ? 2500 : 7000);
+}
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtTime = t => t ? new Date(t).toLocaleString() : '';
+async function change(path, body, okMsg) {
+  try {
+    const r = await api(path, body);
+    for (const w of (r.warnings || [])) toast('warning: ' + w);
+    if (okMsg) toast(okMsg, true);
+    dirtySettings = {}; slotsDirty = false;
+    await loadConfig(true);
+    loadHistory();
+    return r;
+  } catch (e) { toast(e.message); }
+}
+
+// ------------------------------------------------------------ load / poll
+async function loadConfig(force = false) {
+  let c;
+  try { c = await api('/api/config'); } catch (e) { toast(e.message); return; }
+  const editing = Object.keys(dirtySettings).length || slotsDirty;
+  const sig = JSON.stringify([c.profile, c.settings, c.slots, c.num_robots, c.source]);
+  const changed = !cfg || sig !== cfg._sig;
+  c._sig = sig;
+  const old = cfg;
+  cfg = c;
+  renderHeader();
+  renderDrift();
+  renderReal();
+  if (force || (changed && !editing) || !old) { renderSlots(); renderSettings(); }
+  else if (changed && editing) toast('the settings were changed elsewhere: Discard to see them');
+}
+function poll() { loadConfig().finally(() => setTimeout(poll, 5000)); }
+
+// ------------------------------------------------------------ header, profiles
+function renderHeader() {
+  const pill = document.getElementById('dbPill');
+  pill.textContent = cfg.source === 'database' ? `settings: database ${cfg.db}` : 'settings: database unreachable';
+  pill.className = 'pill ' + (cfg.source === 'database' ? 'ok' : 'bad');
+  document.getElementById('offline').textContent = cfg.source === 'database' ? '' :
+    `The settings database can't be reached, so this shows .env as last written and nothing can be changed: ${cfg.why}`;
+  const notes = [...cfg.errors.map(e => 'error: ' + e), ...cfg.warnings.map(w => 'warning: ' + w)];
+  document.getElementById('problems').innerHTML = notes.map(esc).join('<br>');
+  const sel = document.getElementById('profileSel');
+  sel.innerHTML = cfg.profiles.map(p => `<option value="${esc(p.name)}" ${p.active ? 'selected' : ''}>${esc(p.name)}</option>`).join('')
+    || `<option>${esc(cfg.profile || '(none)')}</option>`;
+  sel.title = (cfg.profiles.find(p => p.active) || {}).notes || '';
+  sel.disabled = cfg.source !== 'database';
+}
+function useProfile(name) {
+  if (!confirm(`Switch to profile ${name}? .env is written from it; running containers keep their settings until applied.`)) { renderHeader(); return; }
+  change('/api/config/profile', { op: 'use', name }, `profile ${name}`);
+}
+function newProfile() {
+  const name = prompt(`New profile, a copy of ${cfg.profile}. Name:`);
+  if (name) change('/api/config/profile', { op: 'new', name, from: cfg.profile }, `profile ${name} created (switch to it with the selector)`);
+}
+function renameProfile() {
+  const name = prompt(`Rename profile ${cfg.profile} to:`, cfg.profile);
+  if (name && name !== cfg.profile) change('/api/config/profile', { op: 'rename', name: cfg.profile, new_name: name }, 'renamed');
+}
+function deleteProfile() {
+  const others = cfg.profiles.filter(p => !p.active).map(p => p.name);
+  if (!others.length) { toast('the active profile cannot be deleted, and there is no other'); return; }
+  const name = prompt(`Delete which profile? (not the active one)\n${others.join(', ')}`);
+  if (name && confirm(`Delete profile ${name} and its settings? Its change log entries stay.`))
+    change('/api/config/profile', { op: 'delete', name }, `profile ${name} deleted`);
+}
+async function exportProfile() {
+  try {
+    const data = await api('/api/config/export?profile=' + encodeURIComponent(cfg.profile));
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json' }));
+    a.download = `fleet-profile-${cfg.profile.replace(/[^A-Za-z0-9._-]/g, '_')}.json`;
+    a.click();
+  } catch (e) { toast(e.message); }
+}
+async function importProfile(input) {
+  const f = input.files[0]; input.value = '';
+  if (!f) return;
+  let data;
+  try { data = JSON.parse(await f.text()); } catch (e) { toast('not a JSON file'); return; }
+  const name = prompt('Name of the new profile:', data.profile || f.name.replace(/\.json$/, ''));
+  if (name) change('/api/config/profile', { op: 'import', name, data }, `imported as ${name}`);
+}
+
+// ------------------------------------------------------------ running vs. settings
+function diffRows(diff) {
+  return diff.length ? `<table>${diff.map(d => `<tr><td class="key">${esc(d.key)}</td><td>running <b>${esc(d.running ?? '(unset)')}</b></td><td>settings <b>${esc(d.configured)}</b></td></tr>`).join('')}</table>` : '';
+}
+function renderDrift() {
+  const d = cfg.drift, out = [];
+  const block = (title, pending, body, button) => `<div class="drift ${pending ? 'pending' : 'clean'}"><div class="row"><b>${title}</b>${button || ''}</div>${body}</div>`;
+  // sim
+  if (!d.sim.running) out.push(block('Simulation', false, '<span class="muted small">not running: the next Start uses the settings</span>'));
+  else out.push(block('Simulation', d.sim.diff.length, d.sim.diff.length ? diffRows(d.sim.diff) : '<span class="muted small">runs with the settings</span>',
+    d.sim.diff.length ? `<button class="small" onclick="apply('sim', 'Recreate the sim with the settings? It restarts (a minute or more); its robots are spawned again.')">Apply: recreate the sim</button>` : ''));
+  // robots
+  const rows = d.robots.filter(r => r.problem || (r.diff && r.diff.length));
+  const robotsBody = d.robots.length ? `<table>${d.robots.map(r => `<tr><td>slot ${r.slot}</td><td class="key">${esc(r.running || r.configured)}</td>
+      <td>${r.problem ? `<span class="pill warn">${esc(r.problem)}</span>` : r.diff.length ? diffRows(r.diff) : '<span class="pill ok">as configured</span>'}</td></tr>`).join('')}</table>`
+    : '<span class="muted small">no robot slots started or configured</span>';
+  out.push(block('Robots', rows.length, robotsBody, rows.length && d.sim.running
+    ? `<button class="small" onclick="apply('robots', 'Spawn the configured robots again (replacing the ones in the sim) and recreate their containers?')">Apply: respawn the robots</button>` : ''));
+  // base station
+  if (!d.basestation.running) out.push(block('Base station', false, '<span class="muted small">not running</span>'));
+  else out.push(block('Base station', d.basestation.diff.length, d.basestation.diff.length ? diffRows(d.basestation.diff) : '<span class="muted small">runs with the settings</span>',
+    d.basestation.diff.length ? `<button class="small" onclick="apply('basestation', 'Recreate the base station container? Its database and zenoh router restart (robots reconnect).')">Apply: recreate the base station</button>` : ''));
+  document.getElementById('drift').innerHTML = out.join('');
+}
+async function apply(what, question) {
+  if (!confirm(question)) return;
+  try { job = (await api('/api/config/apply', { what })).id; pollJob(); } catch (e) { toast(e.message); }
+}
+async function pollJob() {
+  if (!job) return;
+  let j;
+  try { j = await api('/api/job?id=' + job); } catch (e) { job = null; return; }
+  const pre = document.getElementById('jobLog');
+  pre.hidden = false;
+  pre.textContent = `${j.name} -- ${j.status}\n` + (j.log.join('\n') || '(no output yet)');
+  pre.scrollTop = pre.scrollHeight;
+  if (j.status === 'running') setTimeout(pollJob, 1000);
+  else { job = null; loadConfig(); loadRuns(); }
+}
+
+// ------------------------------------------------------------ robot slots
+function renderSlots() {
+  const n = document.getElementById('numRobots');
+  n.innerHTML = Array.from({ length: cfg.max_slots + 1 }, (_, i) => `<option ${i === cfg.num_robots ? 'selected' : ''}>${i}</option>`).join('');
+  n.disabled = cfg.source !== 'database';
+  const models = cfg.models;
+  document.getElementById('slots').innerHTML = '<tr><th>slot</th><th>model</th><th>x</th><th>y</th><th>yaw°</th><th>name</th></tr>' +
+    cfg.slots.map(s => {
+      const opts = ['<option value="">(not set: a300)</option>', ...[...new Set([...models, s.model])].map(m =>
+        `<option ${s.stored && m === s.model ? 'selected' : ''}>${esc(m)}</option>`)].join('');
+      const v = k => s[k] === null || s[k] === undefined ? '' : s[k];
+      return `<tr class="slot ${s.slot < cfg.num_robots ? '' : 'inactive'}" data-slot="${s.slot}"><td>${s.slot}</td>
+        <td><select onchange="markSlotsDirty(this)" ${cfg.source !== 'database' ? 'disabled' : ''}>${opts}</select></td>
+        ${['x', 'y', 'yaw'].map(k => `<td><input class="num" data-k="${k}" value="${v(k)}" oninput="markSlotsDirty(this)" ${cfg.source !== 'database' ? 'disabled' : ''}></td>`).join('')}
+        <td class="key">${esc(s.ns)}${s.slot < cfg.num_robots ? '' : ' <span class="muted">(not started)</span>'}</td></tr>`;
+    }).join('');
+  document.getElementById('slotsSave').disabled = true;
+}
+function markSlotsDirty(el) {
+  slotsDirty = true;
+  if (el) el.classList.add('dirty');
+  const n = +document.getElementById('numRobots').value;
+  document.querySelectorAll('#slots tr.slot').forEach(tr => tr.classList.toggle('inactive', +tr.dataset.slot >= n));
+  document.getElementById('slotsSave').disabled = false;
+}
+function saveSlots() {
+  const slots = [];
+  for (const tr of document.querySelectorAll('#slots tr.slot')) {
+    const model = tr.querySelector('select').value;
+    const p = {}; tr.querySelectorAll('input').forEach(i => p[i.dataset.k] = i.value.trim());
+    const filled = ['x', 'y', 'yaw'].filter(k => p[k] !== '');
+    if (filled.length && filled.length < 3) { toast(`slot ${tr.dataset.slot}: give x, y and yaw, or none`); return; }
+    if (filled.some(k => !isFinite(+p[k]))) { toast(`slot ${tr.dataset.slot}: the pose must be numbers`); return; }
+    slots.push(model ? { model, ...(filled.length ? { x: +p.x, y: +p.y, yaw: +p.yaw } : {}) } : null);
+  }
+  change('/api/config/slots', { slots, num_robots: +document.getElementById('numRobots').value }, 'slots saved');
+}
+
+// ------------------------------------------------------------ settings
+function inputFor(s, value) {
+  const dis = cfg.source !== 'database' ? 'disabled' : '';
+  const attrs = `data-key="${esc(s.key)}" onchange="markDirty(this)" oninput="markDirty(this)" ${dis}`;
+  if (s.type === 'enum')
+    return `<select ${attrs}>${s.choices.map(c => `<option ${c === value ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>`;
+  if (s.key === 'SIM_SCENE')
+    return `<select ${attrs}>${[...new Set([...cfg.scenes, value])].map(c => `<option value="${esc(c)}" ${c === value ? 'selected' : ''}>${esc(c || '(ground plane + lights)')}</option>`).join('')}</select>`;
+  const type = s.type === 'text' ? 'text' : 'number';
+  const step = s.type === 'float' ? 'any' : '1';
+  return `<input type="${type}" ${type === 'number' ? `step="${step}" min="${s.min ?? ''}" max="${s.max ?? ''}" style="width:110px"` : 'style="width:100%;min-width:180px"'} value="${esc(value)}" ${attrs}>`;
+}
+function renderSettings() {
+  const adv = document.getElementById('showAdvanced').checked;
+  const known = new Set(cfg.catalog.map(s => s.key));
+  const extra = Object.keys(cfg.settings).filter(k => !known.has(k)).sort();
+  const html = cfg.sections.map(sec => {
+    const rows = cfg.catalog.filter(s => s.section === sec && s.key !== 'NUM_ROBOTS' && (adv || !s.advanced || s.key in cfg.settings));
+    if (!rows.length) return '';
+    return `<h3 class="muted small" style="margin:14px 0 4px">${esc(sec)}</h3><table>${rows.map(s => {
+      const set = s.key in cfg.settings, value = set ? cfg.settings[s.key] : s.default;
+      return `<tr class="${set ? 'set' : ''}"><td class="key" title="${esc(s.key)}">${esc(s.key)}</td>
+        <td style="width:45%">${inputFor(s, value)}</td>
+        <td class="act">${set ? `<button class="ghost small" title="back to the default (${esc(s.default === '' ? 'empty' : s.default)})" onclick="unset('${s.key}')" ${cfg.source !== 'database' ? 'disabled' : ''}>reset</button>` : '<span class="muted small">default</span>'}</td>
+        <td class="small"><div>${esc(s.help)}</div><div>${s.applies.map(a => `<span class="chip">${esc(a)}</span>`).join('')}</div></td></tr>`;
+    }).join('')}</table>`;
+  }).join('') + (extra.length ? `<h3 class="muted small" style="margin:14px 0 4px">Not in scripts/fleet_settings.py</h3><table>${extra.map(k =>
+    `<tr class="set"><td class="key">${esc(k)}</td><td style="width:45%"><input style="width:100%" data-key="${esc(k)}" value="${esc(cfg.settings[k])}" oninput="markDirty(this)"></td>
+     <td><button class="ghost small" onclick="unset('${esc(k)}')">remove</button></td><td></td></tr>`).join('')}</table>` : '');
+  document.getElementById('settings').innerHTML = html;
+  for (const [k, v] of Object.entries(dirtySettings)) {
+    const el = document.querySelector(`#settings [data-key="${k}"]`);
+    if (el) { el.value = v; el.classList.add('dirty'); }
+  }
+  document.getElementById('settingsSave').disabled = !Object.keys(dirtySettings).length;
+}
+function markDirty(el) {
+  const k = el.dataset.key, s = cfg.catalog.find(c => c.key === k);
+  const current = k in cfg.settings ? cfg.settings[k] : s ? s.default : '';
+  if (el.value === current) { delete dirtySettings[k]; el.classList.remove('dirty'); }
+  else { dirtySettings[k] = el.value; el.classList.add('dirty'); }
+  document.getElementById('settingsSave').disabled = !Object.keys(dirtySettings).length;
+}
+function saveSettings() {
+  const keys = Object.keys(dirtySettings);
+  if (!keys.length) return;
+  const applies = new Set(keys.flatMap(k => (cfg.catalog.find(c => c.key === k) || { applies: [] }).applies));
+  change('/api/config/set', { updates: dirtySettings },
+    `saved ${keys.join(', ')}` + (applies.size ? ` -- takes effect when the ${[...applies].join(' / ')} ${applies.size > 1 ? 'are' : 'is'} recreated` : ''));
+}
+function unset(key) { change('/api/config/set', { updates: { [key]: null } }, `${key} back to its default`); }
+
+// ------------------------------------------------------------ real robots
+function renderReal() {
+  document.getElementById('realIds').innerHTML = cfg.known_real_ids.map(i => `<option value="${esc(i)}">`).join('');
+  const sig = JSON.stringify(cfg.real_robots), box = document.getElementById('real');
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.innerHTML = '<tr><th>id</th><th>host</th><th>user</th><th>cutter</th><th></th></tr>' + cfg.real_robots.map(r => `<tr>
+    <td class="key">${esc(r.id)}</td><td><input value="${esc(r.host)}" data-f="host" style="width:140px"></td>
+    <td><input value="${esc(r.user)}" data-f="user" style="width:70px"></td><td><input type="checkbox" data-f="cutter" ${r.cutter ? 'checked' : ''}></td>
+    <td><button class="ghost small" onclick="saveRealRow(this, '${esc(r.id)}')">save</button>
+        <button class="ghost small" onclick="confirm('Take ${esc(r.id)} off the list?') && removeReal('${esc(r.id)}')">remove</button></td></tr>`).join('');
+}
+function saveRealRow(btn, robot) {
+  const tr = btn.closest('tr'), f = n => tr.querySelector(`[data-f="${n}"]`);
+  change('/api/real/save', { robot, host: f('host').value.trim(), user: f('user').value.trim(), cutter: f('cutter').checked }, `${robot} saved`);
+}
+function saveReal() {
+  change('/api/real/save', { robot: document.getElementById('realId').value.trim(), host: document.getElementById('realHost').value.trim(),
+    cutter: document.getElementById('realCutter').checked }, 'saved');
+}
+function removeReal(robot) { change('/api/real/remove', { robot }, `${robot} removed`); }
+
+// ------------------------------------------------------------ change log, runs
+async function loadHistory() {
+  let h;
+  try { h = await api('/api/config/history?n=150'); } catch (e) { document.getElementById('history').innerHTML = `<tr><td class="muted">${esc(e.message)}</td></tr>`; return; }
+  document.getElementById('history').innerHTML = '<tr><th>when</th><th>who</th><th>change</th><th></th></tr>' + h.map(e => `<tr>
+    <td class="small" style="white-space:nowrap">${esc(fmtTime(e.at))}</td><td class="small">${esc(e.actor)}</td><td class="small">${esc(e.text)}</td>
+    <td class="act">${e.revertible ? `<button class="ghost small" onclick="revert(${e.id}, '${esc(e.text).replace(/'/g, '&#39;')}')">revert</button>` : ''}</td></tr>`).join('');
+}
+function revert(id, text) {
+  if (confirm(`Revert this change?\n\n${text}`)) change('/api/config/revert', { id }, 'reverted');
+}
+let runsCache = [];
+async function loadRuns() {
+  try { runsCache = await api('/api/config/runs?n=60'); } catch (e) { document.getElementById('runs').innerHTML = `<tr><td class="muted">${esc(e.message)}</td></tr>`; return; }
+  document.getElementById('runs').innerHTML = '<tr><th>started</th><th>command</th><th>profile</th><th>robots</th><th>result</th><th>git</th></tr>' + runsCache.map((r, i) => {
+    const res = r.exit_code === null ? (r.finished_at ? '?' : '<span class="pill warn">running / killed</span>') : r.exit_code === 0 ? '<span class="pill ok">ok</span>' : `<span class="pill bad">exit ${r.exit_code}</span>`;
+    const robots = [...Array(+(r.env.NUM_ROBOTS || 0)).keys()].map(s => r.env[`ROBOT_MODEL_${s}`] || 'a300').join(', ');
+    return `<tr style="cursor:pointer" onclick="showRun(${i})"><td class="small" style="white-space:nowrap">${esc(fmtTime(r.started_at))}</td><td class="small key">${esc(r.command)}</td>
+      <td class="small">${esc(r.profile)}</td><td class="small">${esc(robots || '-')}</td><td>${res}</td><td class="small key">${esc(r.git_commit)}</td></tr>`;
+  }).join('');
+}
+function showRun(i) {
+  const r = runsCache[i], pre = document.getElementById('runEnv');
+  pre.hidden = false;
+  pre.textContent = `run ${r.id} by ${r.actor}, ${fmtTime(r.started_at)} -- ${fmtTime(r.finished_at) || 'not finished'}\n\n` +
+    Object.entries(r.env).filter(([k]) => !/PASSWORD|SECRET|TOKEN/i.test(k)).map(([k, v]) => `${k}=${v}`).join('\n');
+}
+
+poll();
+loadHistory();
+loadRuns();
+</script>
+</body>
+</html>

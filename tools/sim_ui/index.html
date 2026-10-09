@@ -68,6 +68,8 @@
   <label title="Which robots this page shows and drives: the simulated ones, the real ones (Real robots list, over SSH), or both. Remembered by this browser.">
     <select id="modeSel" onchange="setMode(this.value)"><option value="sim">Simulation</option><option value="real">Real robots</option><option value="both">Both</option></select></label>
   <span id="simPill" class="pill only-sim">sim: ?</span>
+  <a id="settingsPill" class="pill" href="/config" style="text-decoration:none"
+    title="The settings (.env is generated from them), robot slots, profiles, change log: the Configuration page">settings</a>
   <span class="muted" id="updated"></span>
   <button class="danger" style="margin-left:auto" onclick="post('/api/stop_all', { mode })"
     title="Every robot shown: Ctrl+C to this page's cut_stem / arm_goto clients, and cancel every goal of cut_stem, move_group and the arm's trajectory / gripper controllers">Stop all motion</button>
@@ -117,7 +119,7 @@
     <section class="card only-real">
       <h2>Real robots</h2>
       <div class="muted" style="font-size:12px">Reached over SSH (key login as robot@host, like scripts/deploy_robot.sh);
-        saved in tools/sim_ui/real_robots.json. Cutter: the stem cutter is fitted (offers Cut stem; every robot's
+        saved in the settings database (also on the <a href="/config">Configuration</a> page). Cutter: the stem cutter is fitted (offers Cut stem; every robot's
         bringup advertises the action). Deployed: the commit in the robot's ~/colcon_ws/DEPLOYED vs. this checkout's.
         Base station: whether the robot's topics reach it (its zenoh router dials the robot's: BASESTATION_ZENOH_CONNECT).</div>
       <div id="realList"></div>
@@ -265,6 +267,10 @@ async function refreshStatus() {
   if (!mode) { mode = status.default_mode; applyMode(); }
   renderBanner();
   renderReal();
+  const st = status.settings || {}, sp_ = document.getElementById('settingsPill');
+  sp_.textContent = st.source === 'database' ? `settings: ${st.profile}` : 'settings: database unreachable';
+  sp_.className = 'pill ' + (st.source !== 'database' ? 'bad' : st.errors && st.errors.length ? 'warn' : 'ok');
+  if (st.source !== 'database') sp_.title = `${st.why || ''} -- running on .env as last written; setting changes are refused`;
   const sim = status.sim, scene = status.scene;
   const pill = document.getElementById('simPill');
   const up = sim && sim.state === 'running';

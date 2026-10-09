@@ -61,6 +61,19 @@ log "PostgreSQL $PG_MAJOR ready on port $PGPORT (database $PGDATABASE, user $PGU
 # station keeps running (the robots and the zenoh router need it); the file is retried at the next start.
 /basestation-migrate.sh /migrations || log "schema migrations failed, see the [migrate] lines above"
 
+# The fleet's settings (scripts/fleetcfg.py, the web UI's Configuration page): a database of its own, so
+# scripts/db_sync.sh, which replaces the farm database, never touches them. Created here if missing; a failure is
+# logged, never fatal, like the farm database's migrations.
+FLEET_CONFIG_DB=${FLEET_CONFIG_DB:-fleet_config}
+fleet_config_db() {
+    if [ -z "$(psql -tAq -d postgres -v db="$FLEET_CONFIG_DB" <<<"SELECT 1 FROM pg_database WHERE datname = :'db';")" ]; then
+        log "creating the database $FLEET_CONFIG_DB"
+        psql -q -v ON_ERROR_STOP=1 -d postgres -v db="$FLEET_CONFIG_DB" <<<'CREATE DATABASE :"db";' || return 1
+    fi
+    PGDATABASE="$FLEET_CONFIG_DB" /basestation-migrate.sh /config_migrations
+}
+fleet_config_db || log "the $FLEET_CONFIG_DB database is not ready, see the lines above"
+
 # Zenoh: like each real robot, the base station has its own router (tcp/[::]:7447, so robots can also dial in);
 # its sessions are clients of it (ZENOH_CONFIG_OVERRIDE from compose). The router dials the routers in
 # BASESTATION_ZENOH_CONNECT (space-separated: the sim's zenoh-router, real robots' tcp/<ip>:7447) and keeps

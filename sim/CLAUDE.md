@@ -58,7 +58,7 @@ One OmniGraph per robot (`isaacsim.ros2.bridge`, topics relative to the namespac
 
 - `/Graphs/fleet_clock` (`build_clock_graph`) publishes `/clock` from `IsaacReadSimulationTime`; robot graphs' `Stamp` node stamps everything (`IsaacReadSystemTime` if `USE_SIM_TIME=false`), script nodes via a `stamp` input.
 - `resetOnStop=False`, and camera helpers `useSystemTime=False`, `resetSimulationTimeOnStop=False`: otherwise time jumps to 0 on spawn/reset.
-- `SIM_RATE_HZ` (compose default 20, tracked `.env` 22 — retune) ≈ the `render_fps` of `FLEET_DEBUG=1`; `PHYSICS_HZ` 60. Kit runs `floor(PHYSICS_HZ / SIM_RATE_HZ)` steps per frame, so a non-divisor makes `FLEET_DEBUG`'s rtf overstate; `/clock` counts physics time and stays right. `PHYSICS_FRAME_DT` = true step per frame.
+- `SIM_RATE_HZ` (compose default 20, the imported profile 22 — retune) ≈ the `render_fps` of `FLEET_DEBUG=1`; `PHYSICS_HZ` 60. Kit runs `floor(PHYSICS_HZ / SIM_RATE_HZ)` steps per frame, so a non-divisor makes `FLEET_DEBUG`'s rtf overstate; `/clock` counts physics time and stays right. `PHYSICS_FRAME_DT` = true step per frame.
 - FPS levers (README *Faster streaming*): async rendering via `FLEET_SETTINGS`, fewer robots, `CAMERA_STREAMS=none`, cameras on demand; resolution/viewport size don't matter. `FLEET_MERGE_FIXED=1` breaks the build (merges away `camera_0_link`).
 
 ## Model parameters
@@ -73,7 +73,7 @@ Derived at start (`load_model_params`/`derive_model_params`, logged `[fleet] par
 
 ## Scenes (`SIM_SCENE`, `build_world`)
 
-- Empty: `build_default_world` (80 m ground box, top z=0, dome + sun; RTX ignores `displayColor`, so bind a material). `lavender`: built-in farm. Otherwise a file in `sim/scene/` (`build_file_world`; `.env` has `lavender_farm_chargers.usda`).
+- Empty: `build_default_world` (80 m ground box, top z=0, dome + sun; RTX ignores `displayColor`, so bind a material). `lavender`: built-in farm. Otherwise a file in `sim/scene/` (`build_file_world`; the imported profile has `lavender_farm_chargers.usda`).
 - A file is a **sublayer** of a new stage (relative `../assets/...` resolve, the file is never written); `setup_physics` is authored over its physics scene; default ground/lights only if it has none; saved robots and `/Graphs` are removed in memory. Ground at z=0 within ±`SPAWN_LIMIT`. Spawn-map rows: top layer's `customLayerData["lavender_rows"]` (`[x_min, x_max, y, width]`).
 - The sim user (uid 1234) saves only into writable folders: `chmod 777` a new `sim/scene/` subfolder.
 - Vegetation (NVIDIA `Assets/Vegetation/...` in `sim/assets/trees|shrubs|rocks/`) needs its `materials/`/`textures/` and the `sim/assets/Trees -> trees` symlink, or renders red; Z-up/cm, referenced under a child prim. `Cedar_Shrub` is unusable (empty bbox). Ground cover: one unscaled patch only (tiling exceeds the instance limit; geometry is metres despite `metersPerUnit=0.01`).

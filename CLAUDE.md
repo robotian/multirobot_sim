@@ -6,20 +6,21 @@ A fleet of Clearpath robots simulated in Isaac Sim 6.0 and driven over ROS 2 Jaz
 
 ## How it fits together
 
-`scripts/gen_urdf.sh` turns each model's Clearpath config (`robot/config/robot.<model>.yaml.tmpl`, or a real robot's `robot_data/<id>/robot.yaml`) into a self-contained URDF under `sim/assets/<model>/`. The sim (`sim/scripts/setup_scene.py`, `./sim` mounted) imports every model at start, builds the scene, then spawns robots when `scripts/fleet_ctl.py` writes `sim/generated/fleet/spawn_request.json` (progress in `state.json`), so changing robots never restarts the sim. Each robot container boots like a real robot (`robot/entrypoint.sh` renders `/etc/clearpath/robot.yaml` and runs Clearpath's generators) and shares one bind-mounted `colcon_ws`. Under zenoh (the default) every session is a client of the `zenoh-router` service. The base station (`basestation.compose.yml`: ROS 2 + the farm's PostgreSQL on port 5433) is a separate compose project on the host network, untouched by `fleet.sh down`.
+`scripts/gen_urdf.sh` turns each model's Clearpath config (`robot/config/robot.<model>.yaml.tmpl`, or a real robot's `robot_data/<id>/robot.yaml`) into a self-contained URDF under `sim/assets/<model>/`. The sim (`sim/scripts/setup_scene.py`, `./sim` mounted) imports every model at start, builds the scene, then spawns robots when `scripts/fleet_ctl.py` writes `sim/generated/fleet/spawn_request.json` (progress in `state.json`), so changing robots never restarts the sim. Each robot container boots like a real robot (`robot/entrypoint.sh` renders `/etc/clearpath/robot.yaml` and runs Clearpath's generators) and shares one bind-mounted `colcon_ws`. Under zenoh (the default) every session is a client of the `zenoh-router` service. The base station (`basestation.compose.yml`: ROS 2 + the farm's PostgreSQL on port 5433) is a separate compose project on the host network, untouched by `fleet.sh down`. Its server also holds `fleet_config`, the fleet's settings (profiles, robot slots, real robots, change log, runs): `.env` is generated from it by `scripts/fleetcfg.py` (catalog: `scripts/fleet_settings.py`), and edited in the web UI's `/config` page.
 
 ## Commands
 
 ```bash
-scripts/fleet.sh [N]                 # start the sim (scene) and spawn N robots (NUM_ROBOTS/ROBOT_MODEL_<i> from .env)
+scripts/fleet.sh [N]                 # start the sim (scene) and spawn N robots (renders .env from the settings first)
 scripts/fleet.sh scene | spawn [N] [--poses JSON] | down
+scripts/fleetcfg.py show | set KEY=VALUE | slot I MODEL [--pose X,Y,YAW] | robots N | profile ... | history | runs
 scripts/fleet_ctl.py reset           # robots back to their spawn state (~3.5 s); also state | snapshot | clear
 docker compose logs -f isaac-sim     # the sim's own lines start with [fleet]
 scripts/colcon_build.sh [--packages-select <pkg>]   # builds colcon_ws in every running robot container
 scripts/gen_urdf.sh                  # regenerate URDFs (build the robot image first)
 scripts/x11_auth.sh                  # X auth (.x11/xauth) for the headed sim and RViz windows; once per login
 docker compose -f basestation.compose.yml up -d --build
-python3 tools/sim_ui/server.py       # web UI on 127.0.0.1:8090 (--mode real: real robots over SSH)
+python3 tools/sim_ui/server.py       # web UI on 127.0.0.1:8090 (/config: settings; --mode real: real robots over SSH)
 ```
 
 No test suite: checks run against the live sim (`/scripts/drive_test.py`, `scripts/calibrate_velocity.py`, `arm_joints`).
@@ -29,13 +30,13 @@ No test suite: checks run against the live sim (`/scripts/drive_test.py`, `scrip
 - IMPORTANT: `colcon_ws/src` is deployed unchanged to the real robots (`scripts/deploy_robot.sh`) and must stay identical across robot models. Code there must work on a real robot too: no sim-only paths, container names or assumptions without a fallback.
 - `mtu32_husky` and `mocap_fake_localizer` (submodules) track a `sim` branch: commit and push inside the submodule first, then commit the pointer here.
 - Hand tuning of sim parameters goes in `sim/config/model_params.yaml`, never in `setup_scene.py` (the rest is derived from robot.yaml + URDF at sim start).
-- A new `.env` variable for the sim must also be added to the `isaac-sim` service's `environment:` block in `docker-compose.yml`.
-- Middleware is `FLEET_RMW` in `.env`, not `RMW_IMPLEMENTATION`.
-- Start or change robots with `scripts/fleet.sh`, never `docker compose up -d` (it writes the per-slot `ROBOT_SUFFIX_<i>`/`ROBOT_HOSTNAME_<i>` into `.env`). Stop with `scripts/fleet.sh down`.
+- Settings live in the `fleet_config` database; `.env` is generated (untracked): never edit it, change settings with `scripts/fleetcfg.py set` or the `/config` page. A new setting goes into `scripts/fleet_settings.py` (default = compose's; `scripts/fleetcfg.py check`) and, for the sim, the `isaac-sim` service's `environment:` block in `docker-compose.yml`. Tables change only through a new `basestation/config_migrations/NNN_*.sql`.
+- Middleware is the setting `FLEET_RMW`, not `RMW_IMPLEMENTATION`.
+- Start or change robots with `scripts/fleet.sh`, never `docker compose up -d` (it renders `.env`, with the per-slot `ROBOT_SUFFIX_<i>`/`ROBOT_HOSTNAME_<i>`, from the settings first). Stop with `scripts/fleet.sh down`. A setting reaches a container only when it is recreated (`docker restart` keeps the old environment).
 - Time: use the node clock in ROS code, never `time.time()`, `steady_clock` or wall timers for anything that waits on the robot; new nodes need `use_sim_time:=true` (`USE_SIM_TIME`).
 - `map→odom` has exactly one publisher (`mocap_fake_localizer`'s `ref_localizer.py`). Anything else that publishes it (AMCL, slam_toolbox, a static identity) needs `ref_source:=external`.
 - URDF link/joint names must match the USD's.
-- `sim/assets/` binaries are Git LFS. `.env` is tracked but holds this machine's LAN IP (`ISAACSIM_HOST`) and `fleet.sh`'s slot variables: don't commit incidental `.env` edits.
+- `sim/assets/` binaries are Git LFS. Testing settings code from a worktree: `FLEET_CONFIG_DB=<scratch db>` keeps it off the real `fleet_config` (`fleetcfg.py` creates it on first use; drop it afterwards).
 
 ## Running ROS commands
 

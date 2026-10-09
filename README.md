@@ -1,6 +1,6 @@
 # Clearpath fleet in Isaac Sim
 
-A configurable number (0–8, three if `.env` doesn't say otherwise) of Clearpath robots simulated in NVIDIA Isaac Sim 6.0 and driven over ROS 2 Jazzy. Each robot slot independently runs one of four generic Clearpath models — A300, A200, Jackal (`j100`) or Ridgeback (`r100`), each with a RealSense D435i facing forward — or one of MTU's real robots with its own sensors and Kinova arm (`j100_0921`, `a200_0284`, `a300_00036`, ...), so the fleet can be a single model or a mix; see *Number of robots*.
+A configurable number (0–8, one if the settings don't say otherwise) of Clearpath robots simulated in NVIDIA Isaac Sim 6.0 and driven over ROS 2 Jazzy. Each robot slot independently runs one of four generic Clearpath models — A300, A200, Jackal (`j100`) or Ridgeback (`r100`), each with a RealSense D435i facing forward — or one of MTU's real robots with its own sensors and Kinova arm (`j100_0921`, `a200_0284`, `a300_00036`, ...), so the fleet can be a single model or a mix; see *Number of robots*.
 
 - **Isaac Sim** runs in one container and is streamed to you over WebRTC, or shows its own desktop window with `SIM_MODE=headed` (needs `scripts/x11_auth.sh`; the headed app takes ~3 min to start).
 - **Each robot** has its own ROS 2 container, standing in for the robot's onboard computer. It talks to the sim over a private Docker network, as a real robot would over a LAN. The middleware is `rmw_zenoh_cpp` (as on the real robots, through a `zenoh-router` container) or Fast DDS; see *Middleware*.
@@ -44,16 +44,20 @@ docker compose build
 # 2. Optional, for status_server and the base station: the database password (db.env is gitignored)
 echo "PGPASSWORD=<status_server database password>" > db.env
 
-# 3. Review .env (tracked; it holds the last committer's settings). Check at least:
+# 3. The settings live in the base station's database (see *Settings*); start it, then review them. The first
+#    use imports the .env last committed to git into a profile "default". Check at least:
 #    ISAACSIM_HOST  127.0.0.1, or this machine's LAN IP for a remote WebRTC client
 #    SIM_MODE       stream (WebRTC) or headed (Isaac's own window on this display)
-#    NUM_ROBOTS / ROBOT_MODEL_<i>   use the generic a300/a200/j100/r100 unless you have robot_data/ (see below)
+#    robot slots    use the generic a300/a200/j100/r100 unless you have robot_data/ (see below)
 #    SIM_SCENE      empty = ground plane (fastest), lavender_farm.usd = the real field
+docker compose -f basestation.compose.yml up -d --build
+scripts/fleetcfg.py show                       # or the web UI's Configuration page (tools/sim_ui, /config)
+scripts/fleetcfg.py set ISAACSIM_HOST=127.0.0.1 SIM_MODE=stream
 
 # 4. Allow the containers to open windows on your display (once per login)
 scripts/x11_auth.sh
 
-# 5. Start the sim, then spawn the robots from .env and start their containers
+# 5. Start the sim, then spawn the robots of the active profile and start their containers
 scripts/fleet.sh            # = fleet.sh scene + fleet.sh spawn; waits for each step
 docker compose logs -f isaac-sim     # the sim's own lines start with [fleet]
 
@@ -82,11 +86,11 @@ What to expect on the **first start**:
 The containers write into the checkout, and both cases are handled automatically:
 
 - **`sim/generated/`** (import cache, spawn requests, sim state; gitignored, so missing in a fresh clone) is written by Isaac Sim as uid 1234 and by your host user. Before every sim start, compose's one-shot `volume-init` service creates it and `sim/generated/fleet/` and makes both world-writable.
-- **`colcon_ws/`** is built by the containers' `robot` user. At start, each robot container gives `robot` the uid/gid of whoever owns the checkout, read from the bind-mounted `scripts/` folder. It then chowns `colcon_ws` to that user, so it stays yours whatever your uid. The robot log says `[entrypoint] robot user -> uid ...` when it changes. Set `HOST_UID`/`HOST_GID` in `.env` to choose different ids.
+- **`colcon_ws/`** is built by the containers' `robot` user. At start, each robot container gives `robot` the uid/gid of whoever owns the checkout, read from the bind-mounted `scripts/` folder. It then chowns `colcon_ws` to that user, so it stays yours whatever your uid. The robot log says `[entrypoint] robot user -> uid ...` when it changes. Set the settings `HOST_UID`/`HOST_GID` to choose different ids.
 
 ### Notes
 
-- **Use `scripts/fleet.sh`, not a bare `docker compose up -d`, to start and to change the robots:** the sim only spawns robots when it gets a spawn request (which `fleet.sh spawn` and the web UI write), and the script keeps the per-slot container names and hostnames in `.env` in sync and removes robot containers you no longer want. A bare `docker compose up -d` starts the sim and robot containers but spawns no robots unless a request from before is still there.
+- **Use `scripts/fleet.sh`, not a bare `docker compose up -d`, to start and to change the robots:** the sim only spawns robots when it gets a spawn request (which `fleet.sh spawn` and the web UI write), and the script writes `.env` from the settings (with the per-slot container names and hostnames) and removes robot containers you no longer want. A bare `docker compose up -d` starts the sim and robot containers but spawns no robots unless a request from before is still there.
 - Start and spawn separately when you want: `scripts/fleet.sh scene` (waits until the scene is ready), then `scripts/fleet.sh spawn 2` (2 robots at the default poses; `--poses '[{"x":0,"y":0,"yaw":90}, ...]'` to choose them).
 - **Performance:** set the CPU power profile to performance while simulating (`powerprofilesctl set performance`); on the TITAN RTX machine it made the sim ~30% faster. See also *Faster streaming*.
 - Optional: `python3 tools/sim_ui/server.py` serves a local web UI on <http://127.0.0.1:8090> to start/stop/reset the sim, spawn robots at poses you choose (number fields or a click on its top-down map), run `sim_robot_upstart`, move the arm and start/stop `cut_stem`. **Start** loads the scene only; pick the robots and their poses, then **Spawn**. Its mode selector (Simulation / Real robots / Both) adds MTU's real robots, listed in `tools/sim_ui/real_robots.json` and reached over SSH (key login, as `scripts/deploy_robot.sh`): their Clearpath services, deploy, arm moves, Cut stem and Stop motion.
@@ -105,7 +109,7 @@ Which command you need depends on what you edited. Nothing else is baked into an
 | a robot template (`robot.<model>.yaml.tmpl`), `scripts/flatten_urdf.py`, a `robot_data/<id>/robot.yaml`, or `mtu32_description` in `colcon_ws/src/mtu32_husky` (the real robots' extra links and meshes, e.g. the A300 sensor arch) | rebuild the robot image if it is a `.tmpl`, then `scripts/gen_urdf.sh`, then `docker restart a300-isaac-sim` (the sim re-imports the URDF when it changed; `FORCE_REIMPORT=1` forces it) |
 | ROS packages in `colcon_ws/src` | no image build: `scripts/colcon_build.sh [--packages-select <pkg>]`, then restart whatever node uses it (a running node keeps its old binary; for the arm stack relaunch `sim_robot_upstart`) |
 | `scripts/*.sh`, `scripts/drive_test.py` | nothing: `./scripts` is mounted into the robots (`gen_urdf.sh` and `fleet.sh` run on the host) |
-| `.env` | `scripts/fleet.sh` (a change to `NUM_ROBOTS` or a slot's model needs it; sim tuning variables only need the sim restarted) |
+| a setting (`scripts/fleetcfg.py set`, the web UI's Configuration page) | the containers it reaches must be recreated: the Configuration page's *Running vs. settings* shows which and applies it; or `scripts/fleet.sh` (robots: count, models), `docker compose up -d isaac-sim` after `scripts/fleetcfg.py render` (sim) |
 
 Rebuild from scratch (new base image, or to pick up the latest apt packages and the `clearpath_robot` source that the Dockerfile clones at build time):
 
@@ -119,17 +123,17 @@ A running container keeps the image it was created from, so after `docker compos
 
 ## Number of robots
 
-The sim starts in two parts: the **scene** (the farm, lights, physics; every robot model is imported or its cached import checked, but nothing is spawned) and then the **robots**, spawned into the running scene on request. `NUM_ROBOTS` in `.env` (0–8) is how many robots a spawn places, in slots `0 … N-1`; compose starts the matching robot containers. Spawning into the empty scene takes a few seconds. Spawning again, when the scene already has robots, restarts the sim (about 30 s, headed or streaming), which then comes up with the new robots: removing robots from a running sim crashed the renderer a few seconds later in headed mode. If the new request is rejected, the previous robots come back. The robot containers are recreated either way, since their odometry/arm state belonged to the old robots:
+The sim starts in two parts: the **scene** (the farm, lights, physics; every robot model is imported or its cached import checked, but nothing is spawned) and then the **robots**, spawned into the running scene on request. `NUM_ROBOTS` (a setting, 0–8) is how many robots a spawn places, in slots `0 … N-1`; compose starts the matching robot containers. Spawning into the empty scene takes a few seconds. Spawning again, when the scene already has robots, restarts the sim (about 30 s, headed or streaming), which then comes up with the new robots: removing robots from a running sim crashed the renderer a few seconds later in headed mode. If the new request is rejected, the previous robots come back. The robot containers are recreated either way, since their odometry/arm state belonged to the old robots:
 
 ```bash
 scripts/fleet.sh scene               # start the sim with the scene only, wait until it is ready
-scripts/fleet.sh spawn 5             # set NUM_ROBOTS=5 in .env, spawn 5 robots, start their containers
+scripts/fleet.sh spawn 5             # set NUM_ROBOTS=5 in the settings, spawn 5 robots, start their containers
 scripts/fleet.sh spawn --poses '[{"x":0,"y":0,"yaw":0},{"x":-3,"y":1.6,"yaw":90}]'   # choose the poses
 scripts/fleet.sh 5                   # both: scene, then spawn 5
 scripts/fleet.sh down                # stop and remove everything (same as scripts/stop_sim.sh)
 ```
 
-**Spawn poses** are `x`, `y` in metres in the world frame and `yaw` in degrees (0 = facing +x, the direction the lavender lanes run). Without `--poses` a slot uses `ROBOT_POSE_<i>="x,y,yaw"` from `.env` if set, else the default layout: up to `SCENE_LANES` (default 3) robots side by side 1.6 m apart at x = 0 between the two lavender rows, further robots in ranks 2.5 m behind (the web UI's *Default poses*). The sim rejects poses outside the 80 × 80 m ground, robots closer than 1 m to each other, and the same real robot in two slots. Poses are where the robot is placed; `platform/odom` (and the `ground_truth` TF) start at zero there.
+**Spawn poses** are `x`, `y` in metres in the world frame and `yaw` in degrees (0 = facing +x, the direction the lavender lanes run). Without `--poses` a slot uses its pose in the settings if it has one (`scripts/fleetcfg.py slot <i> <model> --pose x,y,yaw`; the web UI's Spawn saves its poses there), else the default layout: up to `SCENE_LANES` (default 3) robots side by side 1.6 m apart at x = 0 between the two lavender rows, further robots in ranks 2.5 m behind (the web UI's *Default poses*). The sim rejects poses outside the 80 × 80 m ground, robots closer than 1 m to each other, and the same real robot in two slots. Poses are where the robot is placed; `platform/odom` (and the `ground_truth` TF) start at zero there.
 
 How it works: `scripts/fleet_ctl.py` writes `sim/generated/fleet/spawn_request.json`; into an empty scene the sim (`spawn_loop` in `sim/scripts/setup_scene.py`) stops the timeline, spawns the requested robots and plays again; if robots are already there, `fleet_ctl` marks the request `at_start` (the running sim ignores it) and restarts the sim, which spawns it at start (falling back to the previous robots if it is rejected). The sim reports in `sim/generated/fleet/state.json` (`scripts/fleet_ctl.py state` prints it). The last request that spawned successfully is kept (`applied_request.json`), so a sim that restarts (`docker restart a300-isaac-sim`, the web UI's *Reset scene*) spawns the same robots again -- a rejected request never replaces it; `scripts/fleet.sh down` / `stop_sim.sh`, and `fleet.sh scene` on a stopped sim, delete both files, so the next start is an empty scene. Robot models are only imported at sim start (the URDF importer replaces the open stage), so after `scripts/gen_urdf.sh` restart the sim before spawning a changed model -- the spawn says so if you forget.
 
@@ -141,7 +145,7 @@ More robots cost frame rate, roughly linearly (RTX 4080 SUPER, FastDDS, async re
 
 ### Robot models
 
-Each slot's model comes from `ROBOT_MODEL_<i>` in `.env` (`i` = 0–7, matching the slot), one of:
+Each slot's model comes from the active profile's robot slots (`i` = 0–7; `ROBOT_MODEL_<i>` in the generated `.env`), one of:
 
 | Code | Robot | Drivetrain in this sim |
 |---|---|---|
@@ -153,17 +157,15 @@ Each slot's model comes from `ROBOT_MODEL_<i>` in `.env` (`i` = 0–7, matching 
 | `a200_0333` / `a200_0284` | MTU's own real A200s, from `robot_data/<serial>/robot.yaml` | skid-steer, native |
 | `a300_00036` | MTU's own real A300, from `robot_data/a300_00036/robot.yaml` | skid-steer, native |
 
-Leaving `ROBOT_MODEL_<i>` unset defaults that slot to `a300` (matches every earlier version of this project). To mix models:
+A slot with no model is an `a300` (matches every earlier version of this project). To mix models (or use the web UI's Spawn card, or the Configuration page's Robot slots):
 
 ```bash
-# .env
-NUM_ROBOTS=3
-ROBOT_MODEL_1=j100   # slot 1 becomes a Jackal, container/hostname/namespace j100_0001
-ROBOT_MODEL_2=r100   # slot 2 becomes a Ridgeback, r100_0002
-# slot 0 stays a300 (unset)
+scripts/fleetcfg.py slot 1 j100   # slot 1 becomes a Jackal, container/hostname/namespace j100_0001
+scripts/fleetcfg.py slot 2 r100   # slot 2 becomes a Ridgeback, r100_0002
+scripts/fleetcfg.py robots 3      # NUM_ROBOTS; slot 0 stays a300 (no model set)
 ```
 
-then `scripts/fleet.sh` to apply it (not a plain `docker compose up -d`: it keeps the slot's container name and hostname in `.env` in sync). `scripts/gen_urdf.sh` generates every model's URDF unconditionally (the four generic ones plus one per `robot_data/<id>/` folder that has a `robot.yaml`), so nothing needs regenerating when you change `ROBOT_MODEL_<i>`.
+then `scripts/fleet.sh` to apply it (not a plain `docker compose up -d`: it writes `.env`, with the slot's container name and hostname, from the settings first). `scripts/gen_urdf.sh` generates every model's URDF unconditionally (the four generic ones plus one per `robot_data/<id>/` folder that has a `robot.yaml`), so nothing needs regenerating when you change `ROBOT_MODEL_<i>`.
 
 Two things worth knowing:
 - **A slot's numeric suffix is its slot index, not a per-model count.** Two Jackals in slots 1 and 4 show up as `j100_0001` and `j100_0004`, not `j100_0000`/`j100_0001`. Real robots (a model id containing `_`) take their id with no suffix: `j100_0921`, both as the container name and as the ROS namespace.
@@ -172,7 +174,7 @@ Two things worth knowing:
 - Robots also keep a fixed spacing regardless of model size (fine for A300/A200/Jackal; Ridgeback is larger and might feel tight next to another robot).
 - **A `ROBOT_MODEL_<i>` for a slot `NUM_ROBOTS` doesn't reach is silently ignored** — that slot just never starts, so e.g. `NUM_ROBOTS=2` with `ROBOT_MODEL_2` set gives you slots 0/1 (defaulting to a300 if unset) and no slot 2 at all, not the model you configured. `scripts/fleet.sh` now warns about this (`ROBOT_MODEL_<i> ... is not running`) instead of leaving it to be found by getting the wrong robot.
 - **Jackal's fenders looked attached at spawn but drifted away once it drove or turned.** They're purely decorative (no collision, no mass) in Clearpath's own mesh, and Isaac's importer still makes them a separate physics body with a fixed-joint constraint to the chassis — one too light relative to the rest of the robot to stay perfectly rigid under motion. Fixed by folding them directly into the chassis at URDF-generation time (`merge_visual_only_links` in `scripts/flatten_urdf.py`) instead of relying on that constraint; see *Changing the robots* if you add a model with similar decorative parts.
-- **`j100_0921`/`j100_0936` are MTU's own physical robots**, spawned from their real `robot_data/<serial>/robot.yaml` files, not a generic Clearpath sample (`j100_0921`'s is used completely unmodified, including its `platform.extras` — MTU's own `mtu32_description` package is colcon-built and included; `j100_0936`'s own `robot_data` folder isn't currently available, so it still goes through a stripped-down template with `platform.extras` dropped), and — unlike every other model, which is `<model>_%04d` per slot — both their ROS namespace *and* their docker container name are their own id directly (`j100_0921`, not `j100_0921_0000`): they're one specific real robot each, not a generic model needing a slot index to stay unique. Run `scripts/fleet.sh`, not `docker compose up -d` directly, after changing a slot's model for this to take effect (it keeps `ROBOT_SUFFIX_<i>` in `.env` in sync with `ROBOT_MODEL_<i>`, working around `docker-compose.yml`'s own inability to compute this conditionally). See the `add-real-robot` skill (`.claude/skills/add-real-robot/SKILL.md`) for exactly what's kept/dropped/fixed versus the real config. Their full real sensor/arm loadout is simulated: a Stereolabs ZED2i camera, a Microstrain IMU, dual SwiftNav Duro GPS (a flat-earth projection around Michigan Tech's Houghton campus — not real satellite geometry), and a Kinova Gen3 Lite arm + 2F Lite gripper (drive a pose with `ros2 topic pub .../arm_0/joint_command sensor_msgs/msg/JointState "{name: [...], position: [...]}"`). `j100_0936` additionally carries a real SICK LMS1xx 2D lidar — 2D lidar itself is now simulated (see `a200_0333` below and *2D lidar* below), but `j100_0936` isn't wired up to it yet since its own `robot_data` folder isn't currently available.
+- **`j100_0921`/`j100_0936` are MTU's own physical robots**, spawned from their real `robot_data/<serial>/robot.yaml` files, not a generic Clearpath sample (`j100_0921`'s is used completely unmodified, including its `platform.extras` — MTU's own `mtu32_description` package is colcon-built and included; `j100_0936`'s own `robot_data` folder isn't currently available, so it still goes through a stripped-down template with `platform.extras` dropped), and — unlike every other model, which is `<model>_%04d` per slot — both their ROS namespace *and* their docker container name are their own id directly (`j100_0921`, not `j100_0921_0000`): they're one specific real robot each, not a generic model needing a slot index to stay unique. Run `scripts/fleet.sh`, not `docker compose up -d` directly, after changing a slot's model for this to take effect (it writes `ROBOT_SUFFIX_<i>` into `.env` to match the slot's model, working around `docker-compose.yml`'s own inability to compute this conditionally). See the `add-real-robot` skill (`.claude/skills/add-real-robot/SKILL.md`) for exactly what's kept/dropped/fixed versus the real config. Their full real sensor/arm loadout is simulated: a Stereolabs ZED2i camera, a Microstrain IMU, dual SwiftNav Duro GPS (a flat-earth projection around Michigan Tech's Houghton campus — not real satellite geometry), and a Kinova Gen3 Lite arm + 2F Lite gripper (drive a pose with `ros2 topic pub .../arm_0/joint_command sensor_msgs/msg/JointState "{name: [...], position: [...]}"`). `j100_0936` additionally carries a real SICK LMS1xx 2D lidar — 2D lidar itself is now simulated (see `a200_0333` below and *2D lidar* below), but `j100_0936` isn't wired up to it yet since its own `robot_data` folder isn't currently available.
 - **`a200_0333`, `a200_0284` and `a300_00036` are more MTU real robots**, same "real `robot_data/<serial>/robot.yaml` used directly" pipeline as `j100_0921`. `a200_0333` carries a D435 camera, a Hokuyo UST 2D lidar and a Velodyne VLP16 3D lidar (see *2D lidar* and *3D lidar* below). `a200_0284` carries the MTU field loadout: Microstrain IMU, dual SwiftNav Duro GPS, a SICK LMS1xx 2D lidar and a Kinova Gen3 **7-DOF** arm with a Robotiq 2F-85 gripper. `a300_00036` carries a D435, a Hokuyo UST 2D lidar, dual Duro GPS on `mtu32_description`'s sensor arch (`sensor_arch_v2`), a Microstrain IMU and a Kinova Gen3 Lite arm + 2F Lite gripper with a D405 wrist camera (`camera_1`). `a200_0284` and `a300_00036` run `cut_stem` (per-robot settings in `colcon_ws/src/stow_arm_cpp/config/robots/<id>.yaml`).
 - **`j100_0922` is `j100_0921`'s twin minus the arm** — same camera/IMU/GPS loadout, but its `robot.yaml` has no `manipulators:` section. It used to tip over while driving because links without `<inertial>` got far too much mass from their colliders (75 kg instead of 18 kg); `robots.j100_0922` in `sim/config/model_params.yaml` now sets `massless_density`/`frame_mass`, and it drives and passes the velocity calibration. The other real robots keep the default masses (their `cut_stem` runs were tuned with them).
 - **Velocity tracking:** every model runs a closed velocity loop in the sim (feed-forward + PI on the measured chassis speed and yaw rate) and holds its wheels with a brake at zero command, so commanded and achieved speeds match within ~5% over 0–1 m/s and 0–1 rad/s. Check a robot with `docker exec <robot> bash -c 'python3 /scripts/calibrate_velocity.py'` (stows the arm first; exits 1 if any level is >10% off). Details in `sim/CLAUDE.md`.
@@ -209,8 +211,7 @@ A real Clearpath robot's own `robot.yaml` can be simulated directly, unmodified 
 
 4. **Start it** like any other model:
    ```bash
-   # .env
-   ROBOT_MODEL_0=j100_0955
+   scripts/fleetcfg.py slot 0 j100_0955
    ```
    ```bash
    scripts/fleet.sh 1     # not `docker compose up -d` directly -- see below
@@ -308,7 +309,7 @@ All topics live under the robot's namespace (`a300_0000`, `j100_0001`, …, what
 
 ### Simulation time
 
-With several robots the sim runs slower than real time (3 robots: real-time factor ~0.5). With `USE_SIM_TIME=true` (the default in `.env`) the sim publishes `/clock` (one for the whole fleet) and stamps every message with simulation time, and every ROS node in the robot containers runs with `use_sim_time`, so controllers, timeouts and trajectories run at the sim's pace instead of the wall clock's:
+With several robots the sim runs slower than real time (3 robots: real-time factor ~0.5). With `USE_SIM_TIME=true` (the default) the sim publishes `/clock` (one for the whole fleet) and stamps every message with simulation time, and every ROS node in the robot containers runs with `use_sim_time`, so controllers, timeouts and trajectories run at the sim's pace instead of the wall clock's:
 
 - the boot services (`robot_state`, `ekf`, `foxglove`) and the `teleop`/`rviz` wrappers pass `use_sim_time:=$USE_SIM_TIME`;
 - `sim_robot_upstart.launch.py` (and `sim_nav2`/`sim_swift_nav_dual`) default `use_sim_time` to `$USE_SIM_TIME` (unset, i.e. `false`, on a real robot) and set it for every node they start; the Nav2 launches overwrite the `use_sim_time: false` some `config/<platform>/nav2*.yaml` hardcode;
@@ -318,7 +319,7 @@ Simulation time is physics time (1/30 s per frame at the default 60 Hz physics, 
 
 ## Middleware
 
-`FLEET_RMW` in `.env` selects the ROS 2 middleware for every container:
+The setting `FLEET_RMW` selects the ROS 2 middleware for every container:
 
 | Value | Setup |
 |---|---|
@@ -327,10 +328,10 @@ Simulation time is physics time (1/30 s per frame at the default 60 Hz physics, 
 
 ### Switching the middleware
 
-Change it in `.env`, not in `docker-compose.yml`:
+Change the setting, not `docker-compose.yml`:
 
 ```
-FLEET_RMW=rmw_fastrtps_cpp
+scripts/fleetcfg.py set FLEET_RMW=rmw_fastrtps_cpp
 ```
 
 Then recreate the containers (restarts the sim and the robots, about a minute):
@@ -339,18 +340,18 @@ Then recreate the containers (restarts the sim and the robots, about a minute):
 docker compose up -d --force-recreate
 ```
 
-For a one-off run without editing `.env`, prefix the command: `FLEET_RMW=rmw_fastrtps_cpp docker compose up -d --force-recreate`. A value set in the shell overrides `.env`, so use the same prefix on every `docker compose` command or the next plain `docker compose up` goes back to the `.env` value.
+For a one-off run without changing the setting, prefix the command: `FLEET_RMW=rmw_fastrtps_cpp docker compose up -d --force-recreate`. A value set in the shell overrides `.env`, so use the same prefix on every `docker compose` command or the next plain `docker compose up` goes back to the setting's value.
 
 Check that it took effect with `docker exec a300_0000 bash -c 'echo $RMW_IMPLEMENTATION'`.
 
 What follows from the switch:
 - Nothing else needs changing: Isaac Sim only loads its zenoh libraries when `FLEET_RMW=rmw_zenoh_cpp`, and each robot's `/etc/clearpath/robot.yaml` picks up the new value at container start. `scripts/gen_urdf.sh` does not need to be re-run, since the URDF does not depend on the middleware.
 - `zenoh-router` keeps running but idles under FastDDS, and `ZENOH_ROUTER` has no effect.
-- FastDDS is about 3–4 fps cheaper in the sim, so `SIM_RATE_HZ` can be raised accordingly in `.env`.
+- FastDDS is about 3–4 fps cheaper in the sim, so `SIM_RATE_HZ` can be raised accordingly.
 
 ### Notes
 
-- The variable is deliberately not called `RMW_IMPLEMENTATION`: a host shell that exports it (for example from `~/.bashrc`) would silently override `.env`.
+- The variable is deliberately not called `RMW_IMPLEMENTATION`: a host shell that exports it (for example from `~/.bashrc`) would silently override the setting.
 - The bundled ROS 2 libraries of Isaac Sim have no zenoh, so the sim runs from `docker/isaac-sim.Dockerfile`, which adds a system ROS 2 Jazzy. Its entrypoint only sources it when `FLEET_RMW=rmw_zenoh_cpp`.
 - `peer` mode, the rmw_zenoh_cpp default, does not work between containers: sessions listen on loopback only, so peers in different containers never see each other. That is why the sessions are clients.
 - Zenoh costs about 3–4 frames per second in the sim compared with FastDDS, so lower `SIM_RATE_HZ` (about 15 for 3 robots on zenoh).
@@ -399,14 +400,14 @@ PCs that can't reach each other pass a dump through git instead: `basestation/sh
 echo "localhost:5433:*:admin:$(grep '^PGPASSWORD=' db.env | cut -d= -f2-)" >> ~/.pgpass && chmod 600 ~/.pgpass
 ```
 
-**Network.** The container uses host networking, so it is on this machine's LAN the way a real base station is. It uses the fleet's `FLEET_RMW` and `ROS_DOMAIN_ID` from `.env`.
+**Network.** The container uses host networking, so it is on this machine's LAN the way a real base station is. It uses the fleet's `FLEET_RMW` and `ROS_DOMAIN_ID` settings.
 
-**After editing `.env`**, run `docker compose -f basestation.compose.yml up -d` (add `--build` if `basestation/` or the robot image changed). It's safe while the container is running: if the configuration changed, compose stops and recreates the container; otherwise it leaves it alone. The database (the `basestation_pgdata` volume) and `colcon_ws` survive. Anything started by hand inside the container (a `ros2 launch`, a shell) is lost. `docker restart basestation` does not pick up `.env` changes, because it reuses the container's old environment.
+**After changing a base station setting** (the Configuration page's *Apply*, or `scripts/fleetcfg.py render` first), run `docker compose -f basestation.compose.yml up -d` (add `--build` if `basestation/` or the robot image changed). It's safe while the container is running: if the configuration changed, compose stops and recreates the container; otherwise it leaves it alone. The database (the `basestation_pgdata` volume) and `colcon_ws` survive. Anything started by hand inside the container (a `ros2 launch`, a shell) is lost. `docker restart basestation` does not pick up `.env` changes, because it reuses the container's old environment.
 
 **Zenoh (the default, as on the real robots).** Like each real robot, the base station runs its own zenoh router, listening on port 7447 of this machine. Its own ROS sessions are clients of that router. The router dials every router listed in `BASESTATION_ZENOH_CONNECT` (space-separated) and keeps retrying any that are down, so one list covers the sim, real robots or both. The default is the sim's `zenoh-router`, which the fleet publishes on `127.0.0.1:7448`. To add real robots, put their routers in `.env`, then run `docker compose -f basestation.compose.yml up -d`:
 
 ```bash
-BASESTATION_ZENOH_CONNECT="tcp/127.0.0.1:7448 tcp/192.168.130.5:7447 tcp/192.168.130.20:7447"
+scripts/fleetcfg.py set BASESTATION_ZENOH_CONNECT="tcp/127.0.0.1:7448 tcp/192.168.130.5:7447 tcp/192.168.130.20:7447"
 ```
 
 Because the base station dials out, it needs no firewall rule for zenoh. A robot can also dial in: point its router at `tcp/<this machine's LAN IP>:7447`, which needs the robots' subnet allowed in the firewall (below).
@@ -424,7 +425,7 @@ sudo ufw allow from 192.168.130.0/24                   # real robots: the robots
 
 Without the first rule, `status_server` in a robot times out connecting to the database, and FastDDS topics from the simulated robots never arrive. Zenoh doesn't need it, because the base station's router dials the sim's over loopback. The interface name is fixed in `docker-compose.yml`; a stack started before that change needs `scripts/fleet.sh down` once.
 
-**ROS.** `colcon_ws` is mounted as in the robots. Build it from a robot container (`scripts/colcon_build.sh`), not here, so the files stay yours. `USE_SIM_TIME` comes from `.env`: true with the simulated robots, set it false with real ones.
+**ROS.** `colcon_ws` is mounted as in the robots. Build it from a robot container (`scripts/colcon_build.sh`), not here, so the files stay yours. `USE_SIM_TIME` is the fleet's setting: true with the simulated robots, set it false with real ones.
 
 ## Real robots: deploy and backup
 
@@ -437,21 +438,52 @@ scripts/backup_robot.sh <id> [--no-sudo]  # snapshot /etc, middleware configs, i
                                           # into robot_data/<id>/backups/ (gitignored); asks for the robot's sudo password once
 ```
 
-On a real robot, the arm tools are `ros2 run moveit_sim_bridge arm_goto <state>` (no `--direct`), and `arm_joints` reports observed joints only. The web UI's *real* mode (`python3 tools/sim_ui/server.py --mode real`, robots listed in `tools/sim_ui/real_robots.json`) wraps services, deploy, arm moves and *Cut stem* over SSH.
+On a real robot, the arm tools are `ros2 run moveit_sim_bridge arm_goto <state>` (no `--direct`), and `arm_joints` reports observed joints only. The web UI's *real* mode (`python3 tools/sim_ui/server.py --mode real`, robots listed in the settings database's `real_robot` table) wraps services, deploy, arm moves and *Cut stem* over SSH.
+
+## Settings
+
+The fleet's settings (`NUM_ROBOTS`, each robot slot's model and spawn pose, `SIM_MODE`, `FLEET_RMW`, ...) and the
+real-robot list live in a PostgreSQL database, `fleet_config`, in the base station's server (port 5433, next to the
+farm database; `basestation/config_migrations/` are its tables). `.env` is **generated** from it and not tracked:
+don't edit it, a change is overwritten. Docker compose and the containers still read `.env` as before, and the
+real robots never see the database.
+
+- **Web UI:** `python3 tools/sim_ui/server.py`, then <http://127.0.0.1:8090/config> (or the *settings* pill in the
+  main page's header). Profiles, robot slots, every setting with its default, range and help, the real robots, the
+  change log (who changed what; *revert*), the runs of `scripts/fleet.sh`, and **Running vs. settings**: what the
+  running sim, robots and base station differ in from the settings, with a button that applies it.
+- **Command line:** `scripts/fleetcfg.py` (`show`, `get`, `set KEY=VALUE`, `unset`, `robots N`, `slot I MODEL
+  [--pose X,Y,YAW]`, `profile list|use|new|rename|delete|export|import`, `history`, `revert ID`, `runs`, `real ...`).
+  `scripts/fleet.sh` runs `fleetcfg.py render` first, so it always starts what the database says.
+- **Profiles:** named sets of settings and robot slots, e.g. one per experiment; one is active. `profile export` /
+  `import` (or the page's Export / Import) moves one to another PC. Each PC's database is its own:
+  `scripts/db_sync.sh` copies only the farm database, never `fleet_config`.
+- **What each setting is** (type, default, range, which containers read it) is `scripts/fleet_settings.py`, in git
+  with the code. A new setting goes there and into `docker-compose.yml`; `scripts/fleetcfg.py check` compares the
+  two. Variables not in it are kept and written to `.env` too (shown as "not in the catalog").
+- **First use** imports this checkout's old `.env` (or, after a pull that untracked it, the last one committed to
+  git) and `tools/sim_ui/real_robots.json` into a profile `default`. A base station started before this change gets
+  the database on its next start, or at once: `scripts/fleetcfg.py init` (also done automatically on first use).
+- **Without the database** (base station stopped, `psycopg` missing): `.env` stays as last written and everything
+  still starts; only changes are refused (the page and `fleetcfg.py` say why). The host needs `python3-psycopg2`
+  or `pip install 'psycopg[binary]'`.
+- **Checks** (they stop `fleet.sh` before anything starts): values of the right type and range, and the same real
+  robot in two started slots. Warnings: a real robot without `robot_data/<id>/robot.yaml`, a model without
+  `sim/assets/<model>/`.
 
 ## Configuration
 
-Edit `.env`, then `docker restart a300-isaac-sim` for sim variables, or `scripts/fleet.sh` for anything about the robots (count, models, middleware).
+The settings are the active profile in the base station's database (*Settings*, below); change them with the web UI's Configuration page or `scripts/fleetcfg.py set KEY=VALUE`, then apply them: the Configuration page's *Running vs. settings*, or `scripts/fleet.sh` for anything about the robots (count, models, middleware). A plain `docker restart a300-isaac-sim` does **not** apply a setting (the container keeps the environment it was created with); `scripts/fleet.sh scene` or `docker compose up -d isaac-sim` recreates it.
 
-"Default" below is the fallback in `docker-compose.yml`, used only if a variable is missing from `.env` entirely. The checked-in `.env` sets most of them explicitly. Its values are whatever its last committer used on their machine (robot models, `SIM_MODE`, `ISAACSIM_HOST`, rates), not a recommendation for yours: review it before the first start (*Quick start*, step 3).
+"Default" below is the fallback in `docker-compose.yml` (and `scripts/fleet_settings.py`), used for a setting the profile doesn't set. The table is the short form: `scripts/fleet_settings.py` and the Configuration page have each setting's range and which containers it reaches.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `FLEET_RMW` | `rmw_zenoh_cpp` | ROS 2 middleware, see *Middleware* |
 | `ZENOH_ROUTER` | `tcp/zenoh-router:7447` | router the zenoh sessions connect to |
-| `ISAACSIM_HOST` | `127.0.0.1` | address the WebRTC client uses to reach the sim (the machine's LAN IP for remote clients; the `.env` in this repo holds this machine's LAN IP, change it for yours) |
-| `NUM_ROBOTS` | `0` (`fleet.sh`) | number of robots a spawn places (0–8), see *Number of robots*; read by `scripts/fleet.sh`/`fleet_ctl.py`, not by the sim; `.env` also derives `COMPOSE_PROFILES=n${NUM_ROBOTS}` from it, which selects the robot containers |
-| `ROBOT_POSE_<i>` | unset | `"x,y,yaw"` (m, m, degrees) spawn pose of slot *i* for `fleet.sh spawn` without `--poses`; unset = the default layout |
+| `ISAACSIM_HOST` | `127.0.0.1` | address the WebRTC client uses to reach the sim (the machine's LAN IP for remote clients) |
+| `NUM_ROBOTS` | `1` | number of robots a spawn places (0–8), see *Number of robots*; read by `scripts/fleet.sh`/`fleet_ctl.py`, not by the sim; the generated `.env` also has `COMPOSE_PROFILES=n<NUM_ROBOTS>`, which selects the robot containers |
+| `ROBOT_POSE_<i>` | unset | written into `.env` from slot *i*'s pose (m, m, degrees) for `fleet.sh spawn` without `--poses`; no pose = the default layout |
 | `LAVENDER_SOFT` | `1` | `1`: robots pass through lavender foliage (the lidars still see it); a rigid core at each plant's centre stops them. `0`: the whole plant is solid |
 | `SIM_SCENE` | (empty) | the world: empty = ground plane + lights, `lavender` = the built-in lavender scene, else a USD file in `sim/scene/` (e.g. `lavender_farm.usd`, the real field, see *Real lavender field*) |
 | `SCENE_LANES` | `3` | robot lanes between the two lavender rows of the built-in `lavender` scene; places the rows and the default spawn poses |
@@ -466,7 +498,7 @@ Edit `.env`, then `docker restart a300-isaac-sim` for sim variables, or `scripts
 | `SIM_MODE` | `stream` | `stream` (WebRTC) or `headed` (Isaac's desktop window on this machine's X display; needs `scripts/x11_auth.sh`) |
 | `FLEET_DEBUG` | `0` | `1` logs real-time factor, render fps and robot pose every few seconds |
 | `FORCE_REIMPORT` | `0` | `1` re-imports the URDF into USD |
-| `FLEET_SETTINGS` | (none) | extra Kit settings, `"/path/a=1;/path/b=text"`; this repo's `.env` sets `/app/asyncRendering=true` and `/app/asyncRenderingLowLatency=true` (see *Faster streaming*), and `/persistent/app/captureFrame/path=/sim/captures/` so Edit > Capture Screenshot saves into `sim/captures/` |
+| `FLEET_SETTINGS` | (none) | extra Kit settings, `"/path/a=1;/path/b=text"`; the imported profile sets `/app/asyncRendering=true` and `/app/asyncRenderingLowLatency=true` (see *Faster streaming*), and `/persistent/app/captureFrame/path=/sim/captures/` so Edit > Capture Screenshot saves into `sim/captures/` |
 | `FLEET_VIEWPORT_RES` | (client window size) | e.g. `1280x720`: render the streamed viewport at a fixed size |
 | `ROBOT_LOOKS` | `full` | robot materials, see *Robot materials*: `full` (textured, dusty, worn), `basic` (realistic materials without textures), `0` (the importer's flat colours) |
 | `FLEET_SNAPSHOT` | (none) | e.g. `/sim/generated/snapshots`: once the sim runs, save viewport PNGs of every robot from three angles (`<ns>_<view>_<ROBOT_LOOKS>.png`) |
@@ -480,7 +512,7 @@ The WebRTC client shows at most the frame rate of the sim, because the sim rende
 | Change | Frame rate |
 |---|---|
 | baseline | 19 fps |
-| `/app/asyncRendering=true` (+ low latency), now the default in `.env` | **23 fps** (camera images lag one frame) |
+| `/app/asyncRendering=true` (+ low latency), now set in the imported profile | **23 fps** (camera images lag one frame) |
 | cameras off (`CAMERA_STREAMS=none`) | about 31–36 fps |
 | fewer robots | 1 robot about 40 fps, 5 robots 11 fps |
 | lower camera resolution, colour only, no depth, `RaytracedLighting`, hiding the Kit UI, camera `CAMERA_FRAME_SKIP`, async replicator | no change |
@@ -543,7 +575,7 @@ docker restart a300-isaac-sim
 
 The textures of the fabric and the soil are generated by `sim/scripts/make_farm_textures.py`, which runs on the host (numpy, Pillow) and writes `sim/assets/weed_barrier/` and `sim/assets/soil/`. Rerun it only after changing its constants.
 
-**Use it:** set `SIM_SCENE=lavender_farm.usd` in `.env` or pick it in the web UI's *Scene* picker, then restart the sim (`scripts/fleet.sh`, or `docker restart a300-isaac-sim` if `SIM_SCENE` was already set). To try it once without editing `.env`, prefix the commands with the variable. Use the same prefix for the spawn, or compose recreates the sim from `.env`:
+**Use it:** `scripts/fleetcfg.py set SIM_SCENE=lavender_farm.usd` or pick it in the web UI's *Scene* picker, then restart the sim (`scripts/fleet.sh`, or `docker restart a300-isaac-sim` if `SIM_SCENE` was already set). To try it once without changing the setting, prefix the commands with the variable. Use the same prefix for the spawn, or compose recreates the sim from `.env`:
 
 ```bash
 SIM_SCENE=lavender_farm.usd scripts/fleet.sh scene
@@ -596,7 +628,7 @@ The URDF importer gives every robot part one flat colour with the same plastic-l
 - **Looks:** each visual part is matched by name, material name and colour (rules `RULES`, per-robot overrides `MODEL_RULES`) to one of a dozen NVIDIA OmniPBR materials: glossy Clearpath-yellow paint (clear coat, orange peel), black powder coat with scuffs, semi-gloss black bumpers, knobby rubber tyres with mud, brushed aluminium (the A300's arch posts, the Jackal's top assembly), anodised sensor housings, glossy white Kinova links, matte white GNSS domes, black plastic, red e-stops, glass. Unmatched coloured parts keep their colour with a plastic surface; emissive status lights are left alone.
 - **Detail:** colour, roughness and normal textures are generated procedurally (numpy, seamless) on the first start into `sim/generated/looks/` (~25 s, cached afterwards; delete the folder or bump `VERSION` to regenerate). Parts have no UVs, so OmniPBR projects the textures in object space; a texture tile is 0.5 m on every part. Parts low on the robot (< 0.18 m, plus tyres and bumpers) get the heavier dust variant. Edges get OmniPBR's shading-only rounded edges (3 mm).
 - **Visual only:** only the visual material bindings change, in memory (the import cache in `sim/generated/<model>/` stays as imported). Colliders, physics materials and masses are untouched, so driving and the lidars behave the same.
-- **Cost:** measured with 3 camera-equipped robots (RTX 4080 SUPER, 22 Hz, async rendering): render fps 8.8-9.3 with the flat materials, 9.2-9.7 with `full`, 9.6-9.8 with `basic`, i.e. no measurable difference; `full` adds ~25 s to the first start only. If it costs too much on another GPU, set `ROBOT_LOOKS=basic` (no textures) or `ROBOT_LOOKS=0` (original materials) in `.env` (or the web UI's *Robot look* selector) and restart the sim (`docker restart a300-isaac-sim`).
+- **Cost:** measured with 3 camera-equipped robots (RTX 4080 SUPER, 22 Hz, async rendering): render fps 8.8-9.3 with the flat materials, 9.2-9.7 with `full`, 9.6-9.8 with `basic`, i.e. no measurable difference; `full` adds ~25 s to the first start only. If it costs too much on another GPU, set `ROBOT_LOOKS=basic` (no textures) or `ROBOT_LOOKS=off` (original materials) with `scripts/fleetcfg.py set` (or the web UI's *Robot look* selector) and restart the sim (`docker restart a300-isaac-sim`).
 
 | Before (`ROBOT_LOOKS=0`) | After (`ROBOT_LOOKS=full`) |
 |---|---|
@@ -682,7 +714,8 @@ How the pieces connect; each directory's `CLAUDE.md` has the details.
 
 | Path | Purpose |
 |---|---|
-| `docker-compose.yml`, `.env` | the whole stack (`.env` holds this machine's LAN IP in `ISAACSIM_HOST`) |
+| `docker-compose.yml`, `.env` | the whole stack (`.env` is generated from the settings database by `scripts/fleetcfg.py`, untracked) |
+| `scripts/fleetcfg.py`, `scripts/fleet_settings.py`, `basestation/config_migrations/` | the settings: command line and library, what each setting is, the `fleet_config` database's tables |
 | `robot/` | robot container image: `Dockerfile`, `entrypoint.sh`, per-model config templates `config/robot.a300/a200/j100/r100/j100_0936.yaml.tmpl` and the generic `config/robot.rviz.tmpl`. Real robots in `robot_data/` use their own `robot.yaml` directly, no template. Everything here is baked into the image: rebuild after editing (*Rebuilding after a change*) |
 | `robot/bin/` | commands installed in every robot: `teleop`, `camera_view`, `rviz`, `foxglove`, `restart_ros` and the boot-time/background helpers `robot_state`, `generate_params`, `generate_srdf` (MoveIt collision matrix), `pruner_stub` (fake pruner serial device); arm tools `arm_goto` and `arm_joints` |
 | `robot_data/<id>/robot.yaml` | the real MTU robots' own Clearpath configs (`j100_0921`, `j100_0922`, `a200_0284`, `a300_00036`, ...), used unmodified. Tracked in git except each robot's `backups/` (secrets, see *Real robots: deploy and backup*) and `colcon_ws/` |
@@ -706,7 +739,7 @@ The per-directory `CLAUDE.md` files go into more detail on each area.
 
 - **Submodules:** several packages in `colcon_ws/src/` are git submodules. `mtu32_husky` and `mocap_fake_localizer` track a `sim` branch of their own repositories: commit and push inside the submodule first, then commit the new submodule pointer here.
 - **Git LFS:** binaries under `sim/assets/` (usd, png, jpg, hdr, dae, obj, stl; see `.gitattributes`) are LFS files. Run `git lfs install` once per machine.
-- **Ignored:** `sim/generated/`, `robot_data/**/colcon_ws/`, `robot_data/**/backups/` (secrets) and colcon's `build/`/`install/`/`log/`. `.env` is tracked: it holds no secrets, but it does hold the committer's LAN IP in `ISAACSIM_HOST`.
+- **Ignored:** `sim/generated/`, `robot_data/**/colcon_ws/`, `robot_data/**/backups/` (secrets) and colcon's `build/`/`install/`/`log/`. `.env` and `tools/sim_ui/real_robots.json` are generated from the settings database (each PC has its own), so they're ignored too.
 - **No build system or test suite:** checks are scripts run against the live sim: `drive_test.py` (after any URDF or drive change), `calibrate_velocity.py`, `arm_joints`.
 
 ## Troubleshooting
@@ -720,7 +753,7 @@ The per-directory `CLAUDE.md` files go into more detail on each area.
 - **`PhysX Internal CUDA error` and the sim container dies:** seen when running 4 distinct models at once (see *Robot models*); try fewer distinct models running simultaneously.
 - **Sim runs slower than real time:** check `FLEET_DEBUG=1`; lower `SIM_RATE_HZ` or the number of robots.
 - **The WebRTC client is choppy:** the stream cannot be faster than the sim frame rate; see *Faster streaming*.
-- **Wrong middleware in a container:** a host shell exporting `RMW_IMPLEMENTATION` does not affect the stack (use `FLEET_RMW` in `.env`); check with `docker exec a300_0000 bash -c 'echo $RMW_IMPLEMENTATION'`.
+- **Wrong middleware in a container:** a host shell exporting `RMW_IMPLEMENTATION` does not affect the stack (use the setting `FLEET_RMW`); check with `docker exec a300_0000 bash -c 'echo $RMW_IMPLEMENTATION'`.
 - **One-off `No such file or directory: .../colcon_ws/install/setup.bash`** on a `docker exec`: harmless — `colcon_ws/install/` was deleted after the container last (re)started `/etc/clearpath/setup.bash`; rebuilding (`scripts/colcon_build.sh`) or recreating the robots (`scripts/fleet.sh`) fixes it.
 - **Robots don't see each other's topics:** every container needs the same `ROS_DOMAIN_ID` and the same middleware. With zenoh the `zenoh-router` must be healthy; with FastDDS the shared profile is required.
 
@@ -746,7 +779,7 @@ The per-directory `CLAUDE.md` files go into more detail on each area.
 
 - **A changed `robot/entrypoint.sh` or `robot/bin/*` has no effect:** both are baked into the image. Run `docker compose build robot0`, then recreate with `scripts/fleet.sh N`.
 - **A changed colcon package has no effect:** run `scripts/colcon_build.sh --packages-select <pkg>`, then restart its launch (a running node keeps the old binary).
-- **The container is still named with a slot suffix (`j100_0921_0000`) after changing a slot's model:** start with `scripts/fleet.sh`, not `docker compose up -d`. `fleet.sh` writes `ROBOT_SUFFIX_<i>`/`ROBOT_HOSTNAME_<i>` into `.env`.
+- **The container is still named with a slot suffix (`j100_0921_0000`) after changing a slot's model:** start with `scripts/fleet.sh`, not `docker compose up -d`. `fleet.sh` writes `.env` (with `ROBOT_SUFFIX_<i>`/`ROBOT_HOSTNAME_<i>`) from the settings first.
 - **A real robot's container sees none of the sim's topics:** its `robot.yaml` uses a different `domain_id` or middleware than the fleet. `entrypoint.sh` rewrites both to the fleet's (look for `[entrypoint] <id>: robot.yaml domain_id 1 -> 0` or `... middleware rmw_fastrtps_cpp -> rmw_zenoh_cpp` in the log); a container made before that change needs `docker compose build robot0` and `scripts/fleet.sh`.
 - **A background service (`robot_state`, `ekf`, `foxglove`, `pruner_stub`) seems dead:** its restart loop swallows errors. Read `/tmp/<service>.log` in the container. For example, `robot_state_publisher` crash-looped unnoticed on a URDF with a dangling joint.
 - **Robots tip over or wheelie while driving:** links without `<inertial>` get mass from their collider at 1000 kg/m³ (a Jackal weighed 75 kg instead of 18 kg). Check `Articulation.get_link_masses()`, and set `massless_density`/`frame_mass` for the robot in `sim/config/model_params.yaml` (applied before the timeline plays; a mass change at runtime is ignored).

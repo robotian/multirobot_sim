@@ -14,8 +14,9 @@ a new id replaces the robots in the scene. It reports progress in sim/generated/
   scripts/fleet_ctl.py state                 print the sim's state (null if the sim isn't running / stale)
 
 Poses: --poses '[{"x":0,"y":-1.6,"yaw":0}, ...]' (one per slot, null or missing keys = default), else
-ROBOT_POSE_<i>="x,y,yaw" in .env, else the sim's default layout (state.json's default_poses). x/y in metres in the
-world frame, yaw in degrees. Normally run through scripts/fleet.sh (which also starts the robot containers).
+ROBOT_POSE_<i>="x,y,yaw" in .env (a slot's pose in the settings), else the sim's default layout (state.json's default_poses). x/y in metres in the
+world frame, yaw in degrees. Normally run through scripts/fleet.sh (which renders .env from the settings database
+first and also starts the robot containers).
 Stdlib only; tools/sim_ui/server.py imports it.
 """
 import argparse

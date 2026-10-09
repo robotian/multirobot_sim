@@ -1,13 +1,13 @@
 # tools/sim_ui
 
-Local web UI: `server.py` (stdlib only, no pip deps) + `index.html`, default `127.0.0.1:8090`. It runs the repo's scripts and `docker`/`ssh` commands; long actions are background jobs whose log the page polls. Routes: the `POST`/`GET` tables at the end of `server.py`.
+Local web UI: `server.py` (stdlib + `scripts/fleetcfg.py`, which needs psycopg for the settings database) + `index.html` + `config.html` (`/config`), default `127.0.0.1:8090`. It runs the repo's scripts and `docker`/`ssh` commands; long actions are background jobs whose log the page polls. Routes: the `POST`/`GET` tables at the end of `server.py`.
 
 ## Security and setup
 
 - Binds 127.0.0.1 by default; `--host 0.0.0.0` exposes docker control to the LAN.
 - POSTs must send `Content-Type: application/json` (else 415): other websites can't send it without a CORS preflight, which is never answered.
 - A body with `password` is refused unless from 127.0.0.1/::1 (plain HTTP over the LAN otherwise).
-- `FLEET_ROOT=<checkout>` drives another checkout's fleet (`.env`, scripts, `sim/`), e.g. from a worktree; `real_robots.json` is still read next to `server.py`.
+- `FLEET_ROOT=<checkout>` drives another checkout's fleet (`.env`, scripts, `sim/`, its `fleetcfg.py`), e.g. from a worktree. The settings database is the same one either way (`FLEET_CONFIG_DB` to test against a scratch one).
 
 ## Modes and targets
 
@@ -19,12 +19,12 @@ Local web UI: `server.py` (stdlib only, no pip deps) + `index.html`, default `12
 
 ## Simulation and Spawn cards
 
-- `/api/sim/start` writes `.env` `SIM_MODE` (`stream`/`headed`), `ROBOT_LOOKS` (`full`/`basic`/`off`) and `SIM_SCENE`, then runs `scripts/fleet.sh scene` (waits for the scene). Changing any of them recreates the sim.
+- `/api/sim/start` saves the settings `SIM_MODE` (`stream`/`headed`), `ROBOT_LOOKS` (`full`/`basic`/`off`) and `SIM_SCENE`, then runs `scripts/fleet.sh scene` (waits for the scene). Changing any of them recreates the sim.
 - Headed: uses the server's `$DISPLAY` or the first `/tmp/.X11-unix` socket; runs `scripts/x11_auth.sh` (writes `.x11/xauth`) first.
-- `SIM_SCENE`: `""` (ground plane + lights), `lavender` (only via `.env`), or a file under `sim/scene/`.
+- `SIM_SCENE`: `""` (ground plane + lights), `lavender` (only via the Configuration page / `fleetcfg.py`), or a file under `sim/scene/`.
 - `/api/scene/upload` (base64 JSON, <= 512 MB): a browser only gives the page a file's contents, not its path, and saved scenes reference assets relative to themselves (`../assets/...`), so the scene must live in `sim/scene/`. Same SHA-256 there → reused; else copied in, never over a different file (`<stem>_<hash8>.usd`).
 - `/api/sim/stop` = `scripts/stop_sim.sh`. `/api/sim/reset` = `fleet_ctl.reset()` (module reloaded each call): stops robot containers, stops/plays the sim timeline, starts them again; robots return to spawn state.
-- `/api/spawn` `{robots: [{model, x, y, yaw°}]}` (<= 8): writes `NUM_ROBOTS`/`ROBOT_MODEL_<i>`, runs `scripts/fleet.sh spawn --poses <json>`. Refused until the sim's `state.json` says the scene is ready. Models = the sim's imported `models`.
+- `/api/spawn` `{robots: [{model, x, y, yaw°}]}` (<= 8): saves slots 0..N-1 (model and pose) and `NUM_ROBOTS`, runs `scripts/fleet.sh spawn --poses <json>`. Refused until the sim's `state.json` says the scene is ready. Models = the sim's imported `models`.
 
 ## Per-robot actions
 
@@ -38,7 +38,7 @@ Local web UI: `server.py` (stdlib only, no pip deps) + `index.html`, default `12
 
 ## Real robots card
 
-- `real_robots.json`: `{"<id>": {"host", "user", "cutter"}}`. Default host `cpr-<id with ->.local` doesn't always resolve: give an IP. `cutter` gates Cut stem because `bringup_main` advertises `cut_stem` on every robot.
+- The settings database's `real_robot` table (`fleetcfg.real_robots()`, cached 5 s; while the database is down, the copy it last wrote to `real_robots.json`, untracked): `{"<id>": {"host", "user", "cutter"}}`. Default host `cpr-<id with ->.local` doesn't always resolve: give an IP. `cutter` gates Cut stem because `bringup_main` advertises `cut_stem` on every robot.
 - Offline robots are retried in the background every 15 s (don't stall polls); `ros2 action list` only every 30 s (a ros2 CLI call costs a robot seconds of CPU).
 - Up to date = `git diff <~/colcon_ws/DEPLOYED commit> HEAD -- colcon_ws/src` is empty (a commit compare gives false "out of date").
 - Linked = the robot's `platform/joint_states` appears in the base station's `ros2 topic list -v`; a configured endpoint can route nothing. Link adds `tcp/<ip>:7447` to `BASESTATION_ZENOH_CONNECT` and runs `compose up -d`.
@@ -56,7 +56,7 @@ Local web UI: `server.py` (stdlib only, no pip deps) + `index.html`, default `12
 
 ## Base station card
 
-- Poll: `docker inspect` plus env drift vs. `.env` (`RMW_IMPLEMENTATION` from `BASESTATION_RMW`/`FLEET_RMW`, `ROS_DOMAIN_ID`, `USE_SIM_TIME`, `BASESTATION_ZENOH_CONNECT`) and image rebuilt since; Recreate applies either.
+- Poll: `docker inspect` plus env drift vs. the settings (`.env`) (`RMW_IMPLEMENTATION` from `BASESTATION_RMW`/`FLEET_RMW`, `ROS_DOMAIN_ID`, `USE_SIM_TIME`, `BASESTATION_ZENOH_CONNECT`) and image rebuilt since; Recreate applies either.
 - Background every 10 s: `docker stats` first (else it measures the probe), then `scripts/basestation_probe.py` in the container.
 - Endpoints get robot names only from already-known IPs: an unresolvable mDNS name takes 5 s and stalls the poll.
 - Actions: start/stop/restart/recreate/rebuild, `router` (`pkill -f [r]mw_zenohd`; `entrypoint.sh` restarts it), link/unlink an endpoint (edits `BASESTATION_ZENOH_CONNECT`, then `up -d`).
@@ -71,3 +71,10 @@ Local web UI: `server.py` (stdlib only, no pip deps) + `index.html`, default `12
 
 - `/api/localization`: `ref_localizer/status` via `ros2 topic echo --once` (a few seconds).
 - `/api/localization/set`: `ros2 param set` `source`/`anchor`, or `save_anchor`/`reset_anchor`; `ros2 service call` exits 0 regardless, so the job greps `success=True`.
+
+## Configuration page (`/config`, `config.html`)
+
+- Everything goes through `scripts/fleetcfg.py` (the settings database `fleet_config`; `.env` is rendered from its active profile): `read_env()` renders first (a change made with `fleetcfg.py` or SQL shows at the next poll), `write_env()` = `fleetcfg.set_settings`. Changes are made before a job starts, so a refusal (database down and the value differs, invalid value, the same real robot in two started slots) is the request's 400, not a job error.
+- Database down: `.env` as last written, the page read-only with a red banner, the main page's *settings* pill red. Writes that change nothing still pass (Start with the same mode/scene).
+- `/api/config` = `fleetcfg.view()` + models, scenes, real robots + **drift**: `docker compose config --format json` (from `.env`) vs. `docker inspect` of the running sim, robot slots (container name, hostname, env) and base station, cached 4 s. Not compared: `DISPLAY`/`XAUTHORITY` (the server's shell, not the settings) and anything named like a secret (never sent to the page). `/api/config/apply` = `fleet.sh scene` (sim; compose recreates it when its env changed, its robots respawn from `applied_request.json`), `fleet.sh spawn` (robots), `compose -f basestation.compose.yml up -d`.
+- Change log actor is `web UI`; the CLI's is `user@host`. Profile create/copy/delete log one row (`fleet.bulk`), so their settings can't be reverted one by one.

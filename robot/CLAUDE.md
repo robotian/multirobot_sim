@@ -45,7 +45,7 @@ One image (`Dockerfile`, base `osrf/ros:jazzy-desktop-full`) for every model; on
 
 ## Sim time
 
-`USE_SIM_TIME` (from `.env`) is in every container's environment. `robot_state`, `ekf`, `foxglove`, `teleop` and `rviz` pass `-p use_sim_time:=${USE_SIM_TIME:-false}`. In `ekf` it comes after `--params-file` because the generated `localization.yaml` says `False`.
+`USE_SIM_TIME` (a fleet setting) is in every container's environment. `robot_state`, `ekf`, `foxglove`, `teleop` and `rviz` pass `-p use_sim_time:=${USE_SIM_TIME:-false}`. In `ekf` it comes after `--params-file` because the generated `localization.yaml` says `False`.
 
 ## Upstream quirks and workarounds
 

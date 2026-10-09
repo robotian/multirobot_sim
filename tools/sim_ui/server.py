@@ -3,18 +3,21 @@
 
 Sim: start/stop/reset the sim (the scene only), spawn robots at chosen poses into the running scene (and start
 their containers), start/stop mtu32_bringup's sim_robot_upstart.launch.py per robot.
-Real (tools/sim_ui/real_robots.json, reached over SSH like scripts/deploy_robot.sh): Clearpath's services and
+Real (the real_robot table of the settings database, reached over SSH like scripts/deploy_robot.sh): Clearpath's services and
 restarting them, deploying colcon_ws/src, linking the robot to the base station's zenoh router.
 Either: move the arm to named SRDF states (optionally recording commanded vs. observed joint positions while it
 moves), cut_stem, stop motion, RViz, each robot's ref_localizer (map -> odom source / anchor), OptiTrack Motive's
 rigid bodies and which robot follows each.
+Configuration page (/config): the settings, robot slots and profiles in the base station's fleet_config database
+(scripts/fleetcfg.py), which .env is generated from; their change log and runs; what the running containers differ in.
 
   python3 tools/sim_ui/server.py                 # http://127.0.0.1:8090
   python3 tools/sim_ui/server.py --mode real     # the page's mode until the browser picks its own
   python3 tools/sim_ui/server.py --host 0.0.0.0  # reachable from the LAN -- it runs docker commands, so only on a trusted network
   FLEET_ROOT=<checkout> python3 server.py        # drive another checkout's fleet (e.g. this UI from a worktree)
 
-Stdlib only. Long operations run as background jobs whose output the page polls.
+Stdlib plus psycopg (or psycopg2) for the settings database; without it, or without the database, the page runs on
+.env as last written and refuses setting changes. Long operations run as background jobs whose output the page polls.
 """
 import argparse
 import base64
@@ -42,6 +45,7 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(os.environ.get("FLEET_ROOT") or Path(__file__).resolve().parents[2]).resolve()
 sys.path.insert(0, str(ROOT / "scripts"))
 import fleet_ctl  # noqa: E402  (the sim's spawn protocol: request/state files)
+import fleetcfg  # noqa: E402  (the settings: the base station's fleet_config database, .env generated from it)
 sys.path.insert(0, str(ROOT / "colcon_ws/src/mocap_fake_localizer/scripts"))
 import natnet  # noqa: E402  (OptiTrack Motive's NatNet protocol, shared with the robots' natnet_ref_pose.py)
 
@@ -156,14 +160,17 @@ class RealTarget:
         return sh(self.argv(command, ros_env), timeout=timeout, input=input)
 
 
-# Which real robots the UI shows: {"<id>": {"host": ..., "user": ..., "cutter": true}}; host defaults to the
-# robot's mDNS name (cpr-<id with - for _>.local, as deploy_robot.sh), user to robot, cutter (the stem cutter is
-# fitted: cut_stem is offered; bringup_main advertises the action on every robot) to false.
-REAL_CONFIG = Path(__file__).with_name("real_robots.json")
+# Which real robots the UI shows: {"<id>": {"host": ..., "user": ..., "cutter": true}}, the settings database's
+# real_robot table (fleetcfg.real_robots(); while it can't be reached, the copy it last wrote to real_robots.json).
+# Host defaults to the robot's mDNS name (cpr-<id with - for _>.local, as deploy_robot.sh), user to robot, cutter
+# (the stem cutter is fitted: cut_stem is offered; bringup_main advertises the action on every robot) to false.
 ROBOT_ID_RE = re.compile(r"^[a-z0-9]+_[0-9]+$")  # deploy_robot.sh's
 HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
 USER_RE = re.compile(r"^[a-z_][a-z0-9_-]*$")
 REAL_LOCK = threading.Lock()
+REAL_CACHE_S = 5  # read by every status poll and the link monitors: one database round trip per 5 s at most
+_real_cache = {"t": 0.0, "data": {}}
+ACTOR = "web UI"  # who the settings database's change log names for changes made here
 
 
 def default_host(robot_id):
@@ -171,11 +178,11 @@ def default_host(robot_id):
 
 
 def real_config():
-    try:
-        data = json.loads(REAL_CONFIG.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return {k: v for k, v in data.items() if ROBOT_ID_RE.match(k) and isinstance(v, dict)}
+    with REAL_LOCK:
+        if time.time() - _real_cache["t"] > REAL_CACHE_S:
+            data = fleetcfg.real_robots(ACTOR)
+            _real_cache.update(t=time.time(), data={k: v for k, v in data.items() if ROBOT_ID_RE.match(k)})
+        return dict(_real_cache["data"])
 
 
 def real_target(name, config=None):
@@ -201,25 +208,16 @@ def act_real_save(body):
         raise ValueError("bad host")
     if user and not USER_RE.match(user):
         raise ValueError("bad user")
-    with REAL_LOCK:
-        config = real_config()
-        entry = {"host": host or default_host(robot)}
-        if user and user != "robot":
-            entry["user"] = user
-        entry["cutter"] = bool(body.get("cutter"))
-        config[robot] = entry
-        REAL_CONFIG.write_text(json.dumps(dict(sorted(config.items())), indent=2) + "\n")
+    fleetcfg.real_save(robot, host or default_host(robot), user or "robot", bool(body.get("cutter")), ACTOR)
+    _real_cache["t"] = 0.0
     PROBES.pop(("real", robot), None)
-    return {"real_robots": config}
+    return {"real_robots": real_config()}
 
 
 def act_real_remove(body):
-    with REAL_LOCK:
-        config = real_config()
-        if config.pop(body.get("robot"), None) is None:
-            raise ValueError("not in the list")
-        REAL_CONFIG.write_text(json.dumps(config, indent=2) + "\n")
-    return {"real_robots": config}
+    fleetcfg.real_remove(body.get("robot"), ACTOR)
+    _real_cache["t"] = 0.0
+    return {"real_robots": real_config()}
 
 
 # One command per robot per status poll (the old per-field docker execs were 5 per robot, one after another; over
@@ -386,25 +384,18 @@ def label(t):
 # ---------------------------------------------------------------- state
 
 def read_env():
-    env = {}
-    for line in (ROOT / ".env").read_text().splitlines():
-        if "=" in line and not line.lstrip().startswith("#"):
-            k, v = line.split("=", 1)
-            env[k.strip()] = v.strip()
-    return env
+    """The variables compose sees: .env, rendered again from the settings database first when it is reachable (so a
+    change made elsewhere, e.g. scripts/fleetcfg.py set, shows here)."""
+    return fleetcfg.env(ACTOR)
 
 
 def write_env(updates):
-    path = ROOT / ".env"
-    lines = path.read_text().splitlines()
-    done = set()
-    for i, line in enumerate(lines):
-        key = line.split("=", 1)[0].strip()
-        if key in updates:
-            lines[i] = f"{key}={updates[key]}"
-            done.add(key)
-    lines += [f"{k}={v}" for k, v in updates.items() if k not in done]
-    path.write_text("\n".join(lines) + "\n")
+    """Settings into the database's active profile, then .env rendered from it. Refused (ValueError) while the
+    database can't be reached, unless the values are already in effect."""
+    try:
+        return fleetcfg.set_settings(updates, ACTOR)
+    except fleetcfg.Unavailable as e:
+        raise ValueError(f"can't change settings: {e}") from None
 
 
 def available_models():
@@ -617,6 +608,8 @@ def status(q):
         "basestation": container_state(BASESTATION) if mode != "sim" else None,
         "known_real_ids": known_real_ids() if mode != "sim" else [],
         "head": head,
+        # where .env came from: the settings database (its active profile), or "offline" (.env as last written)
+        "settings": {k: fleetcfg.LAST_RENDER.get(k) for k in ("source", "profile", "why", "errors")},
     }
 
 
@@ -636,24 +629,26 @@ def host_display():
 
 def act_sim_start(body):
     # mode: "stream" (headless, WebRTC client) or "headed" (Isaac Sim's own window on this machine's display).
-    # Written to .env as SIM_MODE; fleet.sh's `docker compose up -d` recreates the sim when it changes.
-    mode = (body or {}).get("mode") or read_env().get("SIM_MODE", "stream")
+    # Saved as the setting SIM_MODE; fleet.sh's `docker compose up -d` recreates the sim when it changes.
+    current = read_env()
+    mode = (body or {}).get("mode") or current.get("SIM_MODE", "stream")
     if mode not in SIM_MODES:
         raise ValueError(f"mode must be one of {SIM_MODES}")
     # looks: robot materials (ROBOT_LOOKS), "full" (textured), "basic" (plain colours) or "off" (importer's own);
-    # written to .env like SIM_MODE, so a change recreates the sim too
-    looks = (body or {}).get("looks") or read_env().get("ROBOT_LOOKS", "full")
+    # saved like SIM_MODE, so a change recreates the sim too
+    looks = (body or {}).get("looks") or current.get("ROBOT_LOOKS", "full")
     if looks not in ROBOT_LOOKS:
         raise ValueError(f"looks must be one of {ROBOT_LOOKS}")
-    # scene: SIM_SCENE, "" (ground plane + lights), "lavender" or a file in sim/scene/; written to .env like
-    # SIM_MODE, so a change recreates the sim
+    # scene: SIM_SCENE, "" (ground plane + lights), "lavender" or a file in sim/scene/; saved like SIM_MODE, so a
+    # change recreates the sim
     scene = (body or {}).get("scene")
-    scene = read_env().get("SIM_SCENE", "") if scene is None else scene
+    scene = current.get("SIM_SCENE", "") if scene is None else scene
     if scene not in BUILTIN_SCENES and scene not in scene_files():
         raise ValueError(f"no scene {scene!r}: pick a USD file again")
+    # before the job, so a refusal (database down and a value changed) shows on the page
+    write_env({"SIM_MODE": mode, "ROBOT_LOOKS": looks, "SIM_SCENE": scene})
 
     def fn(j):
-        write_env({"SIM_MODE": mode, "ROBOT_LOOKS": looks, "SIM_SCENE": scene})
         env = dict(os.environ)
         if mode == "headed":
             display = host_display()
@@ -664,7 +659,7 @@ def act_sim_start(body):
             j.log(f"headed: DISPLAY={display}")
             if j.run(["scripts/x11_auth.sh"], env=env) != 0:
                 return False
-        j.log(f".env: SIM_MODE={mode} ROBOT_LOOKS={looks} SIM_SCENE={scene}")
+        j.log(f"settings: SIM_MODE={mode} ROBOT_LOOKS={looks} SIM_SCENE={scene}")
         # scene only: the robots are spawned afterwards (act_spawn); waits until the scene is ready
         return j.run(["scripts/fleet.sh", "scene"], env=env) == 0
 
@@ -713,12 +708,15 @@ def act_spawn(body):
     if (state.get("spawn") or {}).get("state") == "spawning":
         raise ValueError("a spawn is already in progress")
     models = [e["model"] for e in entries]
-    updates = {"NUM_ROBOTS": str(len(models))}
-    updates.update({f"ROBOT_MODEL_{i}": m for i, m in enumerate(models)})
+    # slots 0..N-1 (model and pose) and NUM_ROBOTS into the settings database, before the job so a refusal shows on
+    # the page; the poses are kept, so a later `scripts/fleet.sh spawn` places the robots here again
+    try:
+        fleetcfg.set_slots([dict(model=m, **p) for m, p in zip(models, poses)], ACTOR, num_robots=len(models))
+    except fleetcfg.Unavailable as e:
+        raise ValueError(f"can't save the robots: {e}") from None
 
     def fn(j):
-        write_env(updates)
-        j.log(f".env: {updates}")
+        j.log(f"settings: NUM_ROBOTS={len(models)}, slots {', '.join(models) or '(none)'}")
         # the sim replaces its robots (the scene keeps running), then the robot containers are (re)created
         return j.run(["scripts/fleet.sh", "spawn", "--poses", json.dumps(poses)]) == 0
 
@@ -1002,11 +1000,11 @@ def act_basestation_link(body):
     endpoint = f"tcp/{ip}:7447"
     if endpoint in endpoints:
         raise ValueError(f"the base station already dials {endpoint}")
+    value = " ".join(endpoints + [endpoint])
+    write_env({"BASESTATION_ZENOH_CONNECT": value})
 
     def fn(j):
-        value = '"' + " ".join(endpoints + [endpoint]) + '"'
-        write_env({"BASESTATION_ZENOH_CONNECT": value})
-        j.log(f".env: BASESTATION_ZENOH_CONNECT={value}")
+        j.log(f"settings: BASESTATION_ZENOH_CONNECT={value}")
         return j.run(["docker", "compose", "-f", "basestation.compose.yml", "up", "-d"]) == 0
 
     return start_job(f"base station: link {t.name} ({endpoint})", fn)
@@ -1141,11 +1139,11 @@ def act_basestation(body):
         if (endpoint in endpoints) == (action == "link"):
             raise ValueError(f"{endpoint} is {'already' if action == 'link' else 'not'} in BASESTATION_ZENOH_CONNECT")
         new = endpoints + [endpoint] if action == "link" else [e for e in endpoints if e != endpoint]
+        value = " ".join(new)
+        write_env({"BASESTATION_ZENOH_CONNECT": value})
 
         def fn(j):
-            value = '"' + " ".join(new) + '"'
-            write_env({"BASESTATION_ZENOH_CONNECT": value})
-            j.log(f".env: BASESTATION_ZENOH_CONNECT={value}")
+            j.log(f"settings: BASESTATION_ZENOH_CONNECT={value}")
             return j.run(BASESTATION_COMPOSE + ["up", "-d"]) == 0
 
         return start_job(f"base station: {action} {endpoint}", fn)
@@ -1748,6 +1746,185 @@ def act_localization_set(body):
     return start_job(f"{label(t)}: localization {what}", lambda j: all(j.run(t.argv(c)) == 0 for c in cmds))
 
 
+# ---------------------------------------------------------------- configuration page (the settings database)
+
+CONFIG_PAGE = Path(__file__).with_name("config.html")
+# Not compared between running containers and the settings: the shell's own (the server's DISPLAY isn't the one a
+# container was made with), and secrets from db.env, never sent to the page.
+NOT_COMPARED = {"DISPLAY", "XAUTHORITY"}
+SECRET_RE = re.compile(r"PASSWORD|SECRET|TOKEN|KEY", re.I)
+DRIFT_EVERY_S = 4
+_drift = {"t": 0.0, "data": None, "lock": threading.Lock()}
+
+
+def jsonable(rows):
+    """datetimes (timestamptz) as ISO strings: the handler's json.dumps knows no datetime."""
+    def conv(v):
+        return v.isoformat() if hasattr(v, "isoformat") else v
+    return [{k: conv(v) for k, v in r.items()} for r in rows]
+
+
+def compose_services(args):
+    """What `docker compose config` resolves now (from .env): {service: {...}}, or None."""
+    try:
+        p = subprocess.run(["docker", "compose", *args, "config", "--format", "json"], cwd=ROOT, capture_output=True,
+                           text=True, timeout=30, stdin=subprocess.DEVNULL)
+        return json.loads(p.stdout)["services"] if p.returncode == 0 else None
+    except (subprocess.TimeoutExpired, ValueError, KeyError):
+        return None
+
+
+def env_diff(want, info):
+    have = dict(e.split("=", 1) for e in info["Config"]["Env"] if "=" in e)
+    out = []
+    for k, v in sorted((want.get("environment") or {}).items()):
+        if k in NOT_COMPARED or SECRET_RE.search(k):
+            continue
+        v = "" if v is None else str(v)
+        if have.get(k, "") != v:
+            out.append({"key": k, "running": have.get(k), "configured": v})
+    if want.get("hostname") and info["Config"].get("Hostname") != want["hostname"]:
+        out.append({"key": "hostname", "running": info["Config"].get("Hostname"), "configured": want["hostname"]})
+    return out
+
+
+def inspect_all(names):
+    if not names:
+        return {}
+    code, out = sh(["docker", "inspect", *names], timeout=15)
+    try:
+        return {i["Name"].lstrip("/"): i for i in json.loads(out)} if code == 0 else {}
+    except ValueError:
+        return {}
+
+
+def config_drift():
+    """What the running containers differ in from the settings (they read them at creation): per target, the
+    variables (running vs. configured) and robot slots to start, rename or stop. Cached for a few seconds."""
+    with _drift["lock"]:
+        if _drift["data"] is not None and time.time() - _drift["t"] < DRIFT_EVERY_S:
+            return _drift["data"]
+        want = compose_services([]) or {}
+        rows = [c for c in containers() if c["state"] == "running"]
+        bs_want = (compose_services(["-f", "basestation.compose.yml"]) or {}).get("basestation")
+        infos = inspect_all([c["name"] for c in rows] + ([BASESTATION] if container_state(BASESTATION) == "running" else []))
+        by_service = {c["service"]: c for c in rows}
+        data = {"sim": None, "robots": [], "basestation": None}
+        sim = by_service.get("isaac-sim")
+        if sim and "isaac-sim" in want and sim["name"] in infos:
+            data["sim"] = {"running": True, "diff": env_diff(want["isaac-sim"], infos[sim["name"]])}
+        else:
+            data["sim"] = {"running": False, "diff": []}
+        for i in range(MAX_SLOTS):
+            svc, c = f"robot{i}", by_service.get(f"robot{i}")
+            w = want.get(svc)
+            if w is None and c is None:
+                continue
+            row = {"slot": i, "configured": w.get("container_name") if w else None, "running": c["name"] if c else None}
+            if w is None:
+                row["problem"] = "running, but NUM_ROBOTS doesn't start this slot"
+            elif c is None:
+                row["problem"] = "not running" if data["sim"]["running"] else "not running (the sim isn't either)"
+            elif c["name"] != w.get("container_name"):
+                row["problem"] = f"running as {c['name']}, configured as {w.get('container_name')}"
+            else:
+                row["diff"] = env_diff(w, infos.get(c["name"], {"Config": {"Env": []}}))
+            data["robots"].append(row)
+        if bs_want and BASESTATION in infos:
+            data["basestation"] = {"running": True, "diff": env_diff(bs_want, infos[BASESTATION])}
+        else:
+            data["basestation"] = {"running": False, "diff": []}
+        _drift.update(t=time.time(), data=data)
+        return data
+
+
+def get_config(q):
+    v = fleetcfg.view(ACTOR)
+    v["models"] = sorted(set(available_models()) | set(fleetcfg.cat.GENERIC_MODELS))
+    v["scenes"] = [""] + (["lavender"]) + scene_files()
+    v["real_robots"] = [dict(id=k, **c) for k, c in sorted(real_config().items())]
+    v["known_real_ids"] = known_real_ids()
+    v["profiles"] = jsonable(v["profiles"])
+    v["drift"] = config_drift()
+    return v
+
+
+def get_config_history(q):
+    return jsonable(fleetcfg.history(int(q.get("n", 100)), ACTOR))
+
+
+def get_config_runs(q):
+    return jsonable(fleetcfg.runs(int(q.get("n", 50)), ACTOR))
+
+
+def get_config_export(q):
+    return fleetcfg.profile_export(q.get("profile") or None, ACTOR)
+
+
+def config_change(fn, *args, **kw):
+    """A fleetcfg change, with the database being down as a plain refusal; the drift cache is stale after it."""
+    try:
+        r = fn(*args, actor=ACTOR, **kw)
+    except fleetcfg.Unavailable as e:
+        raise ValueError(f"can't change settings: {e}") from None
+    _drift["t"] = 0.0
+    _real_cache["t"] = 0.0
+    return r if isinstance(r, dict) else {"ok": True}
+
+
+def act_config_set(body):
+    # {updates: {KEY: "value" | null (= back to the default)}}
+    updates = body.get("updates")
+    if not isinstance(updates, dict) or not updates:
+        raise ValueError("updates: {KEY: value or null}")
+    return config_change(fleetcfg.set_settings, {k: (None if v is None else str(v)) for k, v in updates.items()})
+
+
+def act_config_slots(body):
+    # {slots: [{model, x, y, yaw} | null, ...] for slots 0.., num_robots: N}
+    slots = body.get("slots")
+    if not isinstance(slots, list):
+        raise ValueError("slots: a list")
+    return config_change(fleetcfg.set_slots, slots, num_robots=body.get("num_robots"))
+
+
+def act_config_profile(body):
+    op, name = body.get("op"), (body.get("name") or "").strip()
+    ops = {
+        "use": lambda: config_change(fleetcfg.profile_use, name),
+        "new": lambda: config_change(fleetcfg.profile_new, name, body.get("from") or None, body.get("notes") or ""),
+        "rename": lambda: config_change(fleetcfg.profile_rename, name, (body.get("new_name") or "").strip()),
+        "delete": lambda: config_change(fleetcfg.profile_delete, name),
+        "notes": lambda: config_change(fleetcfg.profile_notes, name, body.get("notes") or ""),
+        "import": lambda: config_change(fleetcfg.profile_import, body.get("data") or {}, name or None),
+    }
+    if op not in ops:
+        raise ValueError(f"op must be one of {sorted(ops)}")
+    if not name and op != "import":
+        raise ValueError("name: which profile")
+    return ops[op]()
+
+
+def act_config_revert(body):
+    return config_change(fleetcfg.revert, int(body.get("id")))
+
+
+def act_config_apply(body):
+    """Recreate what runs with old settings: the sim (fleet.sh scene: compose recreates it when its settings changed;
+    its robots respawn by themselves), the robots (fleet.sh spawn: the slots' models and poses), the base station."""
+    what = body.get("what")
+    commands = {"sim": ["scripts/fleet.sh", "scene"], "robots": ["scripts/fleet.sh", "spawn"],
+                "basestation": BASESTATION_COMPOSE + ["up", "-d"]}
+    if what not in commands:
+        raise ValueError(f"what must be one of {sorted(commands)}")
+    if what == "robots":
+        state = fleet_ctl.read_state()
+        if not state or state.get("scene") != "ready":
+            raise ValueError("the scene is not ready: start the sim first")
+    _drift["t"] = 0.0
+    return start_job(f"apply settings: {what}", lambda j: j.run(commands[what]) == 0)
+
+
 POST = {
     "/api/sim/start": act_sim_start,
     "/api/sim/stop": act_sim_stop,
@@ -1770,6 +1947,11 @@ POST = {
     "/api/rviz/start": act_rviz_start,
     "/api/mocap/assign": act_mocap_assign,
     "/api/localization/set": act_localization_set,
+    "/api/config/set": act_config_set,
+    "/api/config/slots": act_config_slots,
+    "/api/config/profile": act_config_profile,
+    "/api/config/revert": act_config_revert,
+    "/api/config/apply": act_config_apply,
 }
 GET = {
     "/api/status": status,
@@ -1783,6 +1965,10 @@ GET = {
     "/api/basestation/log": get_basestation_log,
     "/api/jobs": lambda q: [j.to_json() for j in sorted(JOBS.values(), key=lambda j: -j.started)],
     "/api/job": lambda q: JOBS[q["id"]].to_json(full=True),
+    "/api/config": get_config,
+    "/api/config/history": get_config_history,
+    "/api/config/runs": get_config_runs,
+    "/api/config/export": get_config_export,
 }
 
 
@@ -1809,6 +1995,8 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(400, {"error": str(e), "need_password": True})
         except (ValueError, KeyError) as e:
             self.reply(400, {"error": str(e)})
+        except fleetcfg.Unavailable as e:
+            self.reply(503, {"error": str(e)})
         except subprocess.TimeoutExpired:
             self.reply(504, {"error": "command timed out"})
 
@@ -1816,6 +2004,8 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         if url.path in ("/", "/index.html"):
             return self.reply(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+        if url.path in ("/config", "/config.html"):
+            return self.reply(200, CONFIG_PAGE.read_bytes(), "text/html; charset=utf-8")
         self.handle_api(GET, {k: v[0] for k, v in parse_qs(url.query).items()})
 
     def do_POST(self):

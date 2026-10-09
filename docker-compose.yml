@@ -1,12 +1,14 @@
 # Isaac Sim 6.0 (WebRTC streaming) + one ROS 2 Jazzy container per Clearpath robot (A300, A200, Jackal/j100 or
 # Ridgeback/r100 -- see ROBOT_MODEL_<i> below).
-# Robots and sim talk over a private bridge network like robots on a LAN. The ROS 2 middleware is chosen in .env:
+# Robots and sim talk over a private bridge network like robots on a LAN. Every ${VAR} below comes from .env, which
+# scripts/fleetcfg.py generates from the settings database (scripts/fleet_settings.py: what each one is; don't edit
+# .env). The ROS 2 middleware is the setting FLEET_RMW:
 #   FLEET_RMW=rmw_zenoh_cpp    (as on the real robots; every session connects to the zenoh-router service)
 #   FLEET_RMW=rmw_fastrtps_cpp (FastDDS over UDP only, docker/fastdds_udp.xml)
 name: clearpath-fleet
 
 x-rmw-env: &rmw-env
-  RMW_IMPLEMENTATION: ${FLEET_RMW:-rmw_zenoh_cpp}   # not read from RMW_IMPLEMENTATION: a ROS-configured host shell would override .env
+  RMW_IMPLEMENTATION: ${FLEET_RMW:-rmw_zenoh_cpp}   # not read from RMW_IMPLEMENTATION: a ROS-configured host shell would override the setting
   ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
   # rmw_zenoh_cpp: every session is a client of the router (ZENOH_ROUTER can point at a real robot's router).
   # The default "peer" mode needs direct links between sessions, but they only listen on loopback, so peers in
@@ -130,7 +132,7 @@ services:
       # changing the robots never recreates this container. SCENE_LANES: lanes between the lavender rows.
       SCENE_LANES: ${SCENE_LANES:-3}
       # the world: empty = ground plane + lights, "lavender" = the lavender farm, else a USD file in ./sim/scene/
-      # (path relative to it). The web UI's Scene selector writes it to .env; a change recreates the sim.
+      # (path relative to it). The web UI's Scene selector saves it; a change recreates the sim.
       SIM_SCENE: ${SIM_SCENE:-}
       # 1: two farm workers crouched at a lavender row, working and chatting (sim/scripts/farm_workers.py);
       # off by default: NVIDIA digital humans cost frame rate and memory
@@ -185,36 +187,19 @@ services:
               count: all
               capabilities: [gpu]
 
-  # Slot i is started when the profile n<NUM_ROBOTS> is active (COMPOSE_PROFILES=n${NUM_ROBOTS} in .env), i.e.
-  # when NUM_ROBOTS > i. Supports up to 8 robots; to add more, copy a block (next index, next Foxglove port) and
-  # extend the profile lists. The service *keys* (robot0..robot7) are stable slot identities for `docker compose`
-  # itself; each slot's real, user-facing identity -- container name, ROS namespace -- is its assigned model
-  # (ROBOT_MODEL_<i> in .env, one of a300/a200/j100/r100/a real robot id like j100_0921, default a300) plus its
-  # fixed slot index (ROBOT_SUFFIX_<i>, default `_%04d`, e.g. slot 1 running Jackal becomes container name
-  # `j100_0001`, not `a300_0001`) -- except for a real robot id, whose own id is already its full, correct,
-  # globally-unique identity with no slot concept, so `scripts/fleet.sh` (bash, unlike this file, can inspect
-  # ROBOT_MODEL_<i>'s content) writes ROBOT_SUFFIX_<i>= (empty, not unset -- `${VAR-default}` without a colon
-  # treats those differently, confirmed by testing directly) into .env whenever ROBOT_MODEL_<i> contains "_",
-  # giving e.g. `j100_0921` instead of `j100_0921_0000`, and removes it again if that slot's model later changes
-  # back to a generic one. Do not hand-edit ROBOT_SUFFIX_<i> in .env; run `scripts/fleet.sh` to keep it in sync
-  # with ROBOT_MODEL_<i> instead. ROS namespace (robot/entrypoint.sh's ROBOT_NAMESPACE, sim/scripts/
-  # setup_scene.py's robot_namespace()) is computed the same way but independently at runtime (this file can't reuse one
-  # computed value across container_name *and* environment: block entries -- both already special-case a real
-  # robot id on their own).
-  # hostname: this is the container's real OS hostname (`hostname` inside the container, socket.gethostname()),
-  # which clearpath_config validates *unconditionally* as its own "system.localhost" default before it even
-  # reads our robot.yaml -- confirmed live: a hostname containing an underscore (e.g. cpr-j100_0921-0000) fails
-  # that validation ("cannot contain characters other than [A-Z][a-z][0-9] and -"), and compose interpolation
-  # has no find/replace to turn underscores into hyphens the way robot/entrypoint.sh's SERIAL computation does
-  # -- so it can't be computed here as e.g. `cpr-${ROBOT_MODEL_i}-...` directly for a real robot id (which
-  # contains its own underscore, e.g. j100_0921). Instead it's `${ROBOT_HOSTNAME_<i>:-cpr-slot-<i>}`:
-  # `scripts/fleet.sh` (bash, unlike this file, can inspect ROBOT_MODEL_<i>'s content) computes and writes
-  # ROBOT_HOSTNAME_<i>=cpr-<model-with-underscores-as-hyphens> into .env for every slot on each run -- e.g.
-  # `cpr-a300-0000` for a generic model (matching container_name's own slot-suffix convention), `cpr-j100-0921`
-  # for a real robot id (its own hyphenated serial, no slot suffix, matching what its template's own
-  # system.localhost is set to -- see robot.j100_0921/0936.yaml.tmpl). Do not hand-edit ROBOT_HOSTNAME_<i>; run
-  # `scripts/fleet.sh` to keep it in sync with ROBOT_MODEL_<i>. The `cpr-slot-<i>` fallback only matters if
-  # `docker compose up` is run directly before `scripts/fleet.sh` has ever populated .env.
+  # Slot i is started when the profile n<NUM_ROBOTS> is active (COMPOSE_PROFILES=n<NUM_ROBOTS> in .env), i.e. when
+  # NUM_ROBOTS > i. Supports up to 8 robots; to add more, copy a block (next index, next Foxglove port), extend the
+  # profile lists and fleet_settings.MAX_SLOTS. The service *keys* (robot0..robot7) are stable slot identities for
+  # `docker compose` itself; each slot's real identity -- container name, ROS namespace -- is its model
+  # (ROBOT_MODEL_<i>: a300/a200/j100/r100 or a real robot id like j100_0921, default a300) plus its slot index
+  # (`_%04d`, e.g. slot 1 running a Jackal is j100_0001), except a real robot id, which is already globally unique
+  # and is used as is (j100_0921). Compose interpolation can't look inside ROBOT_MODEL_<i>, so the generated .env
+  # (scripts/fleetcfg.py render, from the settings database's robot slots; scripts/fleet.sh runs it first) carries
+  # ROBOT_SUFFIX_<i>= (empty, not unset: `${VAR-default}` without a colon keeps an empty value) for a real robot,
+  # and ROBOT_HOSTNAME_<i>=cpr-<namespace with - for _> for every slot: clearpath_config validates the container's
+  # OS hostname as its system.localhost default before it reads robot.yaml, and rejects underscores. ROS namespace
+  # (robot/entrypoint.sh's ROBOT_NAMESPACE, setup_scene.py's robot_namespace()) is computed the same way at runtime.
+  # The `cpr-slot-<i>` fallback only matters for a `docker compose up` without a generated .env.
 
   robot0:
     <<: *robot
