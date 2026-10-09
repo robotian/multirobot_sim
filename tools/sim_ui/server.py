@@ -840,7 +840,7 @@ def act_rviz_start(body):
         display = host_display()
         if display:
             env["DISPLAY"] = display
-            j.run(["scripts/x11_auth.sh"], env=env)  # /tmp/.docker.xauth, mounted into the robot containers
+            j.run(["scripts/x11_auth.sh"], env=env)  # .x11/xauth, mounted into the robot containers
         cmd = RVIZ_CMD.format(view=view, ns=ns, sim_time=sim_time, log=log)
         if j.run(["docker", "exec", "-d", *exec_env, where, "bash", "-c", cmd]) != 0:
             return False

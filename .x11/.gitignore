@@ -1,0 +1,4 @@
+# scripts/x11_auth.sh writes the containers' X authority file here (mounted at /tmp/.x11). The directory is
+# tracked so it always exists and is owned by you: Docker would create a missing bind-mount source as root.
+*
+!.gitignore

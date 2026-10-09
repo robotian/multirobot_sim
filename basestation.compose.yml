@@ -44,7 +44,7 @@ services:
       PGUSER: ${BASESTATION_PG_USER:-admin}
       PGDATABASE: ${BASESTATION_PG_DB:-test_lavender_farming}
       DISPLAY: ${DISPLAY:-:0}
-      XAUTHORITY: /tmp/.docker.xauth
+      XAUTHORITY: /tmp/.x11/xauth
       QT_X11_NO_MITSHM: "1"
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -57,7 +57,7 @@ services:
       # the robots' workspace (status_server, interfaces); build it from a robot container (scripts/colcon_build.sh)
       - ./colcon_ws:/home/robot/colcon_ws
       - /tmp/.X11-unix:/tmp/.X11-unix
-      - /tmp/.docker.xauth:/tmp/.docker.xauth
+      - ./.x11:/tmp/.x11:ro
     healthcheck:
       test: ["CMD", "pg_isready", "-q"]
       interval: 5s

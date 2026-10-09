@@ -34,14 +34,14 @@ x-robot: &robot
     # true: ROS nodes run on the sim's /clock (robot/bin/* pass use_sim_time, sim_robot_upstart defaults to it)
     USE_SIM_TIME: ${USE_SIM_TIME:-true}
     DISPLAY: ${DISPLAY:-:0}
-    XAUTHORITY: /tmp/.docker.xauth
+    XAUTHORITY: /tmp/.x11/xauth
     QT_X11_NO_MITSHM: "1"
     # uid/gid for the containers' `robot` user (owner of colcon_ws); empty = the owner of this checkout
     HOST_UID: ${HOST_UID:-}
     HOST_GID: ${HOST_GID:-}
   volumes: &robot-volumes
     - /tmp/.X11-unix:/tmp/.X11-unix
-    - /tmp/.docker.xauth:/tmp/.docker.xauth
+    - ./.x11:/tmp/.x11:ro
     - ./docker/fastdds_udp.xml:/dds/fastdds_udp.xml:ro
     - ./scripts:/scripts:ro
     # Shared ROS workspace: the same host folder in every robot container, so a change made from inside one
@@ -162,7 +162,7 @@ services:
       # display (run scripts/x11_auth.sh once per login first). See docker/isaac-entrypoint.sh.
       SIM_MODE: ${SIM_MODE:-stream}
       DISPLAY: ${DISPLAY:-:0}
-      XAUTHORITY: /tmp/.docker.xauth
+      XAUTHORITY: /tmp/.x11/xauth
     ports:
       - "49100:49100/tcp"   # WebRTC signalling
       - "47998:47998/udp"   # WebRTC media
@@ -176,7 +176,7 @@ services:
       - isaac-compute:/isaac-sim/.nv/ComputeCache
       # X11 for SIM_MODE=headed (unused when streaming)
       - /tmp/.X11-unix:/tmp/.X11-unix
-      - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
+      - ./.x11:/tmp/.x11:ro
     deploy:
       resources:
         reservations:
