@@ -1070,6 +1070,11 @@ def apply_kit_settings():
                     continue
         st.set(key.strip(), val)
         log(f"setting {key.strip()} = {val!r}")
+    # The sim's own graphs are full of ScriptNodes (CmdVel, VelCtl, WheelBrake, GPS/IMU/lidar readers, RefPose). When a
+    # stage containing them is opened -- e.g. the file Isaac reopens after File > Save As -- omni.graph.scriptnode
+    # asks "enable the scriptnode functionality for this session?", and "No" disables them all (robots stop driving,
+    # sensors stop). The sim authored them, so opt in for the session up front: the dialog is then skipped.
+    st.set("/app/omni.graph.scriptnode/opt_in", True)
     # Harmless but per-frame: IsaacReadSystemTime falls back to "now" when it has no sim-time history.
     for channel in ("isaacsim.core.simulation_manager.plugin",):
         st.set(f"/log/channels/{channel}", "error")
@@ -2686,10 +2691,11 @@ async def reset_timeline(app, ctl_id):
 
 
 def current_stage(stage):
-    """The stage open in the USD context, logging when it isn't `stage` any more. Isaac's File > Save As closes the
-    stage it saved and reopens the saved file, so the stage main() built is gone (spawning into it failed with
-    "Stage.DefinePrim(Stage, str, str) did not match C++ signature"). The reopened file has what the scene build
-    added (physics settings, collision groups, lavender cores, /Graphs/fleet_clock), so spawning into it works."""
+    """The stage open in the USD context and whether it differs from `stage` (logged). Isaac's File > Save As closes
+    the stage it saved and reopens the saved file, so the stage main() built is gone: spawning into it failed with
+    "Stage.DefinePrim(Stage, str, str) did not match C++ signature", and the reopened stage is stopped. The reopened
+    file has what the scene build and the spawns added (physics settings, collision groups, lavender cores, the
+    robots and their graphs), so spawning into it works and pressing play resumes the robots (spawn_loop does)."""
     cur = omni.usd.get_context().get_stage()
     if cur is None:
         raise RuntimeError("no stage is open in Isaac Sim; restart the sim")
@@ -2698,8 +2704,8 @@ def current_stage(stage):
     except Exception:  # an expired stage raises on any call
         same = False
     if not same:
-        log(f"the open stage changed (Save As?), now {cur.GetRootLayer().identifier}; spawning into it")
-    return cur
+        log(f"the open stage changed (Save As?), now {cur.GetRootLayer().identifier}")
+    return cur, not same
 
 
 async def spawn_loop(app, stage, og, usdrt_sdf, prev_state=None):
@@ -2730,6 +2736,12 @@ async def spawn_loop(app, stage, og, usdrt_sdf, prev_state=None):
             if time.time() < next_check:
                 continue
             next_check = time.time() + 0.5
+            stage, changed = current_stage(stage)
+            if changed and ROBOTS:
+                # measured: after a Save As with j100_0921 running, play brought /clock, odom and the GPS script node
+                # back at full rate, same ROS nodes (no duplicates), drive_test 0.5 m/s -> 0.495
+                omni.timeline.get_timeline_interface().play()
+                log(f"resumed the simulation with {len(ROBOTS)} robot(s) in the reopened stage")
             ctl = _read_json(FLEET_CONTROL)
             if ctl and ctl.get("id") != control_done:
                 control_done = ctl.get("id")
@@ -2746,7 +2758,7 @@ async def spawn_loop(app, stage, og, usdrt_sdf, prev_state=None):
         try:
             robots = parse_request(req)
             log(f"spawn request {last_id}: {len(robots)} robot(s)")
-            stage = current_stage(stage)
+            stage, _ = current_stage(stage)
             await spawn_fleet(app, stage, og, usdrt_sdf, robots)
             msg = (f"{len(ROBOTS)} robot(s) in {time.time() - t0:.0f} s: {', '.join(ns for ns, _ in ROBOTS)}"
                    if ROBOTS else "no robots")
