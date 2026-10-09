@@ -74,7 +74,7 @@ Derived at start (`load_model_params`/`derive_model_params`, logged `[fleet] par
 ## Scenes (`SIM_SCENE`, `build_world`)
 
 - Empty: `build_default_world` (80 m ground box, top z=0, dome + sun; RTX ignores `displayColor`, so bind a material). `lavender`: built-in farm. Otherwise a file in `sim/scene/` (`build_file_world`; the imported profile has `lavender_farm_chargers.usda`).
-- A file is a **sublayer** of a new stage (relative `../assets/...` resolve, the file is never written); `setup_physics` is authored over its physics scene; default ground/lights only if it has none; saved robots and `/Graphs` are removed in memory. Ground at z=0 within ±`SPAWN_LIMIT`. Spawn-map rows: top layer's `customLayerData["lavender_rows"]` (`[x_min, x_max, y, width]`).
+- A file is a **sublayer** of a new stage (relative `../assets/...` resolve, the file is never written); `setup_physics` is authored over its physics scene; default ground/lights only if it has none; saved robots, `/Graphs` and `soften_lavender`'s `lavender_cores`/`collisionGroups` (a Save As of the running sim has them) are removed in memory. Ground at z=0 within ±`SPAWN_LIMIT`. Spawn-map rows: top layer's `customLayerData["lavender_rows"]` (`[x_min, x_max, y, width]`).
 - The sim user (uid 1234) saves only into writable folders: `chmod 777` a new `sim/scene/` subfolder.
 - Vegetation (NVIDIA `Assets/Vegetation/...` in `sim/assets/trees|shrubs|rocks/`) needs its `materials/`/`textures/` and the `sim/assets/Trees -> trees` symlink, or renders red; Z-up/cm, referenced under a child prim. `Cedar_Shrub` is unusable (empty bbox). Ground cover: one unscaled patch only (tiling exceeds the instance limit; geometry is metres despite `metersPerUnit=0.01`).
 

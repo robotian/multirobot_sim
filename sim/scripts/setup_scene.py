@@ -1407,6 +1407,7 @@ def soften_lavender(stage):
         core.CreateRadiusAttr(LAVENDER_CORE_RADIUS)
         core.CreateHeightAttr(LAVENDER_CORE_HEIGHT)
         core.CreatePurposeAttr(UsdGeom.Tokens.guide)  # not rendered (cameras), still a collider (robots, lidars)
+        core.ClearXformOpOrder()  # a saved scene's sublayer can already have this core (AddTranslateOp would raise)
         core.AddTranslateOp().Set(Gf.Vec3d(mid[0], mid[1], LAVENDER_CORE_HEIGHT / 2))
         UsdPhysics.CollisionAPI.Apply(core.GetPrim())
         n += 1
@@ -1589,7 +1590,7 @@ def build_file_world(stage, name):
     needs is added on the root layer: the physics settings (setup_physics), and the default ground / lights when
     the file has no collider / no light at all. Its ground must be at z=0 (robots spawn at SPAWN_Z) within
     +-SPAWN_LIMIT m. Robots and their graphs saved along with the scene are dropped (from the in-memory copy of
-    the file only), since spawn requests add their own."""
+    the file only), since spawn requests add their own, and so are soften_lavender's cores and collision groups."""
     global _scene_layer
     path = scene_file_path(name)
     layer = Sdf.Layer.FindOrOpen(path)
@@ -1601,6 +1602,8 @@ def build_file_world(stage, name):
     world = layer.GetPrimAtPath("/World")
     for child in (world.nameChildren if world else []):
         if child.name in MODEL_ASSETS or (robot_re and robot_re.fullmatch(child.name)):
+            stale.append(child.path)
+        elif child.name in ("lavender_cores", "collisionGroups"):  # soften_lavender's, rebuilt from the settings
             stale.append(child.path)
     if layer.GetPrimAtPath("/Graphs"):
         stale.append(Sdf.Path("/Graphs"))
