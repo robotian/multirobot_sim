@@ -56,6 +56,11 @@ until pg_isready -q; do
 done
 log "PostgreSQL $PG_MAJOR ready on port $PGPORT (database $PGDATABASE, user $PGUSER)"
 
+# Schema migrations (basestation/migrations/, mounted at /migrations): at every start, not only the first, so a
+# database restored from an older dump or created on another PC catches up. A failing file is logged and the base
+# station keeps running (the robots and the zenoh router need it); the file is retried at the next start.
+/basestation-migrate.sh /migrations || log "schema migrations failed, see the [migrate] lines above"
+
 # Zenoh: like each real robot, the base station has its own router (tcp/[::]:7447, so robots can also dial in);
 # its sessions are clients of it (ZENOH_CONFIG_OVERRIDE from compose). The router dials the routers in
 # BASESTATION_ZENOH_CONNECT (space-separated: the sim's zenoh-router, real robots' tcp/<ip>:7447) and keeps

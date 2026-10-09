@@ -36,6 +36,8 @@ RUN printf '%s\n' \
         'true' > /etc/ros_env.sh
 
 COPY entrypoint.sh /basestation-entrypoint.sh
-RUN chmod +x /basestation-entrypoint.sh
+# schema migrations (basestation/migrations/, mounted at /migrations by basestation.compose.yml)
+COPY migrate.sh /basestation-migrate.sh
+RUN chmod +x /basestation-entrypoint.sh /basestation-migrate.sh
 ENTRYPOINT ["/basestation-entrypoint.sh"]
 CMD ["sleep", "infinity"]

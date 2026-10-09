@@ -24,3 +24,5 @@ db.env
 # Database dumps for the base station's first start (basestation.compose.yml): farm data, not source
 basestation/initdb/*
 !basestation/initdb/README.md
+# scripts/db_sync.sh dumps (backups taken before a pull/restore, pulled copies): farm data, not source
+basestation/backups/

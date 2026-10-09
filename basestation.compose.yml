@@ -50,6 +50,8 @@ services:
       - pgdata:/var/lib/postgresql/data
       # *.sql / *.sql.gz / *.dump / *.sh loaded in name order when the database is first created
       - ./basestation/initdb:/initdb:ro
+      # schema migrations, applied at every start (basestation/migrate.sh, basestation/migrations/README.md)
+      - ./basestation/migrations:/migrations:ro
       - ./docker/fastdds_udp.xml:/dds/fastdds_udp.xml:ro
       - ./scripts:/scripts:ro
       # the robots' workspace (status_server, interfaces); build it from a robot container (scripts/colcon_build.sh)

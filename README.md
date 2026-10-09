@@ -377,7 +377,19 @@ docker compose -f basestation.compose.yml down -v           # -v deletes the dat
 docker compose -f basestation.compose.yml up -d             # created again from initdb/
 ```
 
-Back up with `docker exec basestation pg_dump -Fc > farm.dump`. The user, database name and password only take effect when the database is created; change them afterwards in `psql`.
+Back up with `docker exec basestation pg_dump -Fc > farm.dump` (or `scripts/db_sync.sh dump`, below). The user, database name and password only take effect when the database is created; change them afterwards in `psql`.
+
+**Several PCs.** Each PC's base station has its own database, and nothing keeps them in step. Treat one PC's as the shared one (the robots' `status_server` writes to whichever `config.yaml` points at) and copy it to the others when they need its data:
+
+```bash
+scripts/db_sync.sh pull <shared PC's IP>   # this PC's database becomes a copy of that PC's (asks first)
+scripts/db_sync.sh dump                    # save this PC's database to basestation/backups/
+scripts/db_sync.sh restore <file.dump>     # replace this PC's database with a dump, e.g. one carried over by hand
+```
+
+`pull` reads the other base station on port 5433 with this PC's user, database and `db.env` password (`export DB_SYNC_PASSWORD=...` if that PC's differs); its firewall must allow TCP 5433 from this PC. `pull` and `restore` save this PC's database to `basestation/backups/` first (gitignored), restore into a temporary database and swap it in only when that succeeded, so a failed copy changes nothing. Connections to the database (`status_server`, the web UI) are dropped at the swap and reconnect.
+
+**Schema migrations** (`basestation/migrations/`, see its README): table changes go in git as numbered SQL files (`003_charging_stations.sql`), which `basestation/migrate.sh` applies at every start of the base station and after a `pull`/`restore`, each once (recorded in `public.schema_migrations`), so every PC has the same tables even when the data differs. Write them to work on a database that already has the change (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`). New files without a restart: `docker exec basestation /basestation-migrate.sh`. The `[migrate]` lines in `docker logs basestation` show what ran.
 
 **From the host** (VS Code, a GUI client, `psql`, `scripts/make_farm_scene.py`): `localhost:5433`, user `admin`, database `test_lavender_farming`, the `db.env` password. Port 5432 is the old `robotian_database`, not the base station. The VS Code PostgreSQL extension (`ms-ossdata.vscode-pgsql`) can fail with `fe_sendauth: no password supplied` even with the password typed in; give it a `~/.pgpass` instead, which the host scripts use too:
 
@@ -679,7 +691,7 @@ How the pieces connect; each directory's `CLAUDE.md` has the details.
 | `tools/sim_ui/` | `server.py` + `index.html`: local web UI (port 8090) that runs the same scripts as this README: start/stop/reset the sim, spawn robots, `sim_robot_upstart`, arm moves with commanded-vs-observed plots, Cut stem; for real robots (`real_robots.json`, over SSH) services, deploy, arm moves, Cut stem |
 | `sim/assets/Ground_cover/`, `sky/`, `trees/`, `shrubs/`, `rocks/` | Grass field USD, cloud HDR, and Omniverse-library vegetation used by `build_world()` (in git through LFS, see *Scene*) |
 | `sim/assets/lavender/` | `SM_Lavender_Nanite_01.usd` and its real `Materials/` (MDL shaders + textures, see *Lavender material*), referenced as the lavender hedge rows |
-| `basestation.compose.yml`, `basestation/` | the base station: ROS 2 + the farm's PostgreSQL (`Dockerfile`, `entrypoint.sh`, `initdb/` for dumps loaded at its first start); see *Base station* |
+| `basestation.compose.yml`, `basestation/` | the base station: ROS 2 + the farm's PostgreSQL (`Dockerfile`, `entrypoint.sh`, `initdb/` for dumps loaded at its first start, `migrations/` + `migrate.sh` for schema changes applied at every start); see *Base station* |
 | `docker/fastdds_udp.xml` | FastDDS profile (UDP only, since containers don't share `/dev/shm`) |
 | `docker/isaac-sim.Dockerfile`, `docker/isaac-entrypoint.sh` | Isaac Sim image with a system ROS 2 Jazzy (needed for zenoh) |
 | `docs/images/` | images used by this README |
