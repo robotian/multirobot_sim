@@ -25,4 +25,4 @@ db.env
 basestation/initdb/*
 !basestation/initdb/README.md
 # scripts/db_sync.sh dumps (backups taken before a pull/restore, pulled copies): farm data, not source
-#basestation/backups/
+basestation/backups/

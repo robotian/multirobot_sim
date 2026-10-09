@@ -387,6 +387,8 @@ scripts/db_sync.sh dump                    # save this PC's database to basestat
 scripts/db_sync.sh restore <file.dump>     # replace this PC's database with a dump, e.g. one carried over by hand
 ```
 
+PCs that can't reach each other pass a dump through git instead: `basestation/shared/` (Git LFS, see its README) takes `scripts/db_sync.sh dump basestation/shared/<file>.dump` on one PC and `scripts/db_sync.sh restore basestation/shared/<file>.dump` after a `git pull` on the others.
+
 `pull` reads the other base station on port 5433 with this PC's user, database and `db.env` password (`export DB_SYNC_PASSWORD=...` if that PC's differs); its firewall must allow TCP 5433 from this PC. `pull` and `restore` save this PC's database to `basestation/backups/` first (gitignored), restore into a temporary database and swap it in only when that succeeded, so a failed copy changes nothing. Connections to the database (`status_server`, the web UI) are dropped at the swap and reconnect.
 
 **Schema migrations** (`basestation/migrations/`, see its README): table changes go in git as numbered SQL files (`003_charging_stations.sql`), which `basestation/migrate.sh` applies at every start of the base station and after a `pull`/`restore`, each once (recorded in `public.schema_migrations`), so every PC has the same tables even when the data differs. Write them to work on a database that already has the change (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`). New files without a restart: `docker exec basestation /basestation-migrate.sh`. The `[migrate]` lines in `docker logs basestation` show what ran.

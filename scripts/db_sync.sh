@@ -10,13 +10,14 @@
 # at the swap and reconnect. pull asks HOST's PostgreSQL on port 5433 (BASESTATION_PG_PORT there) with this PC's
 # user/database names and password (db.env); a different password: export DB_SYNC_PASSWORD=... first (it is passed to
 # the container by name, never on a command line). HOST's firewall must allow TCP 5433 from this PC.
-# Dumps are farm data, not source: basestation/backups/ is gitignored; move them between PCs by hand if needed.
+# Dumps are farm data, not source: basestation/backups/ is gitignored. Between PCs that can't reach each other, dump into
+# basestation/shared/ (Git LFS) and commit it; restore it on the others (basestation/shared/README.md).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 C=basestation
 BACKUPS=basestation/backups
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0" >&2; exit 2; }
 die() { echo "db_sync: $*" >&2; exit 1; }
 stamp() { date +%Y%m%d-%H%M%S; }
 
