@@ -28,6 +28,7 @@ No test suite: checks run against the live sim (`/scripts/drive_test.py`, `scrip
 ## Rules
 
 - IMPORTANT: `colcon_ws/src` is deployed unchanged to the real robots (`scripts/deploy_robot.sh`) and must stay identical across robot models. Code there must work on a real robot too: no sim-only paths, container names or assumptions without a fallback.
+- IMPORTANT: Don't execute any control command for a real robot without permission.
 - `mtu32_husky` and `mocap_fake_localizer` (submodules) track a `sim` branch: commit and push inside the submodule first, then commit the pointer here.
 - Hand tuning of sim parameters goes in `sim/config/model_params.yaml`, never in `setup_scene.py` (the rest is derived from robot.yaml + URDF at sim start).
 - Settings live in the `fleet_config` database; `.env` is generated (untracked): never edit it, change settings with `scripts/fleetcfg.py set` or the `/config` page. A new setting goes into `scripts/fleet_settings.py` (default = compose's; `scripts/fleetcfg.py check`) and, for the sim, the `isaac-sim` service's `environment:` block in `docker-compose.yml`. Tables change only through a new `basestation/config_migrations/NNN_*.sql`.
