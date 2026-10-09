@@ -30,8 +30,11 @@ LAVENDER = "lavender/SM_Lavender_Nanite_01.usd"
 # taller-than-wide scale looked squeezed) to this width, so it ends up ~0.55 m tall. Rows are ~1.85 m apart and
 # plants ~0.44 m apart in a row, so the clumps overlap into a hedge and leave a ~1.03 m lane (the map,
 # status_server, treats a row as 0.45 m thick; 0.5 m wide plants were only ~0.33 m tall; 0.75 m was made 10%
-# bigger at the user's request).
-PLANT_DIAMETER = 0.825
+# bigger at the user's request, then 0.825 m 20% bigger on 2026-10-09: ~0.66 m tall, the lane ~0.86 m clear).
+PLANT_DIAMETER = 0.99
+# Margin around the plant centres for the field box the border (trees, shrubs, rocks) keeps its distance from. Kept
+# at the 0.825 m plants' half width when they grew to 0.99 m, so the random border layout stayed the same.
+FIELD_BOX_MARGIN = 0.4125
 PLANT_SINK = 0.02  # lowest point below z=0, so no plant floats
 # The asset's stem/leaf MDL materials (MI_Stem_01, MI_Leaf_01) are translucent, inputs:SubsurfaceOpacity 0.25 in the
 # asset; the plants' shadows looked too faint to the user, who asked for 0.7. Set on the shared prototype.
@@ -430,7 +433,7 @@ def main(plants_json, out):
     plants = data["plants"]
     if not plants:
         sys.exit("no plants")
-    half = PLANT_DIAMETER / 2
+    half = FIELD_BOX_MARGIN
     box = (min(p["x"] for p in plants) - half, min(p["y"] for p in plants) - half,
            max(p["x"] for p in plants) + half, max(p["y"] for p in plants) + half)
     center = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
