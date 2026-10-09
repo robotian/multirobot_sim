@@ -52,7 +52,8 @@ FLEET_STATE = f"{FLEET_DIR}/state.json"
 # the last request that was spawned successfully: what a restarted sim spawns again (a rejected request is not)
 FLEET_APPLIED = f"{FLEET_DIR}/applied_request.json"
 # {id, action: "reset"} (scripts/fleet_ctl.py reset, the web UI's "Reset scene"): stop and play the timeline, like
-# Isaac's Stop and Play buttons, which puts every robot back in its spawn state; answered in state.json "reset"
+# Isaac's Stop and Play buttons, which puts every robot back in its spawn state; answered in state.json "reset".
+# {id, action: "snapshot", ...} (scripts/fleet_ctl.py snapshot): viewport PNGs of the robots now (snapshot_request)
 FLEET_CONTROL = f"{FLEET_DIR}/control.json"
 
 
@@ -2364,30 +2365,45 @@ SNAPSHOT_VIEWS = {  # name: (camera offset from the robot, in m, robot frame; lo
     "front": ((2.0, -1.3, 1.1), 0.35),
     "rear": ((-1.8, 1.4, 1.2), 0.35),
     "close": ((0.9, -0.7, 0.55), 0.25),
+    "wide": ((-4.5, 3.0, 3.2), 0.3),  # high, behind and to the left: the robot in its surroundings
 }
 
 
-async def snapshot_loop():
-    """FLEET_SNAPSHOT=<dir>: once the sim runs, aim the viewport at each robot from a few angles and save PNGs to
-    <dir> (e.g. /sim/generated/snapshots), then put the viewport back. For comparing looks with photos."""
-    out = os.environ.get("FLEET_SNAPSHOT", "")
+async def snapshot_loop(out=None, settle=True, poses=None, views=None, tag=None):
+    """Aim the viewport at each robot from SNAPSHOT_VIEWS and save PNGs to `out`, then put the viewport back.
+    FLEET_SNAPSHOT=<dir>: once after each spawn (settle: wait 8 s first), for comparing looks with photos. A
+    FLEET_CONTROL {action: "snapshot"} request (scripts/fleet_ctl.py snapshot) runs it on demand: `poses`
+    {ns: [x, y, yaw_deg]} is where each robot is now (from its ref_pose), since the chassis prim's USD transform can
+    lag the simulation; offsets are in the robot's frame (rotated by yaw). Returns the files written."""
+    out = out or os.environ.get("FLEET_SNAPSHOT", "")
     from omni.kit.viewport.utility import capture_viewport_to_file, get_active_viewport
     from omni.kit.viewport.utility.camera_state import ViewportCameraState
 
     app = omni.kit.app.get_app()
     os.makedirs(out, exist_ok=True)
     stage = omni.usd.get_context().get_stage()
-    for _ in range(int(SIM_RATE_HZ * 8)):  # let the robots settle
-        await app.next_update_async()
+    if settle:
+        for _ in range(int(SIM_RATE_HZ * 8)):  # let the robots settle
+            await app.next_update_async()
     vp = get_active_viewport()
     state = ViewportCameraState("/OmniverseKit_Persp")
-    tag = robot_looks.MODE
+    tag = tag or robot_looks.MODE
+    files = []
     for ns, model in ROBOTS:
-        chassis = stage.GetPrimAtPath(chassis_prim(stage, f"/World/{ns}", MODEL_PARAMS[model]))
-        p = UsdGeom.Xformable(chassis).ComputeLocalToWorldTransform(0).ExtractTranslation()
+        if poses and ns not in poses:
+            continue
+        if poses:
+            x, y, yaw = poses[ns]
+        else:
+            chassis = stage.GetPrimAtPath(chassis_prim(stage, f"/World/{ns}", MODEL_PARAMS[model]))
+            p = UsdGeom.Xformable(chassis).ComputeLocalToWorldTransform(0).ExtractTranslation()
+            x, y, yaw = p[0], p[1], 0.0
+        c, s = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
         for view, ((dx, dy, dz), tz) in SNAPSHOT_VIEWS.items():
-            state.set_position_world(Gf.Vec3d(p[0] + dx, p[1] + dy, dz), True)
-            state.set_target_world(Gf.Vec3d(p[0], p[1], tz), True)
+            if views and view not in views:
+                continue
+            state.set_position_world(Gf.Vec3d(x + c * dx - s * dy, y + s * dx + c * dy, dz), True)
+            state.set_target_world(Gf.Vec3d(x, y, tz), True)
             for _ in range(40):  # path-tracing accumulation
                 await app.next_update_async()
             path = f"{out}/{ns}_{view}_{tag}.png"
@@ -2395,7 +2411,22 @@ async def snapshot_loop():
             for _ in range(5):
                 await app.next_update_async()
             log(f"snapshot {path}")
+            files.append(path)
     aim_viewport(ROBOT_POSES)
+    return files
+
+
+async def snapshot_request(ctl):
+    """FLEET_CONTROL {id, action: "snapshot", dir, poses, views, tag}: snapshot_loop now, answered in state.json
+    "snapshot" ({id, state, files} / message on an error)."""
+    write_state(snapshot={"id": ctl["id"], "state": "running", "time": time.time()})
+    try:
+        files = await snapshot_loop(out=ctl.get("dir") or "/sim/generated/snapshots", settle=False,
+                                    poses=ctl.get("poses"), views=ctl.get("views"), tag=ctl.get("tag") or "now")
+        write_state(snapshot={"id": ctl["id"], "state": "done", "files": files, "time": time.time()})
+    except Exception as e:
+        log("snapshot failed:\n" + traceback.format_exc())
+        write_state(snapshot={"id": ctl["id"], "state": "error", "message": f"{type(e).__name__}: {e}"})
 
 
 async def debug_loop(og):
@@ -2745,7 +2776,10 @@ async def spawn_loop(app, stage, og, usdrt_sdf, prev_state=None):
             ctl = _read_json(FLEET_CONTROL)
             if ctl and ctl.get("id") != control_done:
                 control_done = ctl.get("id")
-                await reset_timeline(app, control_done)
+                if ctl.get("action") == "snapshot":
+                    await snapshot_request(ctl)
+                else:
+                    await reset_timeline(app, control_done)
                 continue
             req = _read_json(FLEET_REQUEST)
             # at_start: written for the restart that fleet_ctl is about to do -- the next start spawns it

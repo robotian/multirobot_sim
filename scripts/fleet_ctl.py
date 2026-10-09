@@ -8,6 +8,8 @@ a new id replaces the robots in the scene. It reports progress in sim/generated/
   scripts/fleet_ctl.py spawn [--poses JSON]  spawn NUM_ROBOTS robots (models ROBOT_MODEL_<i> from .env), wait
   scripts/fleet_ctl.py reset                 stop + play the sim's timeline (robots back at their spawn
                                              state), then restart the robot containers
+  scripts/fleet_ctl.py snapshot [--poses J]  viewport PNGs of the robots now (front/rear/close/wide) into
+                                             sim/generated/snapshots/
   scripts/fleet_ctl.py clear                 delete the request (the next sim start has no robots)
   scripts/fleet_ctl.py state                 print the sim's state (null if the sim isn't running / stale)
 
@@ -31,7 +33,7 @@ FLEET_DIR = ROOT / "sim/generated/fleet"
 REQUEST = FLEET_DIR / "spawn_request.json"
 STATE = FLEET_DIR / "state.json"
 APPLIED = FLEET_DIR / "applied_request.json"  # written by the sim: the last request it spawned successfully
-CONTROL = FLEET_DIR / "control.json"  # {id, action: "reset"}: the running sim stops and plays its timeline
+CONTROL = FLEET_DIR / "control.json"  # {id, action: "reset"|"snapshot"}: timeline stop+play / viewport PNGs now
 SIM = "a300-isaac-sim"
 PROJECT = "clearpath-fleet"  # docker-compose.yml name:
 MAX_SLOTS = 8
@@ -247,6 +249,37 @@ def reset(timeout=60, restart_robots=True, log=print):
     return done
 
 
+def snapshot(poses=None, views=None, tag="now", timeout=120, log=print):
+    """Viewport PNGs of the robots as they are now, from the sim's SNAPSHOT_VIEWS (front, rear, close, wide) into
+    sim/generated/snapshots/<ns>_<view>_<tag>.png. poses {ns: [x, y, yaw_deg]}: where each robot is (world frame,
+    e.g. its ref_pose); without it the sim uses the chassis prim's transform, which can lag a robot that drove."""
+    state = read_state()
+    if not state or state.get("scene") != "ready" or not state.get("robots"):
+        log("the sim is not running with robots")
+        return False
+    FLEET_DIR.mkdir(parents=True, exist_ok=True)
+    ctl = {"id": uuid.uuid4().hex[:12], "written": time.time(), "action": "snapshot", "tag": tag,
+           "dir": "/sim/generated/snapshots", "poses": poses, "views": views}
+    tmp = FLEET_DIR / f".control.{os.getpid()}.tmp"
+    tmp.write_text(json.dumps(ctl))
+    os.chmod(tmp, 0o666)
+    os.replace(tmp, CONTROL)
+    log(f"snapshot {ctl['id']}")
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        r = (read_state() or {}).get("snapshot") or {}
+        if r.get("id") == ctl["id"] and r.get("state") in ("done", "error"):
+            if r["state"] == "error":
+                log(f"snapshot failed: {r.get('message')}")
+                return False
+            for f in r.get("files", []):
+                log(str(ROOT / f.removeprefix("/")))
+            return True
+        time.sleep(0.5)
+    log(f"no answer from the sim after {timeout:.0f} s")
+    return False
+
+
 def spawn(robots, timeout=900, log=print):
     """Spawn `robots`. Into an empty scene the running sim adds them in place; robots already in the scene are
     replaced by restarting the sim, which spawns the new request at start: removing robots from a running sim (their
@@ -284,9 +317,16 @@ def main():
     sub.add_parser("clear")
     sub.add_parser("reset").add_argument("--keep-robots", action="store_true", help="don't restart the robot containers")
     sub.add_parser("state")
+    sn = sub.add_parser("snapshot", help="viewport PNGs of the robots now, into sim/generated/snapshots/")
+    sn.add_argument("--poses", help='JSON {"<ns>": [x, y, yaw_deg]}: where each robot is now (world frame)')
+    sn.add_argument("--views", help="comma-separated subset of front,rear,close,wide")
+    sn.add_argument("--tag", default="now", help="file name suffix (default now)")
     args = ap.parse_args()
     if args.cmd == "reset":
         return 0 if reset(restart_robots=not args.keep_robots) else 1
+    if args.cmd == "snapshot":
+        return 0 if snapshot(json.loads(args.poses) if args.poses else None,
+                             args.views.split(",") if args.views else None, args.tag) else 1
     if args.cmd == "wait-scene":
         return 0 if wait_scene(args.timeout) else 1
     if args.cmd == "spawn":
