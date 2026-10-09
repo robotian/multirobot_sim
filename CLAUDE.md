@@ -1,6 +1,28 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 A fleet of Clearpath robots simulated in Isaac Sim 6.0 and driven over ROS 2 Jazzy: one Isaac Sim container, plus one ROS 2 container per robot standing in for its onboard computer. Docker Compose plus scripts; no build system, test suite or linter. Architecture, setup and the full command reference are in `README.md`; each area has its own `CLAUDE.md` (`sim/`, `robot/`, `colcon_ws/`, `scripts/`, `tools/sim_ui/`). Adding or debugging a real MTU robot → skill `add-real-robot`.
+
+## How it fits together
+
+`scripts/gen_urdf.sh` turns each model's Clearpath config (`robot/config/robot.<model>.yaml.tmpl`, or a real robot's `robot_data/<id>/robot.yaml`) into a self-contained URDF under `sim/assets/<model>/`. The sim (`sim/scripts/setup_scene.py`, `./sim` mounted) imports every model at start, builds the scene, then spawns robots when `scripts/fleet_ctl.py` writes `sim/generated/fleet/spawn_request.json` (progress in `state.json`), so changing robots never restarts the sim. Each robot container boots like a real robot (`robot/entrypoint.sh` renders `/etc/clearpath/robot.yaml` and runs Clearpath's generators) and shares one bind-mounted `colcon_ws`. Under zenoh (the default) every session is a client of the `zenoh-router` service. The base station (`basestation.compose.yml`: ROS 2 + the farm's PostgreSQL on port 5433) is a separate compose project on the host network, untouched by `fleet.sh down`.
+
+## Commands
+
+```bash
+scripts/fleet.sh [N]                 # start the sim (scene) and spawn N robots (NUM_ROBOTS/ROBOT_MODEL_<i> from .env)
+scripts/fleet.sh scene | spawn [N] [--poses JSON] | down
+scripts/fleet_ctl.py reset           # robots back to their spawn state (~3.5 s); also state | snapshot | clear
+docker compose logs -f isaac-sim     # the sim's own lines start with [fleet]
+scripts/colcon_build.sh [--packages-select <pkg>]   # builds colcon_ws in every running robot container
+scripts/gen_urdf.sh                  # regenerate URDFs (build the robot image first)
+scripts/x11_auth.sh                  # X auth (.x11/xauth) for the headed sim and RViz windows; once per login
+docker compose -f basestation.compose.yml up -d --build
+python3 tools/sim_ui/server.py       # web UI on 127.0.0.1:8090 (--mode real: real robots over SSH)
+```
+
+No test suite: checks run against the live sim (`/scripts/drive_test.py`, `scripts/calibrate_velocity.py`, `arm_joints`).
 
 ## Rules
 
@@ -13,6 +35,7 @@ A fleet of Clearpath robots simulated in Isaac Sim 6.0 and driven over ROS 2 Jaz
 - Time: use the node clock in ROS code, never `time.time()`, `steady_clock` or wall timers for anything that waits on the robot; new nodes need `use_sim_time:=true` (`USE_SIM_TIME`).
 - `map→odom` has exactly one publisher (`mocap_fake_localizer`'s `ref_localizer.py`). Anything else that publishes it (AMCL, slam_toolbox, a static identity) needs `ref_source:=external`.
 - URDF link/joint names must match the USD's.
+- `sim/assets/` binaries are Git LFS. `.env` is tracked but holds this machine's LAN IP (`ISAACSIM_HOST`) and `fleet.sh`'s slot variables: don't commit incidental `.env` edits.
 
 ## Running ROS commands
 
@@ -22,7 +45,7 @@ A fleet of Clearpath robots simulated in Isaac Sim 6.0 and driven over ROS 2 Jaz
 
 ## What to rerun after a change
 
-- `robot/entrypoint.sh`, `robot/bin/*`: baked into the image → `docker compose build robot0`, then `scripts/fleet.sh N`.
+- `robot/entrypoint.sh`, `robot/bin/*`, `robot/config/*.tmpl`: baked into the image → `docker compose build robot0`, then `scripts/fleet.sh N` (a `.tmpl` also needs `scripts/gen_urdf.sh` and a sim restart).
 - A colcon package → `scripts/colcon_build.sh --packages-select <pkg>`, then restart its launch.
 - `sim/scripts/*`, or URDFs regenerated with `scripts/gen_urdf.sh` → `docker restart a300-isaac-sim` (`fleet.sh` doesn't restart a running sim).
 - Any URDF or drive change → verify with `docker exec <robot> bash -c 'python3 /scripts/drive_test.py'`; for a new robot also check the `[fleet] params <model>:` line in `docker compose logs isaac-sim`.
