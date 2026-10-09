@@ -54,6 +54,7 @@ No test suite: checks run against the live sim (`/scripts/drive_test.py`, `scrip
 ## Gotchas
 
 - After a run goes chaotic (joints far past their limits), every later measurement is meaningless: reset first (`scripts/fleet_ctl.py reset`) or restart the sim.
+- `zenoh-router` can wedge (seen 2026-10-09, after two RViz crashed holding many subscriptions): it still accepts TCP but stops serving (`CLOSE_WAIT` sockets on 7447 pile up in its `/proc/net/tcp6`), so every *new* session hangs, e.g. a recreated robot's boot (`generate_srdf`) and `ros2` CLI calls, while old sessions keep working. `docker restart zenoh-router` fixes new sessions, but the sim's own publishers stay broken afterwards (`publisher pointer is invalid` in its log, no `/clock`): restart the whole fleet (`scripts/fleet.sh down`, then `scripts/fleet.sh`).
 - Sim start fails ~1 in 10 (Kit hangs ~35 s with no `[fleet]` line, or exits 139 right after "simulation running"): `docker restart a300-isaac-sim` again. Save `docker logs` right after a crash; compose recreating the sim loses them. Check the kernel log (`journalctl -k`, GPU Xid errors) before debugging start failures.
 - All 4 generic models in one sim crashed PhysX (CUDA error); any ≤3 distinct models work.
 - Connecting the WebRTC client stalls the sim for a few seconds, enough to fail a MoveIt move: don't connect mid-run.
