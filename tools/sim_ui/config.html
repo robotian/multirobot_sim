@@ -160,6 +160,8 @@ function toast(msg, ok = false) {
 }
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtTime = t => t ? new Date(t).toLocaleString() : '';
+// table cells: month/day hour:minute (the full time on hover), so the row's buttons keep their room
+const fmtShort = t => t ? new Date(t).toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
 async function change(path, body, okMsg) {
   try {
     const r = await api(path, body);
@@ -399,7 +401,7 @@ async function loadHistory() {
   let h;
   try { h = await api('/api/config/history?n=150'); } catch (e) { document.getElementById('history').innerHTML = `<tr><td class="muted">${esc(e.message)}</td></tr>`; return; }
   document.getElementById('history').innerHTML = '<tr><th>when</th><th>who</th><th>change</th><th></th></tr>' + h.map(e => `<tr>
-    <td class="small" style="white-space:nowrap">${esc(fmtTime(e.at))}</td><td class="small">${esc(e.actor)}</td><td class="small">${esc(e.text)}</td>
+    <td class="small" style="white-space:nowrap" title="${esc(fmtTime(e.at))}">${esc(fmtShort(e.at))}</td><td class="small">${esc(e.actor)}</td><td class="small">${esc(e.text)}</td>
     <td class="act">${e.revertible ? `<button class="ghost small" onclick="revert(${e.id}, '${esc(e.text).replace(/'/g, '&#39;')}')">revert</button>` : ''}</td></tr>`).join('');
 }
 function revert(id, text) {
@@ -411,7 +413,7 @@ async function loadRuns() {
   document.getElementById('runs').innerHTML = '<tr><th>started</th><th>command</th><th>profile</th><th>robots</th><th>result</th><th>git</th></tr>' + runsCache.map((r, i) => {
     const res = r.exit_code === null ? (r.finished_at ? '?' : '<span class="pill warn">running / killed</span>') : r.exit_code === 0 ? '<span class="pill ok">ok</span>' : `<span class="pill bad">exit ${r.exit_code}</span>`;
     const robots = [...Array(+(r.env.NUM_ROBOTS || 0)).keys()].map(s => r.env[`ROBOT_MODEL_${s}`] || 'a300').join(', ');
-    return `<tr style="cursor:pointer" onclick="showRun(${i})"><td class="small" style="white-space:nowrap">${esc(fmtTime(r.started_at))}</td><td class="small key">${esc(r.command)}</td>
+    return `<tr style="cursor:pointer" onclick="showRun(${i})"><td class="small" style="white-space:nowrap" title="${esc(fmtTime(r.started_at))}">${esc(fmtShort(r.started_at))}</td><td class="small key">${esc(r.command)}</td>
       <td class="small">${esc(r.profile)}</td><td class="small">${esc(robots || '-')}</td><td>${res}</td><td class="small key">${esc(r.git_commit)}</td></tr>`;
   }).join('');
 }
