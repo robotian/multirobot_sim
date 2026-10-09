@@ -96,6 +96,14 @@ BORDER = {
 }
 EDGE_JITTER_M = 3.0
 
+# Wooden entrance arch (gen_3d_model/scripts/wood_arch, from a photo of the farm's arch): 2.4 m tall, posts 2.28 m
+# apart, beam along the asset's X, origin at its floor centre, posts and beam with convex-hull colliders. It stands
+# across the west end of lane ARCH_LANE (0 = the lane between the two northernmost rows), ARCH_SETBACK_M before the
+# end of the shorter row, so a robot entering that lane drives through it (2.14 m clear between the posts).
+ARCH = "wood_arch/wood_arch.usd"
+ARCH_LANE = 4
+ARCH_SETBACK_M = 3.0
+
 _bbox = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
 
 
@@ -401,6 +409,21 @@ def add_border(stage, box, center):
             xf.AddScaleOp().Set(Gf.Vec3d(k, k, k))
 
 
+def add_arch(stage, rows):
+    """The entrance arch across the west end of lane ARCH_LANE (rows: add_plants' [x_min, x_max, y, width])."""
+    rows = sorted(rows, key=lambda r: r[2], reverse=True)
+    if len(rows) < 2:
+        return
+    a, b = rows[min(ARCH_LANE, len(rows) - 2)], rows[min(ARCH_LANE, len(rows) - 2) + 1]
+    x, y = min(a[0], b[0]) - ARCH_SETBACK_M, (a[2] + b[2]) / 2
+    prim = stage.DefinePrim("/World/arch", "Xform")
+    xf = UsdGeom.Xformable(prim)
+    xf.AddTranslateOp().Set(Gf.Vec3d(x, y, 0.0))
+    xf.AddRotateZOp().Set(90.0)  # beam across the lane (lanes run along X)
+    stage.DefinePrim("/World/arch/asset", "Xform").GetReferences().AddReference(f"{REL_ASSETS}/{ARCH}")
+    return x, y
+
+
 def main(plants_json, out):
     with open(plants_json) as f:
         data = json.load(f)
@@ -430,6 +453,7 @@ def main(plants_json, out):
     add_weed_barrier(stage, strips)
     hidden = hide_grass_under(stage, strips, center)
     add_border(stage, box, center)
+    arch = add_arch(stage, rows)
 
     # read by setup_scene.build_file_world: the web UI's spawn map draws these rows
     layer.customLayerData = {
@@ -441,7 +465,8 @@ def main(plants_json, out):
     os.chmod(out, 0o666)  # written as the image's user; the host user may replace it
     print(f"wrote {out}: {len(plants)} plants in {len(rows)} rows, weed barrier under each "
           f"({hidden} grass blades hidden), field box "
-          f"x {box[0]:.2f}..{box[2]:.2f} y {box[1]:.2f}..{box[3]:.2f}")
+          f"x {box[0]:.2f}..{box[2]:.2f} y {box[1]:.2f}..{box[3]:.2f}"
+          + (f", arch at ({arch[0]:.2f}, {arch[1]:.2f})" if arch else ""))
 
 
 if __name__ == "__main__":
