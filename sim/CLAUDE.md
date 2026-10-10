@@ -75,7 +75,7 @@ Derived at start (`load_model_params`/`derive_model_params`, logged `[fleet] par
 ## Scenes (`SIM_SCENE`, `build_world`)
 
 - Empty: `build_default_world` (80 m ground box, top z=0, dome + sun; RTX ignores `displayColor`, so bind a material). `lavender`: built-in farm. Otherwise a file in `sim/scene/` (`build_file_world`; the imported profile has `lavender_farm_chargers.usda`).
-- A file is a **sublayer** of a new stage (relative `../assets/...` resolve, the file is never written); `setup_physics` is authored over its physics scene; default ground/lights only if it has none; saved robots, `/Graphs` and `soften_lavender`'s `lavender_cores`/`collisionGroups` (a Save As of the running sim has them) are removed in memory. Ground at z=0 within ±`SPAWN_LIMIT`. Spawn-map rows: top layer's `customLayerData["lavender_rows"]` (`[x_min, x_max, y, width]`).
+- A file is a **sublayer** of a new stage (relative `../assets/...` resolve, the file is never written); `setup_physics` is authored over its physics scene; default ground/lights only if it has none; what the sim adds itself (saved robots, `/Graphs`, `soften_lavender`'s `lavender_cores`/`collisionGroups`, `/World/FarmWorkers`: a Save As of the running sim has them) is removed in memory from **every layer** of the file (`scene_layer_stack`): a Save As of a sim that ran a saved file has that file, with all of it, as its sublayer (the old top-layer-only cleanup died on its `/Graphs/fleet_clock`). Ground at z=0 within ±`SPAWN_LIMIT`. Spawn-map rows: `customLayerData["lavender_rows"]` (`[x_min, x_max, y, width]`) of the topmost layer that has them (a Save As writes none).
 - The sim user (uid 1234) saves only into writable folders: `chmod 777` a new `sim/scene/` subfolder.
 - Vegetation (NVIDIA `Assets/Vegetation/...` in `sim/assets/trees|shrubs|rocks/`) needs its `materials/`/`textures/` and the `sim/assets/Trees -> trees` symlink, or renders red; Z-up/cm, referenced under a child prim. `Cedar_Shrub` is unusable (empty bbox). Ground cover: one unscaled patch only (tiling exceeds the instance limit; geometry is metres despite `metersPerUnit=0.01`).
 
@@ -97,7 +97,7 @@ Derived at start (`load_model_params`/`derive_model_params`, logged `[fleet] par
 ### Chargers: `sim/scene/lavender_farm_chargers.usda`
 
 - `scripts/make_charger_scene.py` → `add_chargers.py`: wrapper with the farm as sublayer plus `/World/charging_stations/charger_<id>` per `public.charging_stations` row (yaw = direction the tag faces; `FRAMES` only `map`). `CHARGER_MODELS` (TR-302 → `wibotic_tr302_edge`, tag on -Y: rotateZ = yaw + 90), variant `AprilTag_ID` = `id_<%03d>`, non-80 mm tags scaled. Border items within `CLEAR_RADIUS` 3 m deactivated.
-- Only the top layer's `customLayerData` is read: after a farm rebuild, rerun it (or copy `lavender_rows`).
+- Its `lavender_rows` (in its own `customLayerData`) win over the farm's below: after a farm rebuild, rerun it (or copy `lavender_rows`).
 
 ### Farm workers (`FARM_WORKERS=1`, `farm_workers.py`)
 

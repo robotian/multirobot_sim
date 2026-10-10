@@ -143,12 +143,29 @@ def _driver():
                           "(or sudo apt install python3-psycopg2)") from None
 
 
+_RUNNING_PG = {"t": 0.0, "env": {}}
+
+
+def running_pg():
+    """PGPORT/PGUSER of the running base station container ({} if it isn't running), cached 30 s. Its database is
+    where it listens now: .env's BASESTATION_PG_PORT is the next one (a changed port took the settings database
+    with it -- every command found the database down, including the one to change it back)."""
+    if time.time() - _RUNNING_PG["t"] > 30:
+        p = subprocess.run(["docker", "inspect", "-f", "{{if .State.Running}}{{range .Config.Env}}{{println .}}"
+                            "{{end}}{{end}}", BASESTATION], capture_output=True, text=True)
+        env = dict(line.split("=", 1) for line in p.stdout.splitlines() if line.startswith(("PGPORT=", "PGUSER=")))
+        _RUNNING_PG.update(t=time.time(), env=env if p.returncode == 0 else {})
+    return _RUNNING_PG["env"]
+
+
 def conn_params():
     env = read_env_file()
     secrets = read_env_file(ROOT / "db.env")
+    pg = running_pg()
     return {"host": os.environ.get("FLEET_DB_HOST", "127.0.0.1"),
-            "port": int(os.environ.get("FLEET_DB_PORT") or env.get("BASESTATION_PG_PORT") or 5433),
-            "user": os.environ.get("FLEET_DB_USER") or env.get("BASESTATION_PG_USER") or "admin",
+            "port": int(os.environ.get("FLEET_DB_PORT") or pg.get("PGPORT") or env.get("BASESTATION_PG_PORT")
+                        or 5433),
+            "user": os.environ.get("FLEET_DB_USER") or pg.get("PGUSER") or env.get("BASESTATION_PG_USER") or "admin",
             "password": secrets.get("PGPASSWORD") or os.environ.get("PGPASSWORD", ""),
             "dbname": DB_NAME, "connect_timeout": 3}
 
@@ -299,7 +316,7 @@ def import_env_vals(vals):
             continue
         if cat.is_derived(k):
             continue
-        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", k):
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", k) or cat.is_reserved(k):
             notes.append(f"{k}: not a setting name, skipped")
             continue
         err = cat.check_value(k, v)
@@ -410,25 +427,47 @@ def num_robots(cfg):
         return 0
 
 
-def problems(cfg):
-    """(errors, warnings): errors stop render (compose would fail or the sim reject the spawn)."""
+def linked_real_robots(cfg, real):
+    """{id: endpoint} of the real robots the base station's zenoh router dials (BASESTATION_ZENOH_CONNECT has
+    tcp/<their host>:7447). The router routes between everything it dials, the sim's zenoh-router included, so
+    such a robot shares one ROS graph with the sim, whether it is on now or powers on later."""
+    if (effective(cfg, "BASESTATION_RMW") or effective(cfg, "FLEET_RMW")) != "rmw_zenoh_cpp":
+        return {}
+    endpoints = set((effective(cfg, "BASESTATION_ZENOH_CONNECT") or "").split())
+    return {r["id"]: f"tcp/{r['host']}:7447" for r in real or () if f"tcp/{r['host']}:7447" in endpoints}
+
+
+def problems(cfg, real=None):
+    """(errors, warnings): errors stop render (compose would fail or the sim reject the spawn). real: the
+    real_robot rows (the sim/real clash check needs their hosts)."""
     errors, warnings = [], []
     n = num_robots(cfg)
     if not 0 <= n <= cat.MAX_SLOTS:
         errors.append(f"NUM_ROBOTS={n}: 0-{cat.MAX_SLOTS}")
         n = 0
     seen = {}
+    linked = linked_real_robots(cfg, real)
     for i in range(n):
         model = cfg["slots"].get(i, {}).get("model", GENERIC_SLOT_MODEL)
         ns = slot_ns(model, i)
         if ns in seen:
             errors.append(f"slots {seen[ns]} and {i} are both {ns}: one real robot can only be in one slot")
         seen[ns] = i
+        if model in linked:
+            # the sim robot would publish the real one's topics (cmd_vel, arm goals) into the graph the real one
+            # joins through the base station, and the real robot would answer the sim robot's tools
+            errors.append(f"slot {i} is the real robot {model}, which the base station's router dials "
+                          f"({linked[model]}): the sim robot would share its ROS names, and commands meant for "
+                          f"one could reach the other. Unlink {model} (Base station card, or "
+                          f"BASESTATION_ZENOH_CONNECT), or give slot {i} another model")
         if "_" in model and not (ROOT / "robot_data" / model / "robot.yaml").exists():
             warnings.append(f"slot {i} ({model}): no robot_data/{model}/robot.yaml, its container exits at once")
         if not (ROOT / "sim/assets" / model / f"{model}.urdf").exists():
             warnings.append(f"slot {i}: no sim model sim/assets/{model}/ (scripts/gen_urdf.sh)")
     for k, v in cfg["settings"].items():
+        if cat.is_reserved(k):
+            errors.append(f"{k}: docker compose's own variable, not a setting (scripts/fleetcfg.py unset {k})")
+            continue
         err = cat.check_value(k, v)
         if err:
             errors.append(f"{k}={v}: must be {err}")
@@ -495,7 +534,7 @@ def render(actor=None, db=None):
         if not ENV_FILE.exists():
             r["changed"] = write_if_changed(ENV_FILE, render_text(default_cfg(), "the defaults (no database)"))
         return r
-    errors, warnings = problems(cfg)
+    errors, warnings = problems(cfg, real)
     r = {"source": "database", "why": "", "profile": cfg["profile"], "errors": errors, "warnings": warnings,
          "changed": False}
     if not errors:
@@ -519,14 +558,20 @@ def env(actor=None):
 def set_settings(updates, actor=None):
     """{key: value or None (= back to the default)} into the active profile, then render. Values already in effect
     are skipped, so a caller that rewrites unchanged values works while the database is down."""
+    current = read_env_file()
     for k, v in updates.items():
         if not re.fullmatch(r"[A-Z][A-Z0-9_]*", k) or cat.is_derived(k):
             raise ValueError(f"{k}: not a setting (robot slots: scripts/fleetcfg.py slot / robots)")
+        if cat.is_reserved(k):
+            raise ValueError(f"{k}: docker compose's own variable, not a fleet setting")
         if v is not None:
             err = cat.check_value(k, str(v))
             if err:
                 raise ValueError(f"{k} must be {err}")
-    current = read_env_file()
+        s = cat.BY_KEY.get(k)
+        if s and s["fixed"] and (str(v) if v is not None else s["default"]) != current.get(k, s["default"]):
+            raise ValueError(f"{k} is set when the base station's database is first created: changed later, the "
+                             f"base station could no longer log in to it")
     unchanged = all(v is not None and (current[k] if k in current else cat.BY_KEY.get(k, {}).get("default")) == str(v)
                     for k, v in updates.items())
     try:
@@ -748,6 +793,9 @@ def real_save(rid, host, user="robot", cutter=False, actor=None):
 
 def real_remove(rid, actor=None):
     with DB(actor) as db:
+        linked = linked_real_robots(load(db), _real_rows(db))
+        if rid in linked:  # off the list, a sim robot of that name would no longer be refused (problems())
+            raise ValueError(f"the base station's router still dials {rid} ({linked[rid]}): unlink it first")
         if db.q("DELETE FROM real_robot WHERE id = %s", (rid,)).rowcount == 0:
             raise ValueError(f"{rid} is not in the list")
         _write_real_file(_real_rows(db))

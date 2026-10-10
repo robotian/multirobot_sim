@@ -467,9 +467,14 @@ real robots never see the database.
 - **Without the database** (base station stopped, `psycopg` missing): `.env` stays as last written and everything
   still starts; only changes are refused (the page and `fleetcfg.py` say why). The host needs `python3-psycopg2`
   or `pip install 'psycopg[binary]'`.
-- **Checks** (they stop `fleet.sh` before anything starts): values of the right type and range, and the same real
-  robot in two started slots. Warnings: a real robot without `robot_data/<id>/robot.yaml`, a model without
-  `sim/assets/<model>/`.
+- **Checks** (they stop `fleet.sh` before anything starts, and refuse the change that would cause them): values of
+  the right type and range (plain numbers: no `08`, `nan` or `1_0`), the same real robot in two started slots, and
+  a started slot that is a real robot the base station's zenoh router dials (`tcp/<its host>:7447` in
+  `BASESTATION_ZENOH_CONNECT`): the router joins the sim's graph and that robot's, also once the robot powers up
+  later, so the sim robot and the real one would share every ROS name and take each other's commands. Unlink the
+  robot (web UI, Base station card) or give the slot another model. `COMPOSE_*`/`DOCKER_*` are not settings, and
+  `BASESTATION_PG_USER`/`_DB` can't change after the database was created. Warnings: a real robot without
+  `robot_data/<id>/robot.yaml`, a model without `sim/assets/<model>/`.
 
 ## Configuration
 

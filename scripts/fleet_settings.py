@@ -10,26 +10,32 @@ the profile doesn't set is left out of .env, and compose's default applies.
 `applies`: the containers that have to be recreated for a change to take effect (they read it at start).
 Robot slots (models, poses) are not settings: they are the robot_slot table, rendered as ROBOT_MODEL_<i> etc.
 """
+import re
 
 SIM, ROBOTS, BASESTATION = "sim", "robots", "basestation"
 
 
-def S(key, section, type, default, help, applies, choices=None, min=None, max=None, advanced=False):
+def S(key, section, type, default, help, applies, choices=None, min=None, max=None, advanced=False, pattern=None,
+      fixed=False):
+    """pattern: (regex, what it means) a text value must match. fixed: set once, when the base station's database
+    is first created (scripts/fleetcfg.py refuses to change it afterwards)."""
     return {"key": key, "section": section, "type": type, "default": default, "help": help,
-            "applies": list(applies), "choices": choices, "min": min, "max": max, "advanced": advanced}
+            "applies": list(applies), "choices": choices, "min": min, "max": max, "advanced": advanced,
+            "pattern": pattern, "fixed": fixed}
 
 
 BOOL01 = ["0", "1"]
 TRUEFALSE = ["true", "false"]
+ID_OR_EMPTY = (r"[0-9]*", "empty or a number")  # usermod/groupmod in robot/entrypoint.sh (set -e: anything else stops it)
 
 SETTINGS = [
     # ---------------------------------------------------------------- robots
     S("NUM_ROBOTS", "Robots", "int", "1", "Robots spawned and robot containers started, in slots 0..N-1 (the slot "
       "table holds their models and poses).", [ROBOTS], min=0, max=8),
     S("HOST_UID", "Robots", "text", "", "uid of the robot containers' `robot` user (owner of colcon_ws); empty = "
-      "the owner of this checkout.", [ROBOTS], advanced=True),
+      "the owner of this checkout.", [ROBOTS], advanced=True, pattern=ID_OR_EMPTY),
     S("HOST_GID", "Robots", "text", "", "gid of the robot containers' `robot` user; empty = the checkout's.",
-      [ROBOTS], advanced=True),
+      [ROBOTS], advanced=True, pattern=ID_OR_EMPTY),
 
     # ---------------------------------------------------------------- sim
     S("SIM_MODE", "Simulation", "enum", "stream", "stream: headless, viewed with the WebRTC streaming client. "
@@ -50,8 +56,8 @@ SETTINGS = [
     S("SIM_RATE_HZ", "Simulation", "float", "20", "Frames per second of simulated time. Set it to about the "
       "render fps FLEET_DEBUG=1 reports, or the sim runs slower than real time (2 robots ~23 fps, 3 on zenoh "
       "~15).", [SIM], min=1, max=120),
-    S("PHYSICS_HZ", "Simulation", "float", "60", "PhysX steps per second of simulated time "
-      "(PHYSICS_HZ / SIM_RATE_HZ substeps per frame).", [SIM], min=10, max=1000),
+    S("PHYSICS_HZ", "Simulation", "int", "60", "PhysX steps per second of simulated time "
+      "(PHYSICS_HZ / SIM_RATE_HZ substeps per frame).", [SIM], min=10, max=1000),  # int(): setup_scene.py
     S("USE_SIM_TIME", "Simulation", "enum", "true", "true: the sim publishes /clock and every ROS node (robots, "
       "base station) runs on it, so robot logic keeps step with a sim slower than real time. false: wall-clock "
       "stamps, no /clock (also the base station's setting with real robots).", [SIM, ROBOTS, BASESTATION],
@@ -100,12 +106,13 @@ SETTINGS = [
     S("BASESTATION_RMW", "Base station", "text", "", "The base station's own middleware when it differs from "
       "FLEET_RMW (e.g. rmw_cyclonedds_cpp for a real robot on Cyclone DDS); empty = FLEET_RMW.", [BASESTATION],
       advanced=True),
-    S("BASESTATION_PG_PORT", "Base station", "int", "5433", "PostgreSQL port of the base station (also where "
-      "scripts/fleetcfg.py finds this database).", [BASESTATION], min=1, max=65535, advanced=True),
+    S("BASESTATION_PG_PORT", "Base station", "int", "5433", "PostgreSQL port of the base station; takes effect "
+      "when the base station is recreated (until then scripts/fleetcfg.py uses the running one's).", [BASESTATION],
+      min=1, max=65535, advanced=True),
     S("BASESTATION_PG_USER", "Base station", "text", "admin", "PostgreSQL superuser, set when the database "
-      "cluster is first created.", [BASESTATION], advanced=True),
+      "cluster is first created.", [BASESTATION], advanced=True, fixed=True),
     S("BASESTATION_PG_DB", "Base station", "text", "test_lavender_farming", "The farm database, set when the "
-      "cluster is first created.", [BASESTATION], advanced=True),
+      "cluster is first created.", [BASESTATION], advanced=True, fixed=True),
 ]
 
 BY_KEY = {s["key"]: s for s in SETTINGS}
@@ -123,6 +130,20 @@ def is_derived(key):
     return key in DERIVED_KEYS or key.startswith(DERIVED_PREFIXES)
 
 
+# Variables docker compose reads itself (COMPOSE_PROJECT_NAME renamed the project: every container orphaned)
+RESERVED_PREFIXES = ("COMPOSE_", "DOCKER_")
+
+
+def is_reserved(key):
+    return key.startswith(RESERVED_PREFIXES) and not is_derived(key)
+
+
+# Exactly what bash arithmetic (scripts/fleet.sh) and python int()/float() in the containers read the same way:
+# int() alone also takes "08" (octal to bash), "0_3", " 3", "+3" and other scripts' digits, float() "nan"/"inf".
+INT_RE = re.compile(r"0|-?[1-9][0-9]*")
+FLOAT_RE = re.compile(r"-?(0|[1-9][0-9]*)(\.[0-9]+)?")
+
+
 def check_value(key, value):
     """None if `value` is valid for `key`, else why not. Keys outside the catalog take any plain text."""
     if any(c in value for c in "\n\r\"'\\$`"):
@@ -133,10 +154,11 @@ def check_value(key, value):
     if s["type"] == "enum" and value not in s["choices"]:
         return f"one of {', '.join(s['choices'])}"
     if s["type"] in ("int", "float"):
-        try:
-            n = int(value) if s["type"] == "int" else float(value)
-        except ValueError:
-            return f"{'a whole number' if s['type'] == 'int' else 'a number'}"
+        if not (INT_RE if s["type"] == "int" else FLOAT_RE).fullmatch(value):
+            return "a whole number (no leading zeros)" if s["type"] == "int" else "a plain decimal number"
+        n = int(value) if s["type"] == "int" else float(value)
         if (s["min"] is not None and n < s["min"]) or (s["max"] is not None and n > s["max"]):
             return f"between {s['min']} and {s['max']}"
+    if s["pattern"] and not re.fullmatch(s["pattern"][0], value):
+        return s["pattern"][1]
     return None

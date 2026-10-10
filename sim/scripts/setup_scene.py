@@ -1578,7 +1578,7 @@ def build_lavender_world(stage):
     return {"lavender_rows": rows}  # for the web UI's spawn map
 
 
-_scene_layer = None  # the loaded scene file's layer, held so the in-memory robot removal below sticks
+_scene_layers = []  # the loaded scene file's layer stack, held so the in-memory removals below stick
 
 
 def scene_file_path(name):
@@ -1596,33 +1596,37 @@ def build_file_world(stage, name):
     stage, so its relative asset paths resolve and nothing the sim does is ever written into it. What the fleet
     needs is added on the root layer: the physics settings (setup_physics), and the default ground / lights when
     the file has no collider / no light at all. Its ground must be at z=0 (robots spawn at SPAWN_Z) within
-    +-SPAWN_LIMIT m. Robots and their graphs saved along with the scene are dropped (from the in-memory copy of
-    the file only), since spawn requests add their own, and so are soften_lavender's cores and collision groups."""
-    global _scene_layer
+    +-SPAWN_LIMIT m. What the sim adds itself and was saved along with the scene -- robots, their graphs,
+    soften_lavender's cores and collision groups, the farm workers -- is dropped (from the in-memory copy of the
+    file only), since the sim adds its own; in every layer of the file, as a file saved from a sim that ran a saved
+    file has the older one, with all of that, as its sublayer."""
+    global _scene_layers
     path = scene_file_path(name)
     layer = Sdf.Layer.FindOrOpen(path)
     if layer is None:
         raise ValueError(f"could not open scene file {path}")
     generic = [m for m in MODEL_ASSETS if "_" not in m]
     robot_re = re.compile(r"(%s)_\d{4}" % "|".join(map(re.escape, generic))) if generic else None
-    stale = []
-    world = layer.GetPrimAtPath("/World")
-    for child in (world.nameChildren if world else []):
-        if child.name in MODEL_ASSETS or (robot_re and robot_re.fullmatch(child.name)):
-            stale.append(child.path)
-        elif child.name in ("lavender_cores", "collisionGroups"):  # soften_lavender's, rebuilt from the settings
-            stale.append(child.path)
-    if layer.GetPrimAtPath("/Graphs"):
-        stale.append(Sdf.Path("/Graphs"))
-    if stale:
+    sim_owned = {"lavender_cores", "collisionGroups", Sdf.Path(farm_workers.ROOT).name}  # rebuilt from the settings
+    _scene_layers = scene_layer_stack(layer)
+    for lyr in _scene_layers:
+        stale = []
+        world = lyr.GetPrimAtPath("/World")
+        for child in (world.nameChildren if world else []):
+            if child.name in MODEL_ASSETS or (robot_re and robot_re.fullmatch(child.name)) or child.name in sim_owned:
+                stale.append(child.path)
+        if lyr.GetPrimAtPath("/Graphs"):
+            stale.append(Sdf.Path("/Graphs"))
+        if not stale:
+            continue
         edit = Sdf.BatchNamespaceEdit()
         for p in stale:
             edit.Add(p, Sdf.Path.emptyPath)
-        if layer.Apply(edit):
-            log(f"scene {name}: left out what was saved from a previous fleet: {', '.join(map(str, stale))}")
+        where = os.path.relpath(lyr.realPath, SCENE_DIR) if lyr.realPath else lyr.identifier
+        if lyr.Apply(edit):
+            log(f"scene {name}: left out what was saved from a previous fleet ({where}): {', '.join(map(str, stale))}")
         else:
-            log(f"scene {name}: could not leave out {', '.join(map(str, stale))}")
-    _scene_layer = layer
+            log(f"scene {name}: could not leave out {', '.join(map(str, stale))} ({where})")
     for key, want in (("upAxis", "Z"), ("metersPerUnit", 1.0)):
         info = layer.pseudoRoot
         if info.HasInfo(key) and info.GetInfo(key) != want:
@@ -1638,9 +1642,28 @@ def build_file_world(stage, name):
     if not any(p.HasAPI(UsdLux.LightAPI) for p in prims):
         log(f"scene {name}: no light in it, adding the default lights")
         add_lights(stage)
-    # rows recorded by scripts/make_farm_scene.py ([x_min, x_max, y, width]), for the web UI's spawn map
-    rows = layer.customLayerData.get("lavender_rows") or []
+    # rows recorded by scripts/make_farm_scene.py ([x_min, x_max, y, width]), for the web UI's spawn map: from the
+    # topmost layer that has them (a Save As writes only render settings into its own customLayerData)
+    rows = next((lyr.customLayerData["lavender_rows"] for lyr in _scene_layers
+                 if lyr.customLayerData.get("lavender_rows")), [])
     return {"lavender_rows": [[float(v) for v in r] for r in rows]}
+
+
+def scene_layer_stack(layer):
+    """`layer` and every layer below it (its sublayers, theirs, ...), top first, each once."""
+    stack, todo = [], [layer]
+    while todo:
+        lyr = todo.pop(0)
+        if any(lyr is s or lyr.identifier == s.identifier for s in stack):
+            continue
+        stack.append(lyr)
+        for sub in lyr.subLayerPaths:
+            found = Sdf.Layer.FindOrOpen(lyr.ComputeAbsolutePath(sub))
+            if found is None:
+                log(f"WARNING scene: sublayer {sub} of {lyr.identifier} not found")
+            else:
+                todo.append(found)
+    return stack
 
 
 def build_world(stage):

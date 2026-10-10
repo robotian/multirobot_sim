@@ -312,9 +312,21 @@ def running_sims(rows=None):
             if c["state"] == "running" and re.fullmatch(r"robot\d+", c["service"])}
 
 
-CONFLICT = ("{name} is both a running sim robot and an online real robot: they share every ROS name and the base "
-            "station can bridge their networks, so a command could reach the other one. Spawn the sim with another "
-            "model, or take the real robot off the list")
+CONFLICT = ("{name} is both a running sim robot and a real robot that is online or linked to the base station's "
+            "router: they share every ROS name and the base station bridges their networks, so a command could "
+            "reach the other one. Spawn the sim with another model, or unlink the real robot (Base station card)")
+
+
+def linked_reals(env=None):
+    """Real robots the base station's zenoh router dials (BASESTATION_ZENOH_CONNECT has tcp/<host or its last known
+    IP>:7447): sharing one graph with the sim even while offline -- the router keeps dialling, the graphs join when
+    the robot comes up. Like fleetcfg.linked_real_robots, which refuses to start such a sim slot."""
+    env = read_env() if env is None else env
+    if (env.get("BASESTATION_RMW") or env.get("FLEET_RMW", "rmw_zenoh_cpp")) != "rmw_zenoh_cpp":
+        return set()
+    endpoints = set(zenoh_endpoints(env))
+    return {name for name, c in real_config().items()
+            if {f"tcp/{c['host']}:7447", f"tcp/{known_ip(c['host'])}:7447"} & endpoints}
 
 
 def resolve(body, kinds=("sim", "real"), check_conflict=True):
@@ -328,7 +340,9 @@ def resolve(body, kinds=("sim", "real"), check_conflict=True):
         if name not in running_sims():
             raise ValueError(f"robot {name} is not running")
         target = SimTarget(name)
-        if check_conflict and name in real_config() and probe(real_target(name), max_age=30)["online"]:
+        # linked first: no ssh round trip, and an offline robot's cached probe can be minutes old
+        if check_conflict and name in real_config() and (
+                name in linked_reals() or probe(real_target(name), max_age=30)["online"]):
             raise ValueError(CONFLICT.format(name=name))
         return target
     target = real_target(name)
@@ -571,11 +585,13 @@ def robots(mode, rows, env, head):
         probed = dict(zip(((t.kind, t.name) for t in targets), pool.map(probe, targets)))
         views, seen = bs.result() if bs else ({}, None)
     running = running_sims(rows)
+    linked = linked_reals(env)
     out = []
     for c in sims:
         r = dict(c, kind="sim", slot=int(c["service"][5:]), cutter=True, **probed.get(("sim", c["name"]), {}))
         real = PROBES.get(("real", c["name"]))
-        r["conflict"] = c["name"] in running and c["name"] in real_config() and bool(real and real["data"]["online"])
+        r["conflict"] = c["name"] in running and c["name"] in real_config() and (
+            c["name"] in linked or bool(real and real["data"]["online"]))
         out.append(r)
     endpoints, zenoh = zenoh_endpoints(env), env.get("FLEET_RMW", "rmw_zenoh_cpp") == "rmw_zenoh_cpp"
     for t in reals:
@@ -583,7 +599,7 @@ def robots(mode, rows, env, head):
         ip = host_ip(t.host)
         out.append(dict(p, kind="real", name=t.name, host=t.host, user=t.user, cutter=t.cutter, ip=ip,
                         state="online" if p["online"] else "offline", rviz=views.get(t.name, []),
-                        conflict=t.name in running and p["online"],
+                        conflict=t.name in running and (p["online"] or t.name in linked),
                         deploy_current=deploy_current(p["deployed"], head),
                         # the base station's router dials the robot's (basestation.compose.yml); None: not zenoh
                         zenoh_linked=(ip is not None and f"tcp/{ip}:7447" in endpoints) if zenoh else None,

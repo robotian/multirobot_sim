@@ -450,7 +450,7 @@ function renderBanner() {
   if (sims.length && reals.some(r => r.online))
     notes.push(`Sim robots run on sim time (/clock), real ones on wall time; the base station uses USE_SIM_TIME=${status.use_sim_time}.`);
   if (status.robots.some(r => r.conflict))
-    notes.push('A robot is both a sim robot and an online real robot (same ROS names): actions on either are refused until one is gone.');
+    notes.push('A robot is both a sim robot and a real robot that is online or linked to the base station (same ROS names, one graph): actions on either are refused until one is gone or unlinked.');
   document.getElementById('banner').innerHTML = notes.map(esc).join('<br>');
 }
 
@@ -575,7 +575,7 @@ function renderRobots() {
           <span class="pill warn sensorpill" data-sensor="${esc(r.name)}" hidden></span>` : ''}
         ${real && up && r.rmw && r.rmw !== status.fleet_rmw ? `<span class="pill warn" title="the fleet uses ${esc(status.fleet_rmw)}">${esc(r.rmw)}</span>` : ''}
         ${r.cutting ? '<span class="pill ok">cutting</span>' : ''}
-        ${r.conflict ? '<span class="pill bad" title="a sim robot and an online real robot share this name (and every ROS name): actions are refused">name clash</span>' : ''}</div>
+        ${r.conflict ? '<span class="pill bad" title="a sim robot and a real robot that is online or linked to the base station share this name (and every ROS name): actions are refused">name clash</span>' : ''}</div>
       ${up ? `<div class="row">
         ${real ? `<button onclick="restartReal(${k})"
             title="sudo systemctl restart clearpath-robot on the robot (asks for robot's sudo password unless a NOPASSWD sudoers entry allows it)">Restart services</button>`

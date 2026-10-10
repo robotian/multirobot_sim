@@ -15,7 +15,7 @@ Local web UI: `server.py` (stdlib + `scripts/fleetcfg.py`, which needs psycopg f
 - Per-robot APIs take `{robot, kind}` (`sim` default, or `real`); `resolve()` gives `SimTarget` (`docker exec <c> bash -c`) or `RealTarget` (ssh, sourcing `/etc/clearpath/setup.bash` and exporting `ROBOT_NAMESPACE`, which a robot's shell doesn't set).
 - ssh: `BatchMode`, ControlMaster socket in `/tmp/fleet-ui-ssh-<uid>/` (polls reuse one connection), stdin `/dev/null` (else ssh reads the server's terminal).
 - Commands run in `bash -c`, so `pgrep`/`pkill` patterns bracket their first letter (`[r]os2`) or they match the wrapping shell.
-- Name clash: a running sim robot and an online real robot with the same name share every ROS name, so `resolve()` refuses actions on either (stop/read-only calls skip the check).
+- Name clash: a running sim robot and a real robot with the same name that is online, or linked (its `tcp/<host or last-resolved IP>:7447` in `BASESTATION_ZENOH_CONNECT`: the base station's router joins the graphs, also once it powers up), share every ROS name, so `resolve()` refuses actions on either (stop/read-only calls skip the check). `fleetcfg.problems()` refuses the setup itself (spawn, link, `NUM_ROBOTS`), and removing a linked real robot from the list.
 
 ## Simulation and Spawn cards
 
