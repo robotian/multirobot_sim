@@ -4,7 +4,7 @@ One image (`Dockerfile`, base `osrf/ros:jazzy-desktop-full`) for every model; on
 
 ## Boot order (`entrypoint.sh`)
 
-1. Real robot id (`ROBOT_MODEL` contains `_`, e.g. `j100_0921`): `ROBOT_NAMESPACE` = that id (drops the compose slot suffix); written to `/etc/robot_ns_env.sh` so `docker exec` shells get it too.
+1. Real robot id (`ROBOT_MODEL` contains `_`, e.g. `j100_0921`): `ROBOT_NAMESPACE` = that id (drops the compose slot suffix); written to `/etc/robot_ns_env.sh` so `docker exec` shells get it too. Compose already sets it right (`${ROBOT_MODEL_i}${ROBOT_SUFFIX_i-_000i}`, like the container name), so `printenv` and `sh` agree; this override covers a `docker compose up` without a generated `.env`.
 2. Serial: real id with `_`→`-`, else namespace with `_`→`-` (clearpath_config accepts only `<model>-<unit>` or `cpr-<model>-<unit>`).
 3. `robot.yaml`: `robot_data/<id>/robot.yaml` copied as is if it exists, except `domain_id` and middleware are rewritten to the fleet's `ROS_DOMAIN_ID`/`FLEET_RMW` (a200_0284's own yaml says domain 1). Otherwise rendered from `/opt/clearpath/robot.<model>.yaml.tmpl` (`__NS__`, `__SERIAL__`, `__RMW__`, `__DOMAIN__`).
 4. Creates a placeholder `colcon_ws/install/setup.bash` if nothing is built yet, so sourcing never fails.
