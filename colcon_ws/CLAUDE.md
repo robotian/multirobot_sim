@@ -50,6 +50,7 @@ A subscriber on `.../arm_0_joint_trajectory_controller/joint_trajectory`: servo 
 Pitfalls:
 - Every publish must carry every joint ever commanded. The sim keeps only the last message's arrays, so an arm-only message drops the gripper target.
 - Don't use a fixed sleep for GripperCommand. MoveIt allows planned duration × 1.2 + 0.5 s, so a near-zero plan times out.
+- With `use_sim_time`, `moveit.launch.py` raises move_group's `allowed_goal_duration_margin` to 12 s (a `<ns>/move_group` params file after `moveit.yaml`; a parameters dict would lose to its node-specific value): data stalls through the shared zenoh router made moves time out while the arm got there. The bridge's `settle_timeout` decides instead. Real robots keep the generated 0.5 s.
 - Don't copy `position` to every gripper joint. The 2F Lite tip mimics use −0.676 with a +0.149 offset, so copying moves them backwards.
 
 ## Arm helpers (`moveit_sim_bridge`, deployed to real robots)
@@ -59,6 +60,7 @@ Pitfalls:
 - `robot/bin/arm_goto`/`arm_joints` are wrappers. The web UI uses them on sim and real robots (real robots: only after a deploy). Namespace: `$ROBOT_NAMESPACE`, else robot.yaml `system.ros2.namespace`.
 - Ctrl+C: `arm_goto` exits 130 but the goal keeps running (stop it with the UI's Stop motion); `arm_joints --record` exits 0. Any exception raised while `not rclpy.ok()` counts as the interrupt.
 - `--timeout` (60 s) is wall time, so in a slow sim a move can still finish after "no result".
+- Each `arm_goto` is a new zenoh session: finding move_action takes seconds (waits 15 s) and the goal's answer arrived 6-11 s after the request with three robots moving at once (waits 30 s, logs "goal accepted after N s" past 5 s). "no answer to the goal request" ≠ rejected: move_group may still run it.
 
 ## `cut_stem` / `grid_cutter_action_server` (`stow_arm_cpp`)
 

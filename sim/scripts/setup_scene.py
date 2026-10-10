@@ -722,8 +722,11 @@ def cleanup(db):
 
 # ROS2SubscribeTwist only takes plain Twist and has no stamped option, so this ScriptNode subscribes with an
 # in-process rclpy node (same mechanism and reasoning as GPS_READ_SCRIPT) and exposes the same outputs
-# (linearVelocity/angularVelocity, holding the last message like the bridge node did), so the drive graph is
+# (linearVelocity/angularVelocity, holding the last message up to CMD_VEL_TIMEOUT_S), so the drive graph is
 # unchanged. Pending messages are drained every tick without blocking.
+# A command older than this (sim time) stops the robot, like the real platform (twist_mux / diff_drive_controller,
+# 0.5 s): without it a robot whose sender died (teleop, Nav2, a killed container at Reset) drove on forever.
+CMD_VEL_TIMEOUT_S = 0.5
 CMD_VEL_SCRIPT = """
 import rclpy
 from geometry_msgs.msg import TwistStamped
@@ -737,12 +740,14 @@ def setup(db):
 
 def compute(db):
     state = db.per_instance_state
+    now = db.inputs.stamp  # sim time (wall time without USE_SIM_TIME), like every message's stamp
     if state.node is None:
         if not rclpy.ok():
             rclpy.init()
         ns = str(db.inputs.namespace)
         state.node = Node(f"cmd_vel_sub_{ns}", namespace=ns)
         state.last = None
+        state.last_t = None
 
         def on_cmd(msg):
             state.last = msg
@@ -757,10 +762,12 @@ def compute(db):
         state.executor.spin_once(timeout_sec=0.0)
         if state.last is before:
             break
-    if state.last is not None:
-        t = state.last.twist
-        db.outputs.linearVelocity = [t.linear.x, t.linear.y, t.linear.z]
-        db.outputs.angularVelocity = [t.angular.x, t.angular.y, t.angular.z]
+        state.last_t = now
+    if state.last is not None and now - state.last_t > db.inputs.timeout:
+        state.last = None  # the sender stopped (or died): stop, as the real base does
+    t = state.last.twist if state.last is not None else None
+    db.outputs.linearVelocity = [t.linear.x, t.linear.y, t.linear.z] if t else [0.0, 0.0, 0.0]
+    db.outputs.angularVelocity = [t.angular.x, t.angular.y, t.angular.z] if t else [0.0, 0.0, 0.0]
 
 
 def cleanup(db):
@@ -1814,6 +1821,7 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
     values = ([("Stamp.inputs:resetOnStop", False)] if USE_SIM_TIME else []) + [  # monotonic across Stop/Play
         ("CmdVel.inputs:namespace", ns),
         ("CmdVel.inputs:topicName", "cmd_vel"),
+        ("CmdVel.inputs:timeout", CMD_VEL_TIMEOUT_S),
         ("CmdVel.inputs:script", CMD_VEL_SCRIPT),
         ("Odom.inputs:chassisPrim", [usdrt_sdf.Path(chassis)]),
         ("PubOdom.inputs:nodeNamespace", ns),
@@ -1832,11 +1840,13 @@ def build_ros_graph(og, usdrt_sdf, stage, root, chassis, ns, cam_path, params, c
     ]
     connections = [
         ("Tick.outputs:tick", "CmdVel.inputs:execIn"),
+        (stamp, "CmdVel.inputs:stamp"),
         ("CmdVel.outputs:linearVelocity", "BreakLin.inputs:tuple"),
         ("CmdVel.outputs:angularVelocity", "BreakAng.inputs:tuple"),
     ]
     create_attributes = [
         ("CmdVel.inputs:namespace", "token"), ("CmdVel.inputs:topicName", "token"),
+        ("CmdVel.inputs:stamp", "double"), ("CmdVel.inputs:timeout", "double"),
         ("CmdVel.outputs:linearVelocity", "double[3]"), ("CmdVel.outputs:angularVelocity", "double[3]"),
     ]
 

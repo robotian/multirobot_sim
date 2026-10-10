@@ -19,6 +19,7 @@
 One OmniGraph per robot (`isaacsim.ros2.bridge`, topics relative to the namespace) plus a USD camera per camera.
 
 - **cmd_vel is `TwistStamped`** (as on the real Jazzy platform). `ROS2SubscribeTwist` only takes `Twist`, so `CMD_VEL_SCRIPT` (ScriptNode with an rclpy subscriber) replaces it. Publishers must send stamped.
+- A command older than `CMD_VEL_TIMEOUT_S` (0.5 s, sim time via the `stamp` input) stops the robot, like the real platform; publishers must repeat it (teleop, Nav2 and `drive_test.py` do). Before, a robot whose sender died drove on forever, also after a Reset.
 - Chain: cmd_vel → `VelCtl` → `Diff` (`DifferentialController`) → `DriveFront`/`DriveRear`; `Odom`. Their `chassisPrim` is `chassis_prim()`, the one prim with `ArticulationRootAPI`, read at spawn (a `chassis_link` override is honoured). A wrong one only fails at runtime ("Articulation controller failed"); more than one root is refused at spawn.
 
 ### Velocity control (`VEL_CTL_SCRIPT`)

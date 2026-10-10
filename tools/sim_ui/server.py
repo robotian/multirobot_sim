@@ -94,7 +94,7 @@ STOP_ACTIONS = ("cut_stem", "move_action", "execute_trajectory",
 STOP_CMD = (f"pkill -INT -f '{CUT_MATCH}' && echo 'cut_stem client: Ctrl+C'; "
             "pkill -INT -f '[/ ]arm_goto( |$)' && echo 'arm_goto: Ctrl+C'; "
             "for a in " + " ".join(STOP_ACTIONS) + "; do ( "
-            "out=$(timeout 10 ros2 service call /$ROBOT_NAMESPACE/$a/_action/cancel_goal action_msgs/srv/CancelGoal "
+            "out=$(timeout -k 2 10 ros2 service call /$ROBOT_NAMESPACE/$a/_action/cancel_goal action_msgs/srv/CancelGoal "
             "'{}' 2>&1); r=$(grep -o 'return_code=[0-9]*, goals_canceling=\\[[^]]*\\]' <<< \"$out\"); "
             "if [ -z \"$r\" ]; then grep -q 'making request' <<< \"$out\" && r='cancel sent, no reply in 10 s' "
             "|| r='no action server'; fi; echo \"$a: $r\" ) & done; wait")
@@ -222,17 +222,25 @@ def act_real_remove(body):
 
 # One command per robot per status poll (the old per-field docker execs were 5 per robot, one after another; over
 # WiFi with SSH that adds up): `key=value` lines. ros2 action list doubles as the move_group check (move_action).
-ACTIONS_PROBE = ('timeout 6 ros2 action list 2>/dev/null | '
+# `timeout -k 2` on every ros2 CLI call here: one hung in zenoh ignores the SIGTERM (seen 2026-10-09: a `ros2 param
+# get` sat for 10 min) and would stay behind in the robot, holding its session.
+ACTIONS_PROBE = ('timeout -k 2 6 ros2 action list 2>/dev/null | '
                  'sed -n "s#^/$ROBOT_NAMESPACE/\\(move_action\\|cut_stem\\)\\$#action=\\1#p"')
-SIM_PROBE = (f"if pgrep -f '{LAUNCH_MATCH}' >/dev/null; then echo launch=1; {ACTIONS_PROBE}; fi; "
-             f"pgrep -f '{CUT_MATCH}' >/dev/null && echo cutting=1; "
-             f"pgrep -af '{RVIZ_MATCH}' | grep -o 'view_[a-z]*' | sed 's/^view_/rviz=/'; true")
+SIM_PROBE_FMT = (f"if pgrep -f '{LAUNCH_MATCH}' >/dev/null; then echo launch=1; {{actions}}fi; "
+                 f"pgrep -f '{CUT_MATCH}' >/dev/null && echo cutting=1; "
+                 f"pgrep -af '{RVIZ_MATCH}' | grep -o 'view_[a-z]*' | sed 's/^view_/rviz=/'; true")
+SIM_PROBE = SIM_PROBE_FMT.format(actions=f"{ACTIONS_PROBE}; ")
+SIM_PROBE_NO_ACTIONS = SIM_PROBE_FMT.format(actions="")
 REAL_PROBE = ("for s in " + " ".join(REAL_SERVICES) + "; do echo \"service=$s:$(systemctl is-active $s)\"; done; "
               f"pgrep -f '{CUT_MATCH}' >/dev/null && echo cutting=1; echo \"rmw=$RMW_IMPLEMENTATION\"; "
               "sed -n '1s/^multirobot_sim \\([0-9a-f]*\\).*/deployed=\\1/p' ~/colcon_ws/DEPLOYED 2>/dev/null; true")
 # A ros2 CLI call costs a robot's CPU 1-5 s (5 s on a300_00036 while its zenoh router hung): on a real robot the
 # actions (move_group, cut_stem) are checked this often, systemd and processes every poll.
 REAL_ACTIONS_EVERY_S = 30
+# Sim robots share one zenoh router, and every new session pauses the fleet's data (measured 2026-10-09: one ros2
+# CLI call ~1-2 s, eight at once ~10 s, long enough for MoveIt to time out a move): their actions are checked this
+# often while the launch runs and one is still missing, then every REAL_ACTIONS_EVERY_S; processes every poll.
+SIM_ACTIONS_EVERY_S = 10
 PROBES = {}  # (kind, name) -> {"t": time, "actions_t": time, "data": {...}}
 OFFLINE_RETRY_S = 15
 RETRYING = set()  # offline robots being probed again in the background
@@ -262,6 +270,10 @@ def _probe(target, key):
             command += f"; {ACTIONS_PROBE}; true"
         else:
             actions_t = last["actions_t"]
+    elif last:
+        found = last["data"]["move_group"] and last["data"]["cut_stem_action"]
+        if time.time() - last.get("actions_t", 0) <= (REAL_ACTIONS_EVERY_S if found else SIM_ACTIONS_EVERY_S):
+            command, actions_t = SIM_PROBE_NO_ACTIONS, last["actions_t"]
     try:
         code, out = target.run(command, timeout=20)
     except subprocess.TimeoutExpired:
@@ -285,8 +297,12 @@ def _probe(target, key):
             data[k] = v
     if target.kind == "real":
         data["launch"] = data["services"].get("clearpath-platform-extras") == "active"
-        if code == 0 and actions_t == last.get("actions_t"):  # not checked this time: the last check's
-            data["move_group"], data["cut_stem_action"] = last["data"]["move_group"], last["data"]["cut_stem_action"]
+    # not checked this time: the last check's (a sim robot's only while its launch runs; a real robot's move_group
+    # can also come from clearpath-manipulators)
+    if code == 0 and actions_t == last.get("actions_t") and (data["launch"] or target.kind == "real"):
+        data["move_group"], data["cut_stem_action"] = last["data"]["move_group"], last["data"]["cut_stem_action"]
+    if target.kind == "sim" and not data["launch"]:
+        actions_t = 0.0  # no launch: check its actions at the first poll that sees one
     PROBES[key] = {"t": time.time(), "actions_t": actions_t, "data": data}
     return data
 
@@ -527,7 +543,7 @@ def deploy_current(deployed, head):
 # What the base station has of each real robot: its RViz windows, and whether the robot's graph reaches it (a robot
 # publishing platform/joint_states). Configured isn't enough: a300_00036's router once took the base station's link
 # but logged "Could not find corresponding link in routers network" and routed nothing.
-BASESTATION_PROBE = (f"pgrep -af '{RVIZ_MATCH}'; timeout 6 ros2 topic list -v 2>/dev/null | "
+BASESTATION_PROBE = (f"pgrep -af '{RVIZ_MATCH}'; timeout -k 2 6 ros2 topic list -v 2>/dev/null | "
                      "sed -n 's#^ \\* /\\([A-Za-z0-9_]*\\)/platform/joint_states .* publishers\\?$#seen=\\1#p'")
 
 
@@ -1715,7 +1731,7 @@ LOC_NODE = "/$ROBOT_NAMESPACE/ref_localizer"
 
 def get_localization(q):
     t = resolve(q, check_conflict=False)
-    code, out = t.run(f"timeout 6 ros2 topic echo --once --no-daemon --full-length {LOC_NODE}/status "
+    code, out = t.run(f"timeout -k 2 6 ros2 topic echo --once --no-daemon --full-length {LOC_NODE}/status "
                       "std_msgs/msg/String", timeout=15)
     m = re.search(r"^data: '(.*)'$", out, re.M)
     if code != 0 or not m:

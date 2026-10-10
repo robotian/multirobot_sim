@@ -82,15 +82,24 @@ def main():
 
 def wait_result(node, client, goal, timeout, label):
     import rclpy
-    if not client.wait_for_server(timeout_sec=5.0):
+    # a new zenoh session can take seconds to discover the server while other sessions come and go (a robot's
+    # launch starting, other ros2 CLI calls): 5 s missed a running move_group in the sim
+    if not client.wait_for_server(timeout_sec=15.0):
         print(f"{label}: action server not available -- is sim_robot_upstart.launch.py running?")
         return None
+    t0 = time.monotonic()
     send = client.send_goal_async(goal)
-    rclpy.spin_until_future_complete(node, send, timeout_sec=10.0)
+    # the server's answer can take seconds to reach a new session (10 s missed answers move_group did send)
+    rclpy.spin_until_future_complete(node, send, timeout_sec=30.0)
     handle = send.result()
-    if handle is None or not handle.accepted:
+    if handle is None:
+        print(f"{label}: no answer to the goal request after 30 s")
+        return None
+    if not handle.accepted:
         print(f"{label}: goal rejected")
         return None
+    if time.monotonic() - t0 > 5:
+        print(f"{label}: goal accepted after {time.monotonic() - t0:.1f} s")
     res = handle.get_result_async()
     rclpy.spin_until_future_complete(node, res, timeout_sec=timeout)
     if not res.done():

@@ -39,7 +39,7 @@ Local web UI: `server.py` (stdlib + `scripts/fleetcfg.py`, which needs psycopg f
 ## Real robots card
 
 - The settings database's `real_robot` table (`fleetcfg.real_robots()`, cached 5 s; while the database is down, the copy it last wrote to `real_robots.json`, untracked): `{"<id>": {"host", "user", "cutter"}}`. Default host `cpr-<id with ->.local` doesn't always resolve: give an IP. `cutter` gates Cut stem because `bringup_main` advertises `cut_stem` on every robot.
-- Offline robots are retried in the background every 15 s (don't stall polls); `ros2 action list` only every 30 s (a ros2 CLI call costs a robot seconds of CPU).
+- Offline robots are retried in the background every 15 s (don't stall polls); `ros2 action list` only every 30 s (a ros2 CLI call costs a robot seconds of CPU). Sim robots: every 10 s while the launch runs and move_group or cut_stem is missing, then every 30 s (each new session pauses the whole fleet's data through the shared router: ~1-2 s for one, ~10 s for eight); the last result is kept in between. Every ros2 CLI call is `timeout -k 2 N` (a hung one ignores SIGTERM).
 - Up to date = `git diff <~/colcon_ws/DEPLOYED commit> HEAD -- colcon_ws/src` is empty (a commit compare gives false "out of date").
 - Linked = the robot's `platform/joint_states` appears in the base station's `ros2 topic list -v`; a configured endpoint can route nothing. Link adds `tcp/<ip>:7447` to `BASESTATION_ZENOH_CONNECT` and runs `compose up -d`.
 - `/api/deploy`: `scripts/deploy_robot.sh` dry-run / deploy (`--yes`, after a browser confirm: its own prompt needs a tty) / pull.

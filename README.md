@@ -323,7 +323,7 @@ The setting `FLEET_RMW` selects the ROS 2 middleware for every container:
 
 | Value | Setup |
 |---|---|
-| `rmw_zenoh_cpp` (the default, and the real robots' middleware) | Every session, including Isaac Sim's, runs in zenoh *client* mode and connects to the `zenoh-router` service (`tcp/zenoh-router:7447`). Set `ZENOH_ROUTER=tcp/<host>:7447` to use another router, e.g. a real robot's. |
+| `rmw_zenoh_cpp` (the default, and the real robots' middleware) | Every session, including Isaac Sim's, runs in zenoh *client* mode and connects to the `zenoh-router` service (`tcp/zenoh-router:7447`): eclipse/zenoh's `zenohd` 1.10.1 with rmw_zenohd's own router config (`docker/zenoh_router.json5`), because Jazzy's `rmw_zenohd` (zenoh 1.8.0) locked up whenever a launched robot stopped. Set `ZENOH_ROUTER=tcp/<host>:7447` to use another router, e.g. a real robot's. |
 | `rmw_fastrtps_cpp` | FastDDS over UDP only (`docker/fastdds_udp.xml`); the router container just idles. |
 
 ### Switching the middleware

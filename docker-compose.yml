@@ -89,22 +89,25 @@ services:
       - isaac-compute:/compute
     networks: [ros]
 
-  # rmw_zenoh_cpp router that all sessions (sim and robots) connect to. Idle when using FastDDS.
+  # The zenoh router that all sessions (sim and robots) connect to. Idle when using FastDDS.
+  # zenohd 1.10.1 with rmw_zenohd's own config (docker/zenoh_router.json5), not Jazzy's rmw_zenohd (zenoh 1.8.0):
+  # with three robot stacks launched, any one of them stopping (killed, Ctrl+C'd, Reset) sent that router into a
+  # 100 % CPU loop for good -- new sessions hung, data stopped, only a fleet restart helped (2026-10-09). The
+  # sessions (rmw_zenoh_cpp, zenoh 1.8.0) talk to a 1.10 router: zenoh 1.x keeps its protocol compatible.
   zenoh-router:
-    image: clearpath-robot:jazzy
-    build: ./robot
+    image: eclipse/zenoh:1.10.1
     container_name: zenoh-router
     hostname: zenoh-router
     networks: [ros]
-    entrypoint: ["/bin/bash", "-c", "exec ros2 run rmw_zenoh_cpp rmw_zenohd"]
+    command: ["-c", "/etc/zenoh/router.json5"]
+    volumes:
+      - ./docker/zenoh_router.json5:/etc/zenoh/router.json5:ro
     # for the base station's router (host network, basestation.compose.yml, which takes host port 7447 itself as a
     # real base station would); loopback only
     ports:
       - "127.0.0.1:7448:7447"
-    environment:
-      RMW_IMPLEMENTATION: rmw_zenoh_cpp
-    healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/7447"]
+    healthcheck:  # listening on 7447 (Alpine: no bash for a test connection)
+      test: ["CMD-SHELL", "grep -q ':1D17 0\\{8,32\\}:0000 0A' /proc/net/tcp6 /proc/net/tcp"]
       interval: 2s
       timeout: 2s
       retries: 30
