@@ -69,6 +69,11 @@ Local web UI: `server.py` (stdlib only; settings through `scripts/fleetcfg.py`, 
 - Endpoints get robot names only from already-known IPs: an unresolvable mDNS name takes 5 s and stalls the poll.
 - Actions: start/stop/restart/recreate/rebuild, `router` (`pkill -f [r]mw_zenohd`; `entrypoint.sh` restarts it), link/unlink an endpoint (edits `BASESTATION_ZENOH_CONNECT`, then `up -d`).
 
+## Fleet view card
+
+- `/api/fleetview` (GET, polled with the base station every 5 s): one `docker exec` for `pgrep` of the relay and the bridge plus the relay's status file (`/tmp/fleet_viz_status.json`). POST `{action: start|stop}` runs `scripts/fleet_viz.sh` as a job, lock `fleetview`.
+- `/api/fleetview/layout[?cameras=1]`: `fleet_viz_layout.layout()` on that status; the page saves it as `fleet.json` (Blob download), for Foxglove's *Import from file*.
+
 ## Motion capture card
 
 - `/api/mocap?server=<ip>` (default 192.168.50.80): `MocapMonitor` listens while polled (stops 30 s after), registers for unicast and joins the default multicast group (either Motive transmission type works). Parser: `mocap_fake_localizer/scripts/natnet.py`, imported by path.

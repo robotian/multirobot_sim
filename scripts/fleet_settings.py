@@ -117,10 +117,14 @@ SETTINGS = [
       "cluster is first created.", [BASESTATION], advanced=True, fixed=True),
     S("BASESTATION_PG_DB", "Base station", "text", "test_lavender_farming", "The farm database, set when the "
       "cluster is first created.", [BASESTATION], advanced=True, fixed=True),
+    S("FLEET_VIZ_PORT", "Base station", "int", "8764", "Port of the fleet view's Foxglove bridge (every robot in one "
+      "3D view, scripts/fleet_viz.sh): ws://<this machine>:<port>; takes effect at its next start.", [],
+      min=1, max=65535),
 ]
 
 BY_KEY = {s["key"]: s for s in SETTINGS}
-NOT_IN_COMPOSE = {"NUM_ROBOTS"}  # read by scripts/fleet.sh and fleet_ctl.py from .env, never interpolated by compose
+NOT_IN_COMPOSE = {"NUM_ROBOTS",  # read by scripts/fleet.sh and fleet_ctl.py from .env, never interpolated by compose
+                  "FLEET_VIZ_PORT"}  # read by scripts/fleet_viz.sh
 SECTIONS = list(dict.fromkeys(s["section"] for s in SETTINGS))
 
 MAX_SLOTS = 8

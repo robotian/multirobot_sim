@@ -20,6 +20,7 @@ scripts/colcon_build.sh [--packages-select <pkg>]   # builds colcon_ws in every 
 scripts/gen_urdf.sh                  # regenerate URDFs (build the robot image first)
 scripts/x11_auth.sh                  # X auth (.x11/xauth) for the headed sim and RViz windows; once per login
 docker compose -f basestation.compose.yml up -d --build
+scripts/fleet_viz.sh start | stop | status | layout   # fleet view: every robot in one Foxglove 3D panel (ws://<host>:8764)
 python3 tools/sim_ui/server.py       # web UI on 127.0.0.1:8090 (/config: settings; --mode real: real robots over SSH)
 ```
 

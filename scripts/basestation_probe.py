@@ -142,9 +142,12 @@ def postgres():
 
 
 def programs(procs):
-    rviz, monitors, other = [], [], []
+    rviz, monitors, fleet_view, other = [], [], [], []
     for pid, argv in sorted(procs.items()):
         line = " ".join(argv)
+        if "/tmp/fleet_viz.py" in line or "__node:=fleet_viz_bridge" in line:  # scripts/fleet_viz.sh
+            fleet_view.append("relay" if "fleet_viz.py" in line else "bridge")
+            continue
         m = re.search(r"view_(\w+)\.launch\.py namespace:=(\w+)", line)
         if m:
             rviz.append({"robot": m.group(2), "view": m.group(1)})
@@ -157,7 +160,8 @@ def programs(procs):
         i = next((i for i, a in enumerate(argv) if os.path.basename(a) == "ros2"), None)
         if i is not None and argv[i + 1:i + 2] and argv[i + 1] in ("launch", "run") and "rmw_zenohd" not in line:
             other.append({"pid": pid, "cmd": " ".join(argv[i:])[:200]})
-    return {"rviz": rviz, "link_monitors": sorted(set(monitors)), "other": other[:20]}
+    return {"rviz": rviz, "link_monitors": sorted(set(monitors)), "fleet_view": sorted(set(fleet_view)),
+            "other": other[:20]}
 
 
 def graph():

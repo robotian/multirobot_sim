@@ -176,6 +176,24 @@
       <div id="bsBody" class="muted">loading...</div>
     </section>
 
+    <section class="card" id="fvCard">
+      <h2>Fleet view</h2>
+      <div class="muted" style="font-size:12px">Every robot in one Foxglove 3D panel: a relay in the base station renames
+        each robot's frames to &lt;robot&gt;/&lt;frame&gt; under the shared ref_frame, and a read-only Foxglove bridge serves them
+        (scripts/fleet_viz.sh).</div>
+      <div class="row">
+        <span id="fvPill" class="pill">?</span>
+        <span id="fvInfo" class="muted" style="font-size:12px"></span>
+      </div>
+      <div class="row">
+        <button data-gate="fvStart" onclick="fvAct('start')" title="scripts/fleet_viz.sh start: the relay and the bridge in the base station (restarts them if running)">Start</button>
+        <button class="ghost" data-gate="fvStop" onclick="fvAct('stop')" title="scripts/fleet_viz.sh stop">Stop</button>
+        <button class="ghost" data-gate="fvLayout" onclick="fvLayout()" title="a Foxglove layout for the robots the relay has now: Foxglove -> Layouts -> Import from file. Regenerate after the fleet changes.">Download layout</button>
+        <label class="muted" style="font-size:12px" title="an Image panel per robot, straight from its camera (raw images: heavy)"><input type="checkbox" id="fvCameras"> camera panels</label>
+      </div>
+      <div id="fvBody" class="muted" style="font-size:12px"></div>
+    </section>
+
     <section class="card">
       <h2>Motion capture</h2>
       <div class="row">
@@ -259,9 +277,9 @@ async function post(path, body = {}) {
 // robot's): applyGates() disables it, with the reason first in its tooltip. It runs after every status / jobs /
 // base station poll and when an input it depends on changes. A running job's lock (server.py start_job) disables
 // the buttons that would be refused anyway ("still running").
-let runningJobs = [], bsState = null;
+let runningJobs = [], bsState = null, fvState = null;
 const locState = {};  // robot key -> '' once its ref_localizer status loaded, else why its buttons wait
-const FLEET_LOCK = 'fleet', BASESTATION_LOCK = 'basestation';  // server.py's
+const FLEET_LOCK = 'fleet', BASESTATION_LOCK = 'basestation', FLEETVIEW_LOCK = 'fleetview';  // server.py's
 function busy(lock) {
   const j = runningJobs.find(j => j.lock === lock);
   return j ? `"${j.name}" is still running` : '';
@@ -346,6 +364,11 @@ const GATES = {
   bsExists: () => bsState && bsState.exists ? '' : 'there is no base station container',  // logs: read only, never busy
   bsRunning: () => bsState && bsState.state === 'running' ? '' : 'the base station is not running',
   bsAdd: () => busy(BASESTATION_LOCK) || (((document.getElementById('bsEndpoint') || {}).value || '').trim() ? '' : 'type an endpoint first'),
+  // Fleet view card
+  fvStart: () => busy(FLEETVIEW_LOCK) || (fvState && fvState.basestation ? '' : 'it runs in the base station, which is not running'),
+  fvStop: () => busy(FLEETVIEW_LOCK) || (fvState && (fvState.relay || fvState.bridge) ? '' : 'not running'),
+  fvLayout: () => !fvState || !fvState.relay ? 'the fleet view is not running'
+    : Object.keys(fvState.robots).length ? '' : 'the relay has found no robots yet',
 };
 function gate(el, reason) {
   if (el.dataset.title === undefined) el.dataset.title = el.title || '';
@@ -864,6 +887,10 @@ async function pollBasestation() {
       document.getElementById('bsBody').innerHTML = `<span class="lv-warn">${e.message === 'not found'
         ? 'this server is older than the page: restart tools/sim_ui/server.py' : esc(e.message)}</span>`;
     }
+    try { renderFleetview(await api('/api/fleetview')); } catch (e) {
+      document.getElementById('fvBody').innerHTML = `<span class="lv-warn">${e.message === 'not found'
+        ? 'this server is older than the page: restart tools/sim_ui/server.py' : esc(e.message)}</span>`;
+    }
   }
   bsTimer = setTimeout(pollBasestation, 5000);
 }
@@ -932,6 +959,7 @@ function renderBasestation(b) {
     : `${g.topics} topics: ` + Object.entries(g.namespaces).map(([ns, n]) => `${esc(ns)} <span class="muted">${n}</span>`).join(' · ')]);
   const progs = [...pr.rviz.map(r => `RViz ${esc(r.view)} (${esc(r.robot)})`),
                  ...pr.link_monitors.map(r => `link monitor (${esc(r)})`),
+                 ...(pr.fleet_view || []).map(p => `fleet view ${esc(p)}`),
                  ...pr.other.map(o => `<span title="pid ${o.pid}">${esc(o.cmd)}</span>`)];
   rows.push(['Running', progs.length ? progs.join('<br>') : '<span class="muted">nothing besides the database and the router</span>']);
   const age = Math.round(Date.now() / 1000 - b.probed);
@@ -939,6 +967,39 @@ function renderBasestation(b) {
   body.innerHTML = `<table class="linktab">${rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('')}</table>
     <div class="muted" style="font-size:12px">probed ${age} s ago</div>`;
   if (document.getElementById('bsEndpoint')) document.getElementById('bsEndpoint').value = typed;
+  applyGates();
+}
+
+// ------------------------------------------------------------ fleet view (/api/fleetview, polled with the base station)
+function fvAct(action) {
+  post('/api/fleetview', { action });
+  setTimeout(pollBasestation, 6000);  // the script waits ~5 s to see both processes stay up
+}
+async function fvLayout() {
+  try {
+    const cameras = document.getElementById('fvCameras').checked;
+    const layout = await api('/api/fleetview/layout' + (cameras ? '?cameras=1' : ''));
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(layout, null, 1)], { type: 'application/json' }));
+    a.download = 'fleet.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } catch (e) { toast(e.message); }
+}
+function renderFleetview(f) {
+  fvState = f;
+  const up = f.relay && f.bridge;
+  const pill = document.getElementById('fvPill');
+  pill.textContent = up ? 'running' : f.relay || f.bridge ? `${f.relay ? 'relay' : 'bridge'} only` : 'stopped';
+  pill.className = 'pill ' + (up ? 'ok' : f.relay || f.bridge ? 'bad' : '');
+  const url = `ws://${location.hostname}:${f.port}`;
+  document.getElementById('fvInfo').innerHTML = up ? `Foxglove → Open connection → Foxglove WebSocket → <code>${esc(url)}</code>`
+    : f.basestation ? '' : 'the base station is not running';
+  const robots = Object.entries(f.robots);
+  document.getElementById('fvBody').innerHTML = !f.relay ? '' : robots.length
+    ? robots.map(([ns, r]) => `${esc(ns)} <span class="muted">${r.frames} frames, ${r.topics} topics</span>`).join(' · ')
+      + '<div>then Layouts → Import from file → the downloaded fleet.json (again after robots change)</div>'
+    : 'no robots found yet (a robot shows up once its /&lt;robot&gt;/tf has a publisher)';
   applyGates();
 }
 

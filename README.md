@@ -286,6 +286,21 @@ scripts/foxglove_layout.sh            # foxglove/<robot>.json for every running 
 
 and in Foxglove use *Layouts → Import from file* with `foxglove/<robot>.json` (a 3D panel following `base_link`, a grid on `odom`, and the robot's URDF), or add it by hand: 3D panel settings → *Custom layers* → **+** → *URDF*, *Source* = *Topic*, *Topic* = `/<robot>/robot_description`, and turn on *Scene → Ignore COLLADA <up_axis>* (like RViz; `mtu32_description`'s top plate is `Y_UP` and would otherwise be rotated). The `package://` meshes are served by the robot's bridge. The Jackals' `top_assy_rev1.dae` is 41 MB, so the model takes a few seconds to appear, longer over Wi-Fi.
 
+#### Fleet view: every robot in one 3D panel
+
+A robot's bridge shows only that robot, and every robot uses the same frame names (`base_link`, `odom`, `map`), so one panel can't hold two. The fleet view runs a relay in the base station that renames each robot's frames to `<robot>/<frame>` and publishes all of them on `/fleet/tf` and `/fleet/tf_static`. The shared world frame `ref_frame` (the sim's world; Motive's frame in the lab) keeps its name, so every robot sits at its real position: `ref_frame → <robot>/map → <robot>/odom → <robot>/base_link`. A few display topics are relayed the same way as `/fleet/<robot>/...`: the robot description, `map`, `plan`, MPPI's `optimal_trajectory`, the local footprint and costmap, and the 2D scan (throttled to 1-5 Hz). A second, read-only `foxglove_bridge` (no publishing, services or parameters) serves only `/fleet/*` plus the robots' camera images, on port `FLEET_VIZ_PORT` (default 8764).
+
+```bash
+scripts/fleet_viz.sh start            # relay + bridge in the base station (it must be running); robots are found as they come and go
+scripts/fleet_viz.sh status           # the robots it has
+scripts/fleet_viz.sh layout [--cameras]   # foxglove/fleet.json for the robots it has now
+scripts/fleet_viz.sh stop
+```
+
+In Foxglove: *Open connection → Foxglove WebSocket* → `ws://<host>:8764`, then *Layouts → Import from file* → `foxglove/fleet.json`. The layout has a 3D panel on `ref_frame` with one URDF layer per robot (frame prefix `<robot>/`), each robot's paths, footprint and scan in its own colour, one robot's map, and only the `base_link` axes. `--cameras` adds an Image panel per robot, straight from its camera (raw images, heavy). Regenerate the layout after the robots change. The web UI's *Fleet view* card does the same (Start, Stop, Download layout).
+
+Viewer panels subscribe only to the relay's topics in the base station, so opening and closing them adds no subscriptions on the robots (each one pauses a robot's data ~0.3 s); the relay keeps one long-lived subscription per robot topic. Starting or stopping the fleet view pauses every robot's data for ~3 s (two ROS sessions joining or leaving the shared router, like any `ros2` command here), so don't do it in the middle of a run. It's for the sim fleet for now. Real robots need a test of data through the base station's router first; the GPS robots share one datum, which gives them a common frame (`fleet_viz.py --shared <frame>`).
+
 ### ROS interface
 
 All topics live under the robot's namespace (`a300_0000`, `j100_0001`, …, whatever model each slot runs).
@@ -731,7 +746,7 @@ How the pieces connect; each directory's `CLAUDE.md` has the details.
 | `robot_data/<id>/robot.yaml` | the real MTU robots' own Clearpath configs (`j100_0921`, `j100_0922`, `a200_0284`, `a300_00036`, ...), used unmodified. Tracked in git except each robot's `backups/` (secrets, see *Real robots: deploy and backup*) and `colcon_ws/` |
 | `sim/scripts/setup_scene.py` | builds the Isaac Sim scene and ROS 2 graphs (`./sim` is mounted into the sim container: edit, then `docker restart a300-isaac-sim`) |
 | `sim/assets/<model>/`, `sim/generated/<model>/` | generated URDF and meshes (in git, through LFS; regenerate with `gen_urdf.sh` and commit), cached USD (not in git, the first start creates it), one set per model |
-| `scripts/` | `fleet.sh` (scene, spawn, stop) + `fleet_ctl.py` (spawn/reset/snapshot protocol), `stop_sim.sh`, `colcon_build.sh`, `gen_urdf.sh` + `flatten_urdf.py` (URDF generation), `x11_auth.sh`, `foxglove_layout.sh`, `drive_test.py`, `calibrate_velocity.py`. Mounted read-only into the robots, so edits need no rebuild |
+| `scripts/` | `fleet.sh` (scene, spawn, stop) + `fleet_ctl.py` (spawn/reset/snapshot protocol), `stop_sim.sh`, `colcon_build.sh`, `gen_urdf.sh` + `flatten_urdf.py` (URDF generation), `x11_auth.sh`, `foxglove_layout.sh`, `fleet_viz.sh` + `fleet_viz.py` + `fleet_viz_layout.py` (fleet view), `drive_test.py`, `calibrate_velocity.py`. Mounted read-only into the robots, so edits need no rebuild |
 | `colcon_ws/src/` | ROS workspace shared by every robot container (see *ROS workspace*): 7 git submodules plus plain packages. Arm cutting stack: `stow_arm_cpp` (`cut_stem` action server `grid_cutter_action_server`, stow node, per-robot config in `config/robots/`), `moveit_sim_bridge` (executes MoveIt trajectories and gripper commands in the sim), `pruner_action_server`, `plant_cutter_msgs`, `serial_interfaces`; launched by `mtu32_husky/mtu32_bringup`'s `sim_robot_upstart.launch.py` |
 | `tools/sim_ui/` | `server.py` + `index.html`: local web UI (port 8090) that runs the same scripts as this README: start/stop/reset the sim, spawn robots, `sim_robot_upstart`, arm moves with commanded-vs-observed plots, Cut stem; for real robots (`real_robots.json`, over SSH) services, deploy, arm moves, Cut stem |
 | `sim/assets/Ground_cover/`, `sky/`, `trees/`, `shrubs/`, `rocks/` | Grass field USD, cloud HDR, and Omniverse-library vegetation used by `build_world()` (in git through LFS, see *Scene*) |

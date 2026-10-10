@@ -46,6 +46,7 @@ ROOT = Path(os.environ.get("FLEET_ROOT") or Path(__file__).resolve().parents[2])
 sys.path.insert(0, str(ROOT / "scripts"))
 import fleet_ctl  # noqa: E402  (the sim's spawn protocol: request/state files)
 import fleetcfg  # noqa: E402  (the settings: this checkout's fleet_config.sqlite, .env generated from it)
+import fleet_viz_layout  # noqa: E402  (the fleet view's Foxglove layout)
 sys.path.insert(0, str(ROOT / "colcon_ws/src/mocap_fake_localizer/scripts"))
 import natnet  # noqa: E402  (OptiTrack Motive's NatNet protocol, shared with the robots' natnet_ref_pose.py)
 
@@ -1257,6 +1258,50 @@ def act_basestation(body):
     return start_job(f"base station: {action}", lambda j: j.run(commands[action]) == 0, lock=BASESTATION_LOCK)
 
 
+# ---------------------------------------------------------------- fleet view (scripts/fleet_viz.sh)
+# Every robot in one Foxglove 3D panel: the relay (scripts/fleet_viz.py) and a read-only foxglove_bridge in the base
+# station. Started and stopped by the script; its own lock, so a double click can't start two.
+FLEETVIEW_LOCK = "fleetview"
+FLEETVIEW_STATUS = "/tmp/fleet_viz_status.json"  # scripts/fleet_viz.sh's STATUS
+
+
+def get_fleetview(q):
+    port = unquote(read_env().get("FLEET_VIZ_PORT")) or "8764"
+    if container_state(BASESTATION) != "running":
+        return {"basestation": False, "relay": False, "bridge": False, "port": port, "robots": {}}
+    _, out = sh(["docker", "exec", BASESTATION, "bash", "-c",
+                 "pgrep -f '[p]ython3 -u /tmp/fleet_viz.py' >/dev/null && echo relay; "
+                 "pgrep -f '[_]_node:=fleet_viz_bridge' >/dev/null && echo bridge; "
+                 f"cat {FLEETVIEW_STATUS} 2>/dev/null; true"], timeout=10)
+    lines = out.splitlines()
+    try:
+        status = json.loads("\n".join(l for l in lines if l not in ("relay", "bridge")) or "{}")
+    except json.JSONDecodeError:  # caught mid-write: the next poll reads it
+        status = {}
+    robots = {ns: {"frames": len(r["frames"]), "topics": len(r["topics"])}
+              for ns, r in (status.get("robots") or {}).items()}
+    return {"basestation": True, "relay": "relay" in lines, "bridge": "bridge" in lines, "port": port,
+            "robots": robots}
+
+
+def get_fleetview_layout(q):
+    """The Foxglove layout for the robots the relay has now (scripts/fleet_viz_layout.py); the page saves it."""
+    code, out = sh(["docker", "exec", BASESTATION, "cat", FLEETVIEW_STATUS], timeout=10)
+    if code != 0:
+        raise ValueError("the fleet view isn't running (no relay status): Start it first")
+    return fleet_viz_layout.layout(json.loads(out), cameras=q.get("cameras") == "1")
+
+
+def act_fleetview(body):
+    action = body.get("action")
+    if action not in ("start", "stop"):
+        raise ValueError("action must be start or stop")
+    if container_state(BASESTATION) != "running":
+        raise ValueError("the fleet view runs in the base station, which isn't running")
+    return start_job(f"fleet view: {action}",
+                     lambda j: j.run(["scripts/fleet_viz.sh", action]) == 0, lock=FLEETVIEW_LOCK)
+
+
 # ---------------------------------------------------------------- motion capture / localization
 
 # Which Motive rigid body each robot follows: a ROS params file keyed by node (/<ns>/natnet_ref_pose), loaded by
@@ -2032,6 +2077,7 @@ POST = {
     "/api/deploy": act_deploy,
     "/api/basestation/link": act_basestation_link,
     "/api/basestation/action": act_basestation,
+    "/api/fleetview": act_fleetview,
     "/api/arm/goto": act_arm_goto,
     "/api/cutstem/start": act_cutstem_start,
     "/api/cutstem/stop": act_cutstem_stop,
@@ -2056,6 +2102,8 @@ GET = {
     "/api/link": get_link,
     "/api/basestation": get_basestation,
     "/api/basestation/log": get_basestation_log,
+    "/api/fleetview": get_fleetview,
+    "/api/fleetview/layout": get_fleetview_layout,
     "/api/jobs": lambda q: [j.to_json() for j in sorted(JOBS.values(), key=lambda j: -j.started)],
     "/api/job": lambda q: JOBS[q["id"]].to_json(full=True),
     "/api/config": get_config,
