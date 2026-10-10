@@ -98,6 +98,10 @@ SETTINGS = [
     S("ROS_DOMAIN_ID", "Middleware", "int", "0", "ROS domain.", [SIM, ROBOTS, BASESTATION], min=0, max=232),
     S("ZENOH_ROUTER", "Middleware", "text", "tcp/zenoh-router:7447", "Zenoh router the sim's and robots' "
       "sessions connect to; e.g. tcp/<robot-ip>:7447 for a real robot's.", [SIM, ROBOTS], advanced=True),
+    S("ZENOH_ROUTER_LOG", "Middleware", "text", "info", "Log filter of the fleet's zenoh router (RUST_LOG, `docker "
+      "logs zenoh-router`). info,zenoh_transport=debug adds every session's open and close (zid, address, "
+      "reason), to tell which session a stall is stuck on.", ["zenoh-router"], advanced=True,
+      pattern=(r"[A-Za-z0-9_:,=.-]+", "a RUST_LOG filter, e.g. info or info,zenoh_transport=debug")),
 
     # ---------------------------------------------------------------- base station
     S("BASESTATION_ZENOH_CONNECT", "Base station", "text", "tcp/127.0.0.1:7448", "Routers the base station's "

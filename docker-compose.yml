@@ -100,6 +100,16 @@ services:
     hostname: zenoh-router
     networks: [ros]
     command: ["-c", "/etc/zenoh/router.json5"]
+    environment:
+      # zenohd's log filter (RUST_LOG): e.g. info,zenoh_transport=debug logs every session's open/close with its
+      # zid, address and reason, to identify the session a stall is stuck on ("Unable to push non droppable
+      # network message to <zid>", 2026-10-10)
+      RUST_LOG: ${ZENOH_ROUTER_LOG:-info}
+    logging:  # debug levels are verbose: bounded, and lost anyway when compose recreates the container
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "4"
     volumes:
       - ./docker/zenoh_router.json5:/etc/zenoh/router.json5:ro
     # for the base station's router (host network, basestation.compose.yml, which takes host port 7447 itself as a
