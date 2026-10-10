@@ -277,6 +277,15 @@ function startChanges() {  // what Start would change on a running sim (a change
   return c;
 }
 const clash = r => r.conflict ? 'name clash with a real robot (see the banner)' : '';
+function formMatchesScene() {  // the spawn form asks for exactly the robots in the scene (models and poses)
+  const have = (status.scene && status.scene.robots) || [], want = readSlots();
+  const near = (a, b, tol) => Math.abs(+a - +b) <= tol;
+  const sameYaw = (a, b) => Math.abs(((+a - +b) % 360 + 540) % 360 - 180) <= 1;
+  return have.length > 0 && have.length === want.length && want.every((w, i) => {
+    const h = have.find(r => r.slot === i) || have[i];
+    return h && h.model === w.model && near(w.x, h.x, 0.05) && near(w.y, h.y, 0.05) && sameYaw(w.yaw, h.yaw);
+  });
+}
 function sceneWhy() {  // why the scene can't take robots now ('' = it can)
   if (!simUp()) return 'start the sim first';
   const sc = status.scene;
@@ -300,7 +309,9 @@ const GATES = {
     || (!status.scene.robots.length ? 'no robots in the scene' : '')),
   // Spawn card
   defaultPoses: () => sceneReady() ? '' : (simUp() ? sceneWhy() : 'the default layout comes with the scene: start the sim first'),
-  spawn: () => busy(FLEET_LOCK) || sceneWhy(),
+  spawn: () => busy(FLEET_LOCK) || sceneWhy()
+    || (formMatchesScene() ? 'these robots are already in the scene, at these poses: change the robots or a pose to replace them'
+      : !readSlots().length && !((status.scene || {}).robots || []).length ? 'pick how many robots first' : ''),
   // Real robots card
   realSave: () => document.getElementById('realId').value.trim() ? '' : 'type the robot id first',
   // not off when "deployed" matches HEAD: that ignores uncommitted changes (e.g. the mocap assignments below)
@@ -353,6 +364,9 @@ function applyGates() {
   });
   const start = document.getElementById('simStart');  // says what it does on a running sim
   start.textContent = simUp() && startChanges().length ? `Restart with new ${startChanges().join(', ')}` : 'Start';
+  // Spawn into a scene with robots replaces them (the sim restarts)
+  const inScene = status.scene && status.scene.robots ? status.scene.robots.length : 0;
+  document.getElementById('spawnBtn').textContent = inScene && !formMatchesScene() ? `Replace the ${inScene} robot(s)` : 'Spawn';
 }
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -510,6 +524,7 @@ let mapView = null;
 function drawMap() {
   const cv = document.getElementById('spawnMap'), dpr = devicePixelRatio || 1;
   if (!cv || !status) return;
+  applyGates();  // every edit of the spawn form ends here: Spawn follows whether it differs from the scene
   const W = cv.clientWidth, H = cv.clientHeight;
   cv.width = W * dpr; cv.height = H * dpr;
   const g = cv.getContext('2d'); g.scale(dpr, dpr);

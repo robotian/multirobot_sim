@@ -30,7 +30,7 @@ Local web UI: `server.py` (stdlib only; settings through `scripts/fleetcfg.py`, 
 - `SIM_SCENE`: `""` (ground plane + lights), `lavender` (only via the Configuration page / `fleetcfg.py`), or a file under `sim/scene/`.
 - `/api/scene/upload` (base64 JSON, <= 512 MB): a browser only gives the page a file's contents, not its path, and saved scenes reference assets relative to themselves (`../assets/...`), so the scene must live in `sim/scene/`. Same SHA-256 there → reused; else copied in, never over a different file (`<stem>_<hash8>.usd`).
 - `/api/sim/stop` = `scripts/stop_sim.sh`. `/api/sim/reset` = `fleet_ctl.reset()` (module reloaded each call): stops robot containers, stops/plays the sim timeline, starts them again; robots return to spawn state.
-- `/api/spawn` `{robots: [{model, x, y, yaw°}]}` (<= 8): saves slots 0..N-1 (model and pose) and `NUM_ROBOTS`, runs `scripts/fleet.sh spawn --poses <json>`. Refused until the sim's `state.json` says the scene is ready. Models = the sim's imported `models`.
+- `/api/spawn` `{robots: [{model, x, y, yaw°}]}` (<= 8): saves slots 0..N-1 (model and pose) and `NUM_ROBOTS`, runs `scripts/fleet.sh spawn --poses <json>`. Refused until the sim's `state.json` says the scene is ready. Models = the sim's imported `models`. The page's Spawn is off while the form asks for exactly the robots in the scene (`formMatchesScene`: models, poses within 5 cm / 1°), and reads "Replace the N robot(s)" when it differs (that restarts the sim).
 
 ## Per-robot actions
 
