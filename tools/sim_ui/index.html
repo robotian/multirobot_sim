@@ -268,7 +268,7 @@ async function refreshStatus() {
   renderBanner();
   renderReal();
   const st = status.settings || {}, sp_ = document.getElementById('settingsPill');
-  sp_.textContent = st.source === 'database' ? `settings: ${st.profile}` : 'settings: database unreachable';
+  sp_.textContent = st.source === 'database' ? `settings: ${st.profile}` : 'settings: database unusable';
   sp_.className = 'pill ' + (st.source !== 'database' ? 'bad' : st.errors && st.errors.length ? 'warn' : 'ok');
   if (st.source !== 'database') sp_.title = `${st.why || ''} -- running on .env as last written; setting changes are refused`;
   const sim = status.sim, scene = status.scene;

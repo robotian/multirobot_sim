@@ -1,13 +1,13 @@
 # tools/sim_ui
 
-Local web UI: `server.py` (stdlib + `scripts/fleetcfg.py`, which needs psycopg for the settings database) + `index.html` + `config.html` (`/config`), default `127.0.0.1:8090`. It runs the repo's scripts and `docker`/`ssh` commands; long actions are background jobs whose log the page polls. Routes: the `POST`/`GET` tables at the end of `server.py`.
+Local web UI: `server.py` (stdlib only; settings through `scripts/fleetcfg.py`, SQLite) + `index.html` + `config.html` (`/config`), default `127.0.0.1:8090`. It runs the repo's scripts and `docker`/`ssh` commands; long actions are background jobs whose log the page polls. Routes: the `POST`/`GET` tables at the end of `server.py`.
 
 ## Security and setup
 
 - Binds 127.0.0.1 by default; `--host 0.0.0.0` exposes docker control to the LAN.
 - POSTs must send `Content-Type: application/json` (else 415): other websites can't send it without a CORS preflight, which is never answered.
 - A body with `password` is refused unless from 127.0.0.1/::1 (plain HTTP over the LAN otherwise).
-- `FLEET_ROOT=<checkout>` drives another checkout's fleet (`.env`, scripts, `sim/`, its `fleetcfg.py`), e.g. from a worktree. The settings database is the same one either way (`FLEET_CONFIG_DB` to test against a scratch one).
+- `FLEET_ROOT=<checkout>` drives another checkout's fleet (`.env`, scripts, `sim/`, its `fleetcfg.py`), e.g. from a worktree. The settings database is that checkout's `fleet_config.sqlite` too (`FLEET_CONFIG_DB=<file>` for another).
 
 ## Modes and targets
 
@@ -38,7 +38,7 @@ Local web UI: `server.py` (stdlib + `scripts/fleetcfg.py`, which needs psycopg f
 
 ## Real robots card
 
-- The settings database's `real_robot` table (`fleetcfg.real_robots()`, cached 5 s; while the database is down, the copy it last wrote to `real_robots.json`, untracked): `{"<id>": {"host", "user", "cutter"}}`. Default host `cpr-<id with ->.local` doesn't always resolve: give an IP. `cutter` gates Cut stem because `bringup_main` advertises `cut_stem` on every robot.
+- The settings database's `real_robot` table (`fleetcfg.real_robots()`, cached 5 s; if the database can't be opened, the copy it last wrote to `real_robots.json`, untracked): `{"<id>": {"host", "user", "cutter"}}`. Default host `cpr-<id with ->.local` doesn't always resolve: give an IP. `cutter` gates Cut stem because `bringup_main` advertises `cut_stem` on every robot.
 - Offline robots are retried in the background every 15 s (don't stall polls); `ros2 action list` only every 30 s (a ros2 CLI call costs a robot seconds of CPU). Sim robots: every 10 s while the launch runs and move_group or cut_stem is missing, then every 30 s (each new session pauses the whole fleet's data through the shared router: ~1-2 s for one, ~10 s for eight); the last result is kept in between. Every ros2 CLI call is `timeout -k 2 N` (a hung one ignores SIGTERM).
 - Up to date = `git diff <~/colcon_ws/DEPLOYED commit> HEAD -- colcon_ws/src` is empty (a commit compare gives false "out of date").
 - Linked = the robot's `platform/joint_states` appears in the base station's `ros2 topic list -v`; a configured endpoint can route nothing. Link adds `tcp/<ip>:7447` to `BASESTATION_ZENOH_CONNECT` and runs `compose up -d`.
@@ -74,7 +74,7 @@ Local web UI: `server.py` (stdlib + `scripts/fleetcfg.py`, which needs psycopg f
 
 ## Configuration page (`/config`, `config.html`)
 
-- Everything goes through `scripts/fleetcfg.py` (the settings database `fleet_config`; `.env` is rendered from its active profile): `read_env()` renders first (a change made with `fleetcfg.py` or SQL shows at the next poll), `write_env()` = `fleetcfg.set_settings`. Changes are made before a job starts, so a refusal (database down and the value differs, invalid value, the same real robot in two started slots) is the request's 400, not a job error.
-- Database down: `.env` as last written, the page read-only with a red banner, the main page's *settings* pill red. Writes that change nothing still pass (Start with the same mode/scene).
+- Everything goes through `scripts/fleetcfg.py` (the settings database `fleet_config.sqlite`; `.env` is rendered from its active profile): `read_env()` renders first (a change made with `fleetcfg.py` or SQL shows at the next poll), `write_env()` = `fleetcfg.set_settings`. Changes are made before a job starts, so a refusal (database unusable and the value differs, invalid value, the same real robot in two started slots) is the request's 400, not a job error.
+- Database unusable (can't be opened): `.env` as last written, the page read-only with a red banner, the main page's *settings* pill red. Writes that change nothing still pass (Start with the same mode/scene).
 - `/api/config` = `fleetcfg.view()` + models, scenes, real robots + **drift**: `docker compose config --format json` (from `.env`) vs. `docker inspect` of the running sim, robot slots (container name, hostname, env) and base station, cached 4 s. Not compared: `DISPLAY`/`XAUTHORITY` (the server's shell, not the settings) and anything named like a secret (never sent to the page). `/api/config/apply` = `fleet.sh scene` (sim; compose recreates it when its env changed, its robots respawn from `applied_request.json`), `fleet.sh spawn` (robots), `compose -f basestation.compose.yml up -d`.
-- Change log actor is `web UI`; the CLI's is `user@host`. Profile create/copy/delete log one row (`fleet.bulk`), so their settings can't be reverted one by one.
+- Change log actor is `web UI`; the CLI's is `user@host`. Profile create/copy/delete log one row (`DB.bulk`), so their settings can't be reverted one by one.

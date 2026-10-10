@@ -1,8 +1,8 @@
 #!/bin/bash
 # Start the sim, spawn robots into it, or stop everything. The settings (NUM_ROBOTS, each slot's model: a300/a200/
-# j100/r100 or a real robot id like j100_0921, SIM_MODE, ...) are the active profile in the base station's
-# fleet_config database: this script first writes .env from it (scripts/fleetcfg.py render; if the database can't
-# be reached, .env is used as it was last written), and every start and spawn is recorded there (fleetcfg.py runs).
+# j100/r100 or a real robot id like j100_0921, SIM_MODE, ...) are the active profile in this checkout's
+# fleet_config.sqlite: this script first writes .env from it (scripts/fleetcfg.py render; if the file can't be
+# opened, .env is used as it was last written), and every start and spawn is recorded there (fleetcfg.py runs).
 #   scripts/fleet.sh scene                  start the sim with the scene only (no robots); waits until it's ready
 #   scripts/fleet.sh spawn [N] [--poses J]  spawn N robots (NUM_ROBOTS if omitted) into the running scene,
 #                                           replacing the robots it has, then (re)start their robot containers
@@ -25,7 +25,7 @@ SIM=a300-isaac-sim
 
 usage() { echo "usage: $0 [N] | scene | spawn [N] [--poses JSON] | down   (N = 0-$MAX)" >&2; exit 1; }
 
-# NUM_ROBOTS in the database (refused while it can't be reached, unless it already is $1); writes .env again
+# NUM_ROBOTS in the database (refused if it can't be opened, unless it already is $1); writes .env again
 set_num_robots() {
     [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -le "$MAX" ] || usage
     python3 scripts/fleetcfg.py robots "$1"

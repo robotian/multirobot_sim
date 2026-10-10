@@ -8,7 +8,7 @@ restarting them, deploying colcon_ws/src, linking the robot to the base station'
 Either: move the arm to named SRDF states (optionally recording commanded vs. observed joint positions while it
 moves), cut_stem, stop motion, RViz, each robot's ref_localizer (map -> odom source / anchor), OptiTrack Motive's
 rigid bodies and which robot follows each.
-Configuration page (/config): the settings, robot slots and profiles in the base station's fleet_config database
+Configuration page (/config): the settings, robot slots and profiles in this checkout's fleet_config.sqlite
 (scripts/fleetcfg.py), which .env is generated from; their change log and runs; what the running containers differ in.
 
   python3 tools/sim_ui/server.py                 # http://127.0.0.1:8090
@@ -16,8 +16,8 @@ Configuration page (/config): the settings, robot slots and profiles in the base
   python3 tools/sim_ui/server.py --host 0.0.0.0  # reachable from the LAN -- it runs docker commands, so only on a trusted network
   FLEET_ROOT=<checkout> python3 server.py        # drive another checkout's fleet (e.g. this UI from a worktree)
 
-Stdlib plus psycopg (or psycopg2) for the settings database; without it, or without the database, the page runs on
-.env as last written and refuses setting changes. Long operations run as background jobs whose output the page polls.
+Stdlib only (the settings database is SQLite; if its file can't be opened, the page runs on .env as last written
+and refuses setting changes). Long operations run as background jobs whose output the page polls.
 """
 import argparse
 import base64
@@ -45,7 +45,7 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(os.environ.get("FLEET_ROOT") or Path(__file__).resolve().parents[2]).resolve()
 sys.path.insert(0, str(ROOT / "scripts"))
 import fleet_ctl  # noqa: E402  (the sim's spawn protocol: request/state files)
-import fleetcfg  # noqa: E402  (the settings: the base station's fleet_config database, .env generated from it)
+import fleetcfg  # noqa: E402  (the settings: this checkout's fleet_config.sqlite, .env generated from it)
 sys.path.insert(0, str(ROOT / "colcon_ws/src/mocap_fake_localizer/scripts"))
 import natnet  # noqa: E402  (OptiTrack Motive's NatNet protocol, shared with the robots' natnet_ref_pose.py)
 

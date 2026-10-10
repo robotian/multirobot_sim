@@ -195,10 +195,10 @@ function poll() { loadConfig().finally(() => setTimeout(poll, 5000)); }
 // ------------------------------------------------------------ header, profiles
 function renderHeader() {
   const pill = document.getElementById('dbPill');
-  pill.textContent = cfg.source === 'database' ? `settings: database ${cfg.db}` : 'settings: database unreachable';
+  pill.textContent = cfg.source === 'database' ? `settings: database ${cfg.db}` : 'settings: database unusable';
   pill.className = 'pill ' + (cfg.source === 'database' ? 'ok' : 'bad');
   document.getElementById('offline').textContent = cfg.source === 'database' ? '' :
-    `The settings database can't be reached, so this shows .env as last written and nothing can be changed: ${cfg.why}`;
+    `The settings database can't be opened, so this shows .env as last written and nothing can be changed: ${cfg.why}`;
   const notes = [...cfg.errors.map(e => 'error: ' + e), ...cfg.warnings.map(w => 'warning: ' + w)];
   document.getElementById('problems').innerHTML = notes.map(esc).join('<br>');
   const sel = document.getElementById('profileSel');

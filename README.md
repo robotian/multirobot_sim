@@ -45,13 +45,12 @@ docker compose build
 # 2. Optional, for status_server and the base station: the database password (db.env is gitignored)
 echo "PGPASSWORD=<status_server database password>" > db.env
 
-# 3. The settings live in the base station's database (see *Settings*); start it, then review them. The first
-#    use imports the .env last committed to git into a profile "default". Check at least:
+# 3. The settings live in this checkout's own database file, fleet_config.sqlite (see *Settings*). Its first
+#    use imports the .env last committed to git into a profile "default". Review them, at least:
 #    ISAACSIM_HOST  127.0.0.1, or this machine's LAN IP for a remote WebRTC client
 #    SIM_MODE       stream (WebRTC) or headed (Isaac's own window on this display)
 #    robot slots    use the generic a300/a200/j100/r100 unless you have robot_data/ (see below)
 #    SIM_SCENE      empty = ground plane (fastest), lavender_farm.usd = the real field
-docker compose -f basestation.compose.yml up -d --build
 scripts/fleetcfg.py show                       # or the web UI's Configuration page (tools/sim_ui, /config)
 scripts/fleetcfg.py set ISAACSIM_HOST=127.0.0.1 SIM_MODE=stream
 
@@ -444,10 +443,12 @@ On a real robot, the arm tools are `ros2 run moveit_sim_bridge arm_goto <state>`
 ## Settings
 
 The fleet's settings (`NUM_ROBOTS`, each robot slot's model and spawn pose, `SIM_MODE`, `FLEET_RMW`, ...) and the
-real-robot list live in a PostgreSQL database, `fleet_config`, in the base station's server (port 5433, next to the
-farm database; `basestation/config_migrations/` are its tables). `.env` is **generated** from it and not tracked:
+real-robot list live in `fleet_config.sqlite`, an SQLite database file in the checkout (gitignored, next to `.env`;
+`scripts/fleet_config_migrations/` are its tables). Every PC has its own, so the fleet runs right after a clone,
+with no server and nothing to install (Python's standard library). `.env` is **generated** from it and not tracked:
 don't edit it, a change is overwritten. Docker compose and the containers still read `.env` as before, and the
-real robots never see the database.
+real robots never see the database. (From 2026-10-09 to 10-10 the settings were a PostgreSQL database on the base
+station, which every PC then needed just to change a setting.)
 
 - **Web UI:** `python3 tools/sim_ui/server.py`, then <http://127.0.0.1:8090/config> (or the *settings* pill in the
   main page's header). Profiles, robot slots, every setting with its default, range and help, the real robots, the
@@ -457,17 +458,19 @@ real robots never see the database.
   [--pose X,Y,YAW]`, `profile list|use|new|rename|delete|export|import`, `history`, `revert ID`, `runs`, `real ...`).
   `scripts/fleet.sh` runs `fleetcfg.py render` first, so it always starts what the database says.
 - **Profiles:** named sets of settings and robot slots, e.g. one per experiment; one is active. `profile export` /
-  `import` (or the page's Export / Import) moves one to another PC. Each PC's database is its own:
-  `scripts/db_sync.sh` copies only the farm database, never `fleet_config`.
+  `import` (or the page's Export / Import) moves one to another PC. Each checkout's database is its own (a git
+  worktree gets a fresh one; `FLEET_CONFIG_DB=<file>` picks another, e.g. a scratch one for tests).
 - **What each setting is** (type, default, range, which containers read it) is `scripts/fleet_settings.py`, in git
   with the code. A new setting goes there and into `docker-compose.yml`; `scripts/fleetcfg.py check` compares the
   two. Variables not in it are kept and written to `.env` too (shown as "not in the catalog").
-- **First use** imports this checkout's old `.env` (or, after a pull that untracked it, the last one committed to
-  git) and `tools/sim_ui/real_robots.json` into a profile `default`. A base station started before this change gets
-  the database on its next start, or at once: `scripts/fleetcfg.py init` (also done automatically on first use).
-- **Without the database** (base station stopped, `psycopg` missing): `.env` stays as last written and everything
-  still starts; only changes are refused (the page and `fleetcfg.py` say why). The host needs `python3-psycopg2`
-  or `pip install 'psycopg[binary]'`.
+- **First use** imports, in this order: the PostgreSQL `fleet_config` of a base station running on this PC (the
+  old home of the settings: profiles, change log and runs are copied whole; needs `psycopg` and `db.env`), else
+  this checkout's `.env` (or, after a pull that untracked it, the last one committed to git) and
+  `tools/sim_ui/real_robots.json`, into a profile `default`, else the defaults.
+- **If the file can't be opened** (permissions, a failed migration): `.env` stays as last written and everything
+  still starts; only changes are refused (the page and `fleetcfg.py` say why).
+- **Browsing it:** any SQLite client, e.g. `sqlite3 fleet_config.sqlite '.tables'` or a VS Code SQLite extension.
+  Change settings through `fleetcfg.py` or the page, though: only they validate values and write the change log.
 - **Checks** (they stop `fleet.sh` before anything starts, and refuse the change that would cause them): values of
   the right type and range (plain numbers: no `08`, `nan` or `1_0`), the same real robot in two started slots, and
   a started slot that is a real robot the base station's zenoh router dials (`tcp/<its host>:7447` in
@@ -479,7 +482,7 @@ real robots never see the database.
 
 ## Configuration
 
-The settings are the active profile in the base station's database (*Settings*, below); change them with the web UI's Configuration page or `scripts/fleetcfg.py set KEY=VALUE`, then apply them: the Configuration page's *Running vs. settings*, or `scripts/fleet.sh` for anything about the robots (count, models, middleware). A plain `docker restart a300-isaac-sim` does **not** apply a setting (the container keeps the environment it was created with); `scripts/fleet.sh scene` or `docker compose up -d isaac-sim` recreates it.
+The settings are the active profile in `fleet_config.sqlite` (*Settings*, below); change them with the web UI's Configuration page or `scripts/fleetcfg.py set KEY=VALUE`, then apply them: the Configuration page's *Running vs. settings*, or `scripts/fleet.sh` for anything about the robots (count, models, middleware). A plain `docker restart a300-isaac-sim` does **not** apply a setting (the container keeps the environment it was created with); `scripts/fleet.sh scene` or `docker compose up -d isaac-sim` recreates it.
 
 "Default" below is the fallback in `docker-compose.yml` (and `scripts/fleet_settings.py`), used for a setting the profile doesn't set. The table is the short form: `scripts/fleet_settings.py` and the Configuration page have each setting's range and which containers it reaches.
 
@@ -721,7 +724,7 @@ How the pieces connect; each directory's `CLAUDE.md` has the details.
 | Path | Purpose |
 |---|---|
 | `docker-compose.yml`, `.env` | the whole stack (`.env` is generated from the settings database by `scripts/fleetcfg.py`, untracked) |
-| `scripts/fleetcfg.py`, `scripts/fleet_settings.py`, `basestation/config_migrations/` | the settings: command line and library, what each setting is, the `fleet_config` database's tables |
+| `scripts/fleetcfg.py`, `scripts/fleet_settings.py`, `scripts/fleet_config_migrations/` | the settings: command line and library, what each setting is, the tables of `fleet_config.sqlite` (gitignored, one per checkout) |
 | `robot/` | robot container image: `Dockerfile`, `entrypoint.sh`, per-model config templates `config/robot.a300/a200/j100/r100/j100_0936.yaml.tmpl` and the generic `config/robot.rviz.tmpl`. Real robots in `robot_data/` use their own `robot.yaml` directly, no template. Everything here is baked into the image: rebuild after editing (*Rebuilding after a change*) |
 | `robot/bin/` | commands installed in every robot: `teleop`, `camera_view`, `rviz`, `foxglove`, `restart_ros` and the boot-time/background helpers `robot_state`, `generate_params`, `generate_srdf` (MoveIt collision matrix), `pruner_stub` (fake pruner serial device); arm tools `arm_goto` and `arm_joints` |
 | `robot_data/<id>/robot.yaml` | the real MTU robots' own Clearpath configs (`j100_0921`, `j100_0922`, `a200_0284`, `a300_00036`, ...), used unmodified. Tracked in git except each robot's `backups/` (secrets, see *Real robots: deploy and backup*) and `colcon_ws/` |

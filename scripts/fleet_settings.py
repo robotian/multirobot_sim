@@ -1,6 +1,6 @@
 """What each fleet setting is: the catalog behind scripts/fleetcfg.py and the web UI's Configuration page.
 
-The values live in the base station's fleet_config database (one set per profile); .env is generated from them
+The values live in this checkout's fleet_config.sqlite (one set per profile); .env is generated from them
 (scripts/fleetcfg.py render) and read by docker compose, which passes them into the containers. This file says
 what a value may be and what it reaches, in git next to the code that reads it, so a new setting needs no database
 migration: add it here, and to docker-compose.yml (the isaac-sim service's environment: block for the sim).
@@ -106,8 +106,8 @@ SETTINGS = [
     S("BASESTATION_RMW", "Base station", "text", "", "The base station's own middleware when it differs from "
       "FLEET_RMW (e.g. rmw_cyclonedds_cpp for a real robot on Cyclone DDS); empty = FLEET_RMW.", [BASESTATION],
       advanced=True),
-    S("BASESTATION_PG_PORT", "Base station", "int", "5433", "PostgreSQL port of the base station; takes effect "
-      "when the base station is recreated (until then scripts/fleetcfg.py uses the running one's).", [BASESTATION],
+    S("BASESTATION_PG_PORT", "Base station", "int", "5433", "PostgreSQL port of the base station (the farm "
+      "database); takes effect when the base station is recreated.", [BASESTATION],
       min=1, max=65535, advanced=True),
     S("BASESTATION_PG_USER", "Base station", "text", "admin", "PostgreSQL superuser, set when the database "
       "cluster is first created.", [BASESTATION], advanced=True, fixed=True),
