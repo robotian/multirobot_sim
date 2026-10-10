@@ -354,9 +354,10 @@ def resolve(body, kinds=("sim", "real"), check_conflict=True):
 # ---------------------------------------------------------------- jobs
 
 class Job:
-    def __init__(self, name):
+    def __init__(self, name, lock=None):
         self.id = uuid.uuid4().hex[:8]
         self.name = name
+        self.lock = lock  # see start_job
         self.status = "running"
         self.lines = []
         self.result = None
@@ -387,11 +388,39 @@ JOBS = {}
 JOBS_LOCK = threading.Lock()
 
 
-def start_job(name, fn):
-    job = Job(name)
+# Job locks: one running job per lock, so two clicks (or two tabs) can't run the same kind of job on the same thing
+# at once -- two launches double a robot's nodes, a Start during a Spawn recreates the sim under it. Stop motion
+# and read-only jobs take none: stopping must always get through.
+FLEET_LOCK = "fleet"  # sim start/stop/reset, spawn, applying sim/robot settings: they recreate or restart containers
+BASESTATION_LOCK = "basestation"
+
+
+def stack_lock(t):  # a robot's launch / services / deploy
+    return f"stack:{t.kind}:{t.name}"
+
+
+def motion_lock(t):  # a robot's arm moves and cut_stem runs
+    return f"motion:{t.kind}:{t.name}"
+
+
+def check_free(*locks):
+    """Refuse (400) while a job holding one of `locks` runs: called before an action changes settings."""
     with JOBS_LOCK:
+        for j in JOBS.values():
+            if j.status == "running" and j.lock in locks:
+                raise ValueError(f"{j.name} is still running (job {j.id}): wait for it, or stop it first")
+
+
+def start_job(name, fn, lock=None):
+    """Run fn(job) in a thread. lock: refused while another job with the same lock runs (see FLEET_LOCK)."""
+    job = Job(name, lock)
+    with JOBS_LOCK:
+        busy = lock and next((j for j in JOBS.values() if j.status == "running" and j.lock == lock), None)
+        if busy:
+            raise ValueError(f"{busy.name} is still running (job {busy.id}): wait for it, or stop it first")
         JOBS[job.id] = job
-        for old in sorted(JOBS.values(), key=lambda j: j.started)[:-50]:
+        done = sorted((j for j in JOBS.values() if j.status != "running"), key=lambda j: j.started)
+        for old in done[:max(0, len(JOBS) - 50)]:  # finished ones only: a running job's log stays reachable
             JOBS.pop(old.id)
 
     def target():
@@ -678,6 +707,7 @@ def act_sim_start(body):
     if scene not in BUILTIN_SCENES and scene not in scene_files():
         raise ValueError(f"no scene {scene!r}: pick a USD file again")
     # before the job, so a refusal (database down and a value changed) shows on the page
+    check_free(FLEET_LOCK)
     write_env({"SIM_MODE": mode, "ROBOT_LOOKS": looks, "SIM_SCENE": scene})
 
     def fn(j):
@@ -695,7 +725,7 @@ def act_sim_start(body):
         # scene only: the robots are spawned afterwards (act_spawn); waits until the scene is ready
         return j.run(["scripts/fleet.sh", "scene"], env=env) == 0
 
-    return start_job(f"start sim ({mode}, looks {looks}, scene {scene_label(scene)})", fn)
+    return start_job(f"start sim ({mode}, looks {looks}, scene {scene_label(scene)})", fn, lock=FLEET_LOCK)
 
 
 def act_sim_stop(_):
@@ -711,7 +741,7 @@ def act_sim_reset(_):
         importlib.reload(fleet_ctl)
         return fleet_ctl.reset(log=j.log)
 
-    return start_job("reset scene", fn)
+    return start_job("reset scene", fn, lock=FLEET_LOCK)
 
 
 def act_spawn(body):
@@ -740,6 +770,7 @@ def act_spawn(body):
     if (state.get("spawn") or {}).get("state") == "spawning":
         raise ValueError("a spawn is already in progress")
     models = [e["model"] for e in entries]
+    check_free(FLEET_LOCK)
     # slots 0..N-1 (model and pose) and NUM_ROBOTS into the settings database, before the job so a refusal shows on
     # the page; the poses are kept, so a later `scripts/fleet.sh spawn` places the robots here again
     try:
@@ -752,11 +783,12 @@ def act_spawn(body):
         # the sim replaces its robots (the scene keeps running), then the robot containers are (re)created
         return j.run(["scripts/fleet.sh", "spawn", "--poses", json.dumps(poses)]) == 0
 
-    return start_job(f"spawn {len(models)} robot(s)", fn)
+    return start_job(f"spawn {len(models)} robot(s)", fn, lock=FLEET_LOCK)
 
 
 def act_launch_start(body):
     robot = resolve(body, kinds=("sim",)).name
+    check_free(FLEET_LOCK)
 
     def fn(j):
         if sh(["docker", "exec", robot, "pgrep", "-f", "sim_robot_upstart.launch.py"])[0] == 0:
@@ -786,7 +818,7 @@ def act_launch_start(body):
         j.log(f"started; output in {robot}:{LAUNCH_LOG} (move_group comes up ~20 s later)")
         return True
 
-    return start_job(f"{robot}: start sim_robot_upstart", fn)
+    return start_job(f"{robot}: start sim_robot_upstart", fn, lock=stack_lock(SimTarget(robot)))
 
 
 def act_launch_stop(body):
@@ -837,7 +869,7 @@ def act_real_restart(body):
         j.log("clearpath-platform-extras isn't active after 60 s: see the robot's Service log")
         return False
 
-    return start_job(f"{label(t)}: restart clearpath-robot", fn)
+    return start_job(f"{label(t)}: restart clearpath-robot", fn, lock=stack_lock(t))
 
 
 def act_rviz_start(body):
@@ -901,7 +933,7 @@ def act_cutstem_start(body):
             return False
         return j.run(t.argv(CUT_CMD)) == 0
 
-    return start_job(f"{label(t)}: cut_stem", fn)
+    return start_job(f"{label(t)}: cut_stem", fn, lock=motion_lock(t))
 
 
 def act_cutstem_stop(body):
@@ -909,44 +941,68 @@ def act_cutstem_stop(body):
 
     def fn(j):
         # SIGINT, not SIGKILL: ros2 action send_goal cancels the goal on Ctrl+C, so the server stops the task.
-        code, _ = t.run(f"pkill -INT -f '{CUT_MATCH}'")
-        j.log("sent Ctrl+C to the cut_stem client (goal is cancelled)" if code == 0 else "no cut_stem goal running")
-        return True
+        code, out = t.run(f"pkill -INT -f '{CUT_MATCH}'")
+        if code in (0, 1):  # pkill: 0 = signalled, 1 = no such process
+            j.log("sent Ctrl+C to the cut_stem client (goal is cancelled)" if code == 0 else "no cut_stem goal running")
+            return True
+        j.log(f"could not reach {label(t)} (exit {code}): {out.strip()[-200:]} -- use Stop motion, check the robot")
+        return False
 
     return start_job(f"{label(t)}: stop cut_stem", fn)
 
 
 def stop_robot(j, t):
     """Ctrl+C to this UI's goal clients, then cancel every goal of every action that moves the robot's arm, so it
-    stops even if a client is gone (e.g. this server restarted mid-goal) or another program sent the goal."""
-    lines = []
+    stops even if a client is gone (e.g. this server restarted mid-goal) or another program sent the goal.
+    Returns "ok", "unreachable" (no answer, ssh failed: nothing was sent) or "unconfirmed" (a cancel went out but
+    its reply didn't come back): the last two must not read as stopped."""
     try:
         code, out = t.run(STOP_CMD, timeout=40)
-        lines = out.strip().splitlines() or [f"exit {code}"]
     except subprocess.TimeoutExpired:
-        lines = ["no answer in 40 s"]
+        j.log(f"{label(t)}: no answer in 40 s -- not known to be stopped")
+        return "unreachable"
+    lines = out.strip().splitlines() or [f"exit {code}"]
     for line in lines:
         j.log(f"{label(t)}: {line}")
+    if code != 0 or not any(re.match(r"\S+: (return_code=|no action server|cancel sent)", l) for l in lines):
+        j.log(f"{label(t)}: could not run the stop there (exit {code}) -- not known to be stopped")
+        return "unreachable"
+    if any(": cancel sent, no reply" in l for l in lines):
+        j.log(f"{label(t)}: a cancel was sent but not confirmed -- check that it stopped")
+        return "unconfirmed"
+    return "ok"
 
 
 def act_stop(body):
     t = resolve(body, check_conflict=False)
-    return start_job(f"{label(t)}: stop motion", lambda j: stop_robot(j, t))
+    return start_job(f"{label(t)}: stop motion", lambda j: stop_robot(j, t) == "ok")
 
 
 def act_stop_all(body):
-    """Every robot the page shows (its mode): sim robots running, real robots in the list and online."""
+    """Every robot of the page's mode: the running sim robots and every real robot in the list, all at once. Not
+    only those last probed online: an offline robot's probe can be minutes old, and probing first would delay the
+    stop -- one that is really off comes back unreachable after ssh's ConnectTimeout."""
     mode = body.get("mode") if body.get("mode") in MODES else DEFAULT_MODE
     targets = [SimTarget(n) for n in sorted(running_sims())] if mode != "real" else []
     if mode != "sim":
         config = real_config()
-        targets += [t for t in (real_target(n, config) for n in sorted(config)) if probe(t, max_age=30)["online"]]
+        targets += [real_target(n, config) for n in sorted(config)]
     if not targets:
         raise ValueError("no robots to stop")
 
     def fn(j):
         with ThreadPoolExecutor(max_workers=len(targets)) as pool:
-            list(pool.map(lambda t: stop_robot(j, t), targets))
+            results = list(pool.map(lambda t: stop_robot(j, t), targets))
+        bad = []
+        for t, r in zip(targets, results):
+            seen_online = t.kind == "sim" or (PROBES.get((t.kind, t.name)) or {}).get("data", {}).get("online")
+            if r == "unconfirmed" or (r == "unreachable" and seen_online):
+                bad.append(f"{label(t)} ({r})")
+            elif r == "unreachable":
+                j.log(f"{label(t)}: unreachable, and offline at the last check")
+        if bad:
+            j.log("not known to be stopped: " + ", ".join(bad))
+        return not bad
 
     return start_job("stop all motion: " + ", ".join(label(t) for t in targets), fn)
 
@@ -981,7 +1037,8 @@ def act_arm_goto(body):
         j.log(f"recorded {len(samples)} samples")
         return rc == 0
 
-    return start_job(f"{label(t)}: {group} -> {state}" + (" (direct)" if body.get("direct") else ""), fn)
+    return start_job(f"{label(t)}: {group} -> {state}" + (" (direct)" if body.get("direct") else ""), fn,
+                     lock=motion_lock(t))
 
 
 def last_json(code, out, what):
@@ -1018,7 +1075,7 @@ def act_deploy(body):
     if what not in flags:
         raise ValueError(f"action must be one of {sorted(flags)}")
     argv = ["scripts/deploy_robot.sh", t.name, "--host", t.host, "--user", t.user, *flags[what]]
-    return start_job(f"{label(t)}: deploy {what}", lambda j: j.run(argv) == 0)
+    return start_job(f"{label(t)}: deploy {what}", lambda j: j.run(argv) == 0, lock=stack_lock(t))
 
 
 def act_basestation_link(body):
@@ -1033,13 +1090,14 @@ def act_basestation_link(body):
     if endpoint in endpoints:
         raise ValueError(f"the base station already dials {endpoint}")
     value = " ".join(endpoints + [endpoint])
+    check_free(BASESTATION_LOCK)
     write_env({"BASESTATION_ZENOH_CONNECT": value})
 
     def fn(j):
         j.log(f"settings: BASESTATION_ZENOH_CONNECT={value}")
         return j.run(["docker", "compose", "-f", "basestation.compose.yml", "up", "-d"]) == 0
 
-    return start_job(f"base station: link {t.name} ({endpoint})", fn)
+    return start_job(f"base station: link {t.name} ({endpoint})", fn, lock=BASESTATION_LOCK)
 
 
 # ---------------------------------------------------------------- base station card
@@ -1172,13 +1230,14 @@ def act_basestation(body):
             raise ValueError(f"{endpoint} is {'already' if action == 'link' else 'not'} in BASESTATION_ZENOH_CONNECT")
         new = endpoints + [endpoint] if action == "link" else [e for e in endpoints if e != endpoint]
         value = " ".join(new)
+        check_free(BASESTATION_LOCK)
         write_env({"BASESTATION_ZENOH_CONNECT": value})
 
         def fn(j):
             j.log(f"settings: BASESTATION_ZENOH_CONNECT={value}")
             return j.run(BASESTATION_COMPOSE + ["up", "-d"]) == 0
 
-        return start_job(f"base station: {action} {endpoint}", fn)
+        return start_job(f"base station: {action} {endpoint}", fn, lock=BASESTATION_LOCK)
     commands = {
         "start": BASESTATION_COMPOSE + ["up", "-d"],
         "stop": BASESTATION_COMPOSE + ["stop"],
@@ -1194,7 +1253,7 @@ def act_basestation(body):
         raise ValueError("there is no base station container: Start creates it")
     with BASESTATION_WATCH.lock:
         BASESTATION_WATCH.t = 0.0  # probe again at the next poll
-    return start_job(f"base station: {action}", lambda j: j.run(commands[action]) == 0)
+    return start_job(f"base station: {action}", lambda j: j.run(commands[action]) == 0, lock=BASESTATION_LOCK)
 
 
 # ---------------------------------------------------------------- motion capture / localization
@@ -1954,7 +2013,8 @@ def act_config_apply(body):
         if not state or state.get("scene") != "ready":
             raise ValueError("the scene is not ready: start the sim first")
     _drift["t"] = 0.0
-    return start_job(f"apply settings: {what}", lambda j: j.run(commands[what]) == 0)
+    return start_job(f"apply settings: {what}", lambda j: j.run(commands[what]) == 0,
+                     lock=BASESTATION_LOCK if what == "basestation" else FLEET_LOCK)
 
 
 POST = {

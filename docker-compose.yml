@@ -207,8 +207,10 @@ services:
   # ROBOT_SUFFIX_<i>= (empty, not unset: `${VAR-default}` without a colon keeps an empty value) for a real robot,
   # and ROBOT_HOSTNAME_<i>=cpr-<namespace with - for _> for every slot: clearpath_config validates the container's
   # OS hostname as its system.localhost default before it reads robot.yaml, and rejects underscores. ROS namespace
-  # (robot/entrypoint.sh's ROBOT_NAMESPACE, setup_scene.py's robot_namespace()) is computed the same way at runtime.
-  # The `cpr-slot-<i>` fallback only matters for a `docker compose up` without a generated .env.
+  # (robot/entrypoint.sh's ROBOT_NAMESPACE, setup_scene.py's robot_namespace()) is computed the same way at runtime;
+  # ROBOT_NAMESPACE/ROS_NAMESPACE below use the same suffix, so `docker exec <c> printenv` and sh shells have the
+  # real robot's id too, not <id>_000<i> (only bash got the entrypoint's override, through BASH_ENV).
+  # The `cpr-slot-<i>` / `_000<i>` fallbacks only matter for a `docker compose up` without a generated .env.
 
   robot0:
     <<: *robot
@@ -220,8 +222,8 @@ services:
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_0:-a300}
-      ROBOT_NAMESPACE: ${ROBOT_MODEL_0:-a300}_0000
-      ROS_NAMESPACE: ${ROBOT_MODEL_0:-a300}_0000  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_0:-a300}${ROBOT_SUFFIX_0-_0000}
+      ROS_NAMESPACE: ${ROBOT_MODEL_0:-a300}${ROBOT_SUFFIX_0-_0000}  # also set by the entrypoint; needed in `docker exec` shells
 
   robot1:
     <<: *robot
@@ -233,8 +235,8 @@ services:
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_1:-a300}
-      ROBOT_NAMESPACE: ${ROBOT_MODEL_1:-a300}_0001
-      ROS_NAMESPACE: ${ROBOT_MODEL_1:-a300}_0001  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_1:-a300}${ROBOT_SUFFIX_1-_0001}
+      ROS_NAMESPACE: ${ROBOT_MODEL_1:-a300}${ROBOT_SUFFIX_1-_0001}  # also set by the entrypoint; needed in `docker exec` shells
 
   robot2:
     <<: *robot
@@ -246,8 +248,8 @@ services:
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_2:-a300}
-      ROBOT_NAMESPACE: ${ROBOT_MODEL_2:-a300}_0002
-      ROS_NAMESPACE: ${ROBOT_MODEL_2:-a300}_0002  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_2:-a300}${ROBOT_SUFFIX_2-_0002}
+      ROS_NAMESPACE: ${ROBOT_MODEL_2:-a300}${ROBOT_SUFFIX_2-_0002}  # also set by the entrypoint; needed in `docker exec` shells
 
   robot3:
     <<: *robot
@@ -259,8 +261,8 @@ services:
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_3:-a300}
-      ROBOT_NAMESPACE: ${ROBOT_MODEL_3:-a300}_0003
-      ROS_NAMESPACE: ${ROBOT_MODEL_3:-a300}_0003  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_3:-a300}${ROBOT_SUFFIX_3-_0003}
+      ROS_NAMESPACE: ${ROBOT_MODEL_3:-a300}${ROBOT_SUFFIX_3-_0003}  # also set by the entrypoint; needed in `docker exec` shells
 
   robot4:
     <<: *robot
@@ -272,8 +274,8 @@ services:
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_4:-a300}
-      ROBOT_NAMESPACE: ${ROBOT_MODEL_4:-a300}_0004
-      ROS_NAMESPACE: ${ROBOT_MODEL_4:-a300}_0004  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_4:-a300}${ROBOT_SUFFIX_4-_0004}
+      ROS_NAMESPACE: ${ROBOT_MODEL_4:-a300}${ROBOT_SUFFIX_4-_0004}  # also set by the entrypoint; needed in `docker exec` shells
 
   robot5:
     <<: *robot
@@ -285,8 +287,8 @@ services:
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_5:-a300}
-      ROBOT_NAMESPACE: ${ROBOT_MODEL_5:-a300}_0005
-      ROS_NAMESPACE: ${ROBOT_MODEL_5:-a300}_0005  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_5:-a300}${ROBOT_SUFFIX_5-_0005}
+      ROS_NAMESPACE: ${ROBOT_MODEL_5:-a300}${ROBOT_SUFFIX_5-_0005}  # also set by the entrypoint; needed in `docker exec` shells
 
   robot6:
     <<: *robot
@@ -298,8 +300,8 @@ services:
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_6:-a300}
-      ROBOT_NAMESPACE: ${ROBOT_MODEL_6:-a300}_0006
-      ROS_NAMESPACE: ${ROBOT_MODEL_6:-a300}_0006  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_6:-a300}${ROBOT_SUFFIX_6-_0006}
+      ROS_NAMESPACE: ${ROBOT_MODEL_6:-a300}${ROBOT_SUFFIX_6-_0006}  # also set by the entrypoint; needed in `docker exec` shells
 
   robot7:
     <<: *robot
@@ -311,8 +313,8 @@ services:
     environment:
       <<: *robot-env
       ROBOT_MODEL: ${ROBOT_MODEL_7:-a300}
-      ROBOT_NAMESPACE: ${ROBOT_MODEL_7:-a300}_0007
-      ROS_NAMESPACE: ${ROBOT_MODEL_7:-a300}_0007  # also set by the entrypoint; needed in `docker exec` shells
+      ROBOT_NAMESPACE: ${ROBOT_MODEL_7:-a300}${ROBOT_SUFFIX_7-_0007}
+      ROS_NAMESPACE: ${ROBOT_MODEL_7:-a300}${ROBOT_SUFFIX_7-_0007}  # also set by the entrypoint; needed in `docker exec` shells
 
 networks:
   ros:

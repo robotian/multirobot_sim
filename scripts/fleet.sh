@@ -71,11 +71,28 @@ spawn() {
         docker compose up -d --no-deps --force-recreate "${services[@]}"
     fi
     # `docker compose ps` with several service names sorts its output alphabetically, not by argument/slot order, so
-    # each slot's real name is queried on its own to keep it correctly paired with that slot's fixed Foxglove port.
+    # each slot's real name is queried on its own to keep it correctly paired with that slot's fixed Foxglove port
+    # (-a: a container that already stopped still has its name).
     local names=()
-    for ((i = 0; i < n; i++)); do names+=("$(docker compose ps --format '{{.Name}}' "robot$i" 2>/dev/null)"); done
+    for ((i = 0; i < n; i++)); do names+=("$(docker compose ps -a --format '{{.Name}}' "robot$i" 2>/dev/null)"); done
+    # `up -d` succeeds even when a container's entrypoint stops at once (no robot_data/<id>/robot.yaml, a bad
+    # setting, a failed generator): give them a few seconds, then fail on any that isn't running
+    local dead=()
+    if [ "$n" -gt 0 ]; then
+        sleep 5
+        for ((i = 0; i < n; i++)); do
+            [ "$(docker inspect -f '{{.State.Running}}' "${names[$i]:-robot$i}" 2>/dev/null)" = true ] || dead+=("$i")
+        done
+    fi
     echo "started $n robot container(s): ${names[*]}"
     for ((i = 0; i < n; i++)); do printf '  %-14s Foxglove ws://<host>:%d\n' "${names[$i]}" $((8765 + i)); done
+    if [ ${#dead[@]} -gt 0 ]; then
+        for i in "${dead[@]}"; do
+            echo "slot $i (${names[$i]:-robot$i}) stopped during boot -- the end of its log:" >&2
+            docker logs --tail 15 "${names[$i]:-robot$i}" 2>&1 | sed 's/^/    /' >&2
+        done
+        return 1
+    fi
 }
 
 # .env from the database's active profile (stops here if the profile is invalid, e.g. a real robot in two slots)

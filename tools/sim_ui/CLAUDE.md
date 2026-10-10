@@ -19,7 +19,7 @@ Local web UI: `server.py` (stdlib only; settings through `scripts/fleetcfg.py`, 
 
 ## Simulation and Spawn cards
 
-- `/api/sim/start` saves the settings `SIM_MODE` (`stream`/`headed`), `ROBOT_LOOKS` (`full`/`basic`/`off`) and `SIM_SCENE`, then runs `scripts/fleet.sh scene` (waits for the scene). Changing any of them recreates the sim.
+- `/api/sim/start` saves the settings `SIM_MODE` (`stream`/`headed`), `ROBOT_LOOKS` (`full`/`basic`/`off`) and `SIM_SCENE`, then runs `scripts/fleet.sh scene` (waits for the scene). Changing any of them recreates the sim. The page's mode/looks selects follow the settings at every status poll until the user picks one (`startTouched`), else Start would undo a change made on `/config` meanwhile.
 - Headed: uses the server's `$DISPLAY` or the first `/tmp/.X11-unix` socket; runs `scripts/x11_auth.sh` (writes `.x11/xauth`) first.
 - `SIM_SCENE`: `""` (ground plane + lights), `lavender` (only via the Configuration page / `fleetcfg.py`), or a file under `sim/scene/`.
 - `/api/scene/upload` (base64 JSON, <= 512 MB): a browser only gives the page a file's contents, not its path, and saved scenes reference assets relative to themselves (`../assets/...`), so the scene must live in `sim/scene/`. Same SHA-256 there → reused; else copied in, never over a different file (`<stem>_<hash8>.usd`).
@@ -34,6 +34,8 @@ Local web UI: `server.py` (stdlib only; settings through `scripts/fleetcfg.py`, 
 - Real robots: planned moves only (`direct` is sim only), velocity <= 0.3, and a browser confirm before anything moves.
 - **Cut stem**: checks the `cut_stem` action exists, then runs `ros2 action send_goal --feedback /<ns>/cut_stem ...` as a job; stop = SIGINT to that client (cancels the goal). "cutting" pill = `pgrep` on it.
 - **Stop motion** / **Stop all motion** (every robot of the mode): SIGINT to `cut_stem`/`arm_goto` clients, then `CancelGoal` with a zero goal id (= all) on `cut_stem`, `move_action`, `execute_trajectory`, the arm trajectory and gripper controllers, so goals stop even without their client. ~2 s on a real robot: not an e-stop.
+  - The job fails unless the stop is known to have happened (`stop_robot`: `ok` / `unreachable` = no answer, ssh failed, container stopped / `unconfirmed` = a cancel sent, its reply missing). Stop all goes to every real robot in the list at once, not only those last probed online; one offline at the last check and unreachable now doesn't fail it.
+- **Job locks** (`start_job(..., lock=)`, `check_free` before an action writes settings): one running job per lock, else 400 with the running job's name. `FLEET_LOCK`: sim start/reset, spawn, Configuration apply (sim, robots); `stack:<kind>:<name>`: a robot's launch start, service restart, deploy; `motion:<kind>:<name>`: arm moves and cut_stem; `BASESTATION_LOCK`: base station actions and links. Unlocked on purpose: Stop motion, Stop sim, launch stop, RViz, read-only jobs. Only finished jobs are pruned from the 50 kept.
 - **RViz** (`view` = `navigation`/`moveit`/`robot`): refreshes X auth, runs `clearpath_viz view_<view>.launch.py` detached (log `/tmp/rviz_<view>.log`). Sim: in the robot container. Real: in the base station container, `use_sim_time:=false`, as a zenoh client of the robot's own router (see Communication). `clearpath_viz` must be built.
 
 ## Real robots card

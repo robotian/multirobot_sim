@@ -81,10 +81,10 @@
       <h2>Simulation</h2>
       <div class="row">
         <label title="Stream: headless, view it with the WebRTC streaming client. Headed: Isaac Sim's own window on this machine's display (recreates the sim when changed).">View
-          <select id="simMode"><option value="stream">Stream (WebRTC)</option><option value="headed">Headed (local window)</option></select></label>
+          <select id="simMode" onchange="startTouched.simMode = true"><option value="stream">Stream (WebRTC)</option><option value="headed">Headed (local window)</option></select></label>
         <label title="Robot materials (ROBOT_LOOKS). Full: textured (dust, scratches). Basic: plain colours, no textures. Off: the URDF importer's flat materials. Applied at Start; recreates the sim when changed.">Robot look
-          <select id="robotLooks"><option value="full">Full</option><option value="basic">Basic</option><option value="off">Off</option></select></label>
-        <button onclick="post('/api/sim/start', { mode: document.getElementById('simMode').value, looks: document.getElementById('robotLooks').value, scene: chosenScene ?? status.sim_scene })"
+          <select id="robotLooks" onchange="startTouched.robotLooks = true"><option value="full">Full</option><option value="basic">Basic</option><option value="off">Off</option></select></label>
+        <button onclick="startSim()"
           title="Start Isaac Sim and load the scene (no robots; spawn them below once the scene is ready)">Start</button>
         <button class="danger" onclick="confirm('Stop and remove every container?') && post('/api/sim/stop')">Stop</button>
         <button class="ghost" onclick="post('/api/sim/reset')" title="Stop and play the simulation (like Isaac Sim's Stop and Play buttons): every robot back at its spawn pose in a few seconds, then the robot containers restart (sim_robot_upstart and anything else launched by hand must be started again)">Reset scene</button>
@@ -233,6 +233,22 @@ async function api(path, body) {
   return data;
 }
 function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.style.display = 'block'; setTimeout(() => t.style.display = 'none', 6000); }
+// Start posts the mode/looks selects, and the server saves them as settings: they follow the settings (changed on
+// /config or with fleetcfg.py meanwhile) until the user picks something, else Start would quietly undo that change.
+const startTouched = {};
+function syncStartSelects() {
+  for (const [id, value] of [['simMode', status.sim_mode], ['robotLooks', status.robot_looks]])
+    if (!startTouched[id] && value) document.getElementById(id).value = value;
+}
+async function startSim() {
+  const body = { mode: document.getElementById('simMode').value, looks: document.getElementById('robotLooks').value,
+                 scene: chosenScene ?? status.sim_scene };
+  try {
+    const job = await api('/api/sim/start', body);
+    startTouched.simMode = startTouched.robotLooks = false;  // saved now: follow the settings again
+    selectedJob = job.id; refreshJobs();
+  } catch (e) { toast(e.message); }
+}
 async function post(path, body = {}) {
   try { const job = await api(path, body); selectedJob = job.id; refreshJobs(); } catch (e) { toast(e.message); }
 }
@@ -294,6 +310,7 @@ async function refreshStatus() {
   document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
   if (!slotsInit) initSlots();
   else if (scene && scene.scene === 'ready' && !defaultsKnown) { defaultsKnown = true; fillBlankPoses(); }
+  syncStartSelects();
   drawMap();
   renderRobots();
 }
@@ -332,8 +349,6 @@ async function pickScene(input) {
 let defaultsKnown = false, selSlot = 0;
 function initSlots() {
   slotsInit = true;
-  document.getElementById('simMode').value = status.sim_mode;
-  document.getElementById('robotLooks').value = status.robot_looks;
   const sel = document.getElementById('slotCount');
   sel.innerHTML = Array.from({ length: status.max_slots + 1 }, (_, i) => `<option>${i}</option>`).join('');
   // prefill: what's in the scene now, else the last request, else .env's slots with default poses
@@ -968,9 +983,23 @@ function showPanel(title, html) {
 }
 
 // ------------------------------------------------------------ jobs
+// One polling loop: every caller (a post, a click on a job) just asks for a refresh now. Each call used to start
+// another setTimeout chain (N clicks = N+1 loops), and one failed fetch ended them all, freezing the list.
+let jobsTimer = null, jobsInFlight = false, jobsAgain = false;
 async function refreshJobs() {
-  let jobs;
-  try { jobs = await api('/api/jobs'); } catch (e) { return; }
+  clearTimeout(jobsTimer);
+  if (jobsInFlight) { jobsAgain = true; return; }
+  jobsInFlight = true;
+  let running = false;
+  try { running = await updateJobs(); } catch (e) { /* server unreachable: keep polling */ }
+  finally {
+    jobsInFlight = false;
+    jobsTimer = setTimeout(refreshJobs, jobsAgain ? 0 : running ? 1000 : 3000);
+    jobsAgain = false;
+  }
+}
+async function updateJobs() {
+  const jobs = await api('/api/jobs');
   const box = document.getElementById('jobs');
   if (jobs.length) box.innerHTML = jobs.map(j => `<div class="job ${j.id === selectedJob ? 'sel' : ''}" onclick="selectedJob='${j.id}';refreshJobs()">
     <span class="pill ${j.status === 'done' ? 'ok' : j.status === 'failed' ? 'bad' : 'warn'}">${j.status}</span>
@@ -991,7 +1020,7 @@ async function refreshJobs() {
       if (j.result && j.result.samples && pre.dataset.plotted !== j.id) { pre.dataset.plotted = j.id; plot(j.result.samples); }
     } catch (e) { selectedJob = null; }
   }
-  setTimeout(refreshJobs, jobs.some(j => j.status === 'running') ? 1000 : 3000);
+  return jobs.some(j => j.status === 'running');
 }
 
 // ------------------------------------------------------------ plotting
