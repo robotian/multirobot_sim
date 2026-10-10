@@ -377,7 +377,8 @@ class Job:
         return p.wait()
 
     def to_json(self, full=False):
-        d = {"id": self.id, "name": self.name, "status": self.status, "started": self.started}
+        # lock: the page disables the buttons of an action whose lock a running job holds (index.html applyGates)
+        d = {"id": self.id, "name": self.name, "status": self.status, "started": self.started, "lock": self.lock}
         if full:
             d["log"] = self.lines
             d["result"] = self.result

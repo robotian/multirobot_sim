@@ -28,7 +28,7 @@
   button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); }
   button.small { padding: 1px 8px; font-size: 12px; }
   button.danger { background: var(--bad); }
-  button:disabled { opacity: .5; cursor: default; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
   select, input, textarea { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
   input.dirty, select.dirty { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn); }
   .pill { font-size: 12px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
@@ -65,11 +65,11 @@
   <h1><a href="/">Fleet Control</a> › Configuration</h1>
   <span id="dbPill" class="pill">settings: ?</span>
   <label>Profile <select id="profileSel" onchange="useProfile(this.value)"></select></label>
-  <button class="ghost" onclick="newProfile()" title="A copy of the active profile under a new name">New…</button>
-  <button class="ghost" onclick="renameProfile()">Rename…</button>
-  <button class="ghost" onclick="deleteProfile()">Delete…</button>
-  <button class="ghost" onclick="exportProfile()" title="Download the active profile as JSON (to share with another PC)">Export</button>
-  <button class="ghost" onclick="document.getElementById('importFile').click()" title="A profile exported on this or another PC, as a new profile">Import…</button>
+  <button class="ghost" data-gate="db" onclick="newProfile()" title="A copy of the active profile under a new name">New…</button>
+  <button class="ghost" data-gate="db" onclick="renameProfile()" title="Rename the active profile">Rename…</button>
+  <button class="ghost" data-gate="profileDelete" onclick="deleteProfile()" title="Delete another profile (not the active one)">Delete…</button>
+  <button class="ghost" data-gate="db" onclick="exportProfile()" title="Download the active profile as JSON (to share with another PC)">Export</button>
+  <button class="ghost" data-gate="db" onclick="document.getElementById('importFile').click()" title="A profile exported on this or another PC, as a new profile">Import…</button>
   <input type="file" id="importFile" accept=".json,application/json" hidden onchange="importProfile(this)">
 </header>
 <div id="offline" class="banner bad"></div>
@@ -89,8 +89,8 @@
       <div class="row">
         <label title="NUM_ROBOTS: slots 0..N-1 are spawned and get a robot container">Robots started
           <select id="numRobots" onchange="markSlotsDirty()"></select></label>
-        <button id="slotsSave" onclick="saveSlots()" disabled>Save slots</button>
-        <button class="ghost" onclick="loadConfig(true)">Discard</button>
+        <button id="slotsSave" data-gate="slotsDirty" onclick="saveSlots()" disabled>Save slots</button>
+        <button class="ghost" data-gate="slotsDirty" onclick="slotsDirty = false; loadConfig(true)" title="Back to the saved slots">Discard</button>
       </div>
       <div class="muted small">Model and spawn pose per slot (x, y in m in the world frame, yaw in degrees; blank =
         the sim's default layout). Slots past the number started keep their model for later. A real robot (id with
@@ -102,8 +102,10 @@
       <h2>Settings <label class="muted small" style="margin-left:auto;text-transform:none;letter-spacing:0">
         <input type="checkbox" id="showAdvanced" onchange="renderSettings()"> advanced</label></h2>
       <div class="row">
-        <button id="settingsSave" onclick="saveSettings()" disabled>Save settings</button>
-        <button class="ghost" onclick="loadConfig(true)">Discard</button>
+        <button id="settingsSave" data-gate="settingsDirty" onclick="saveSettings()" disabled>Save settings</button>
+        <!-- dirtySettings cleared: renderSettings() puts unsaved values back into the inputs, so a plain reload
+             (as this button did) kept every edit -->
+        <button class="ghost" data-gate="settingsDirty" onclick="dirtySettings = {}; loadConfig(true)" title="Back to the saved settings">Discard</button>
         <span class="muted small">Highlighted rows are set by this profile; the others take their default.
           Applies to: the containers to recreate for a change.</span>
       </div>
@@ -117,11 +119,11 @@
       <div class="muted small">Reached over SSH (key login) by the main page and scripts. Not per profile.</div>
       <div class="scroll"><table id="real"></table></div>
       <div class="row">
-        <input id="realId" list="realIds" placeholder="id, e.g. j100_0921" style="width:140px">
+        <input id="realId" list="realIds" placeholder="id, e.g. j100_0921" style="width:140px" oninput="applyGates()">
         <datalist id="realIds"></datalist>
         <input id="realHost" placeholder="host or IP" style="width:150px">
         <label class="small"><input type="checkbox" id="realCutter"> cutter</label>
-        <button class="ghost" onclick="saveReal()">Add / update</button>
+        <button class="ghost" data-gate="realAdd" onclick="saveReal()">Add / update</button>
       </div>
     </section>
 
@@ -174,6 +176,38 @@ async function change(path, body, okMsg) {
   } catch (e) { toast(e.message); }
 }
 
+// ------------------------------------------------------------ which buttons work now
+// Buttons with data-gate="<rule>" are disabled while their rule gives a reason, which leads their tooltip (as on
+// the main page). Running jobs come from /api/jobs: a job holding a lock (server.py start_job) means that Apply
+// would be refused anyway.
+let runningJobs = [];
+function busy(lock) {
+  const j = runningJobs.find(j => j.lock === lock);
+  return j ? `"${j.name}" is still running` : '';
+}
+const offline = () => !cfg || cfg.source !== 'database' ? "the settings database can't be opened" : '';
+const GATES = {
+  db: offline,
+  profileDelete: () => offline() || (cfg.profiles.some(p => !p.active) ? '' : 'there is no other profile (the active one can\'t be deleted)'),
+  slotsDirty: () => offline() || (slotsDirty ? '' : 'nothing changed'),
+  settingsDirty: () => offline() || (Object.keys(dirtySettings).length ? '' : 'nothing changed'),
+  realAdd: () => offline() || (document.getElementById('realId').value.trim() ? '' : 'type the robot id first'),
+  applyFleet: () => busy('fleet'),
+  applyBs: () => busy('basestation'),
+};
+function gate(el, reason) {
+  if (el.dataset.title === undefined) el.dataset.title = el.title || '';
+  el.disabled = !!reason;
+  el.title = reason ? `Not now: ${reason}.` + (el.dataset.title ? `\n\n${el.dataset.title}` : '') : el.dataset.title;
+}
+function applyGates() {
+  document.querySelectorAll('[data-gate]').forEach(el => GATES[el.dataset.gate] && gate(el, GATES[el.dataset.gate]()));
+}
+async function loadJobs() {
+  try { runningJobs = (await api('/api/jobs')).filter(j => j.status === 'running'); } catch (e) { return; }
+  applyGates();
+}
+
 // ------------------------------------------------------------ load / poll
 async function loadConfig(force = false) {
   let c;
@@ -189,8 +223,9 @@ async function loadConfig(force = false) {
   renderReal();
   if (force || (changed && !editing) || !old) { renderSlots(); renderSettings(); }
   else if (changed && editing) toast('the settings were changed elsewhere: Discard to see them');
+  applyGates();
 }
-function poll() { loadConfig().finally(() => setTimeout(poll, 5000)); }
+function poll() { Promise.all([loadConfig(), loadJobs()]).finally(() => setTimeout(poll, 5000)); }
 
 // ------------------------------------------------------------ header, profiles
 function renderHeader() {
@@ -254,23 +289,23 @@ function renderDrift() {
   // sim
   if (!d.sim.running) out.push(block('Simulation', false, '<span class="muted small">not running: the next Start uses the settings</span>'));
   else out.push(block('Simulation', d.sim.diff.length, d.sim.diff.length ? diffRows(d.sim.diff) : '<span class="muted small">runs with the settings</span>',
-    d.sim.diff.length ? `<button class="small" onclick="apply('sim', 'Recreate the sim with the settings? It restarts (a minute or more); its robots are spawned again.')">Apply: recreate the sim</button>` : ''));
+    d.sim.diff.length ? `<button class="small" data-gate="applyFleet" onclick="apply('sim', 'Recreate the sim with the settings? It restarts (a minute or more); its robots are spawned again.')">Apply: recreate the sim</button>` : ''));
   // robots
   const rows = d.robots.filter(r => r.problem || (r.diff && r.diff.length));
   const robotsBody = d.robots.length ? `<table>${d.robots.map(r => `<tr><td>slot ${r.slot}</td><td class="key">${esc(r.running || r.configured)}</td>
       <td>${r.problem ? `<span class="pill warn">${esc(r.problem)}</span>` : r.diff.length ? diffRows(r.diff) : '<span class="pill ok">as configured</span>'}</td></tr>`).join('')}</table>`
     : '<span class="muted small">no robot slots started or configured</span>';
   out.push(block('Robots', rows.length, robotsBody, rows.length && d.sim.running
-    ? `<button class="small" onclick="apply('robots', 'Spawn the configured robots again (replacing the ones in the sim) and recreate their containers?')">Apply: respawn the robots</button>` : ''));
+    ? `<button class="small" data-gate="applyFleet" onclick="apply('robots', 'Spawn the configured robots again (replacing the ones in the sim) and recreate their containers?')">Apply: respawn the robots</button>` : ''));
   // base station
   if (!d.basestation.running) out.push(block('Base station', false, '<span class="muted small">not running</span>'));
   else out.push(block('Base station', d.basestation.diff.length, d.basestation.diff.length ? diffRows(d.basestation.diff) : '<span class="muted small">runs with the settings</span>',
-    d.basestation.diff.length ? `<button class="small" onclick="apply('basestation', 'Recreate the base station container? Its database and zenoh router restart (robots reconnect).')">Apply: recreate the base station</button>` : ''));
+    d.basestation.diff.length ? `<button class="small" data-gate="applyBs" onclick="apply('basestation', 'Recreate the base station container? Its database and zenoh router restart (robots reconnect).')">Apply: recreate the base station</button>` : ''));
   document.getElementById('drift').innerHTML = out.join('');
 }
 async function apply(what, question) {
   if (!confirm(question)) return;
-  try { job = (await api('/api/config/apply', { what })).id; pollJob(); } catch (e) { toast(e.message); }
+  try { job = (await api('/api/config/apply', { what })).id; loadJobs(); pollJob(); } catch (e) { toast(e.message); }
 }
 async function pollJob() {
   if (!job) return;
@@ -281,7 +316,7 @@ async function pollJob() {
   pre.textContent = `${j.name} -- ${j.status}\n` + (j.log.join('\n') || '(no output yet)');
   pre.scrollTop = pre.scrollHeight;
   if (j.status === 'running') setTimeout(pollJob, 1000);
-  else { job = null; loadConfig(); loadRuns(); }
+  else { job = null; loadConfig(); loadRuns(); loadJobs(); }
 }
 
 // ------------------------------------------------------------ robot slots
@@ -300,14 +335,14 @@ function renderSlots() {
         ${['x', 'y', 'yaw'].map(k => `<td><input class="num" data-k="${k}" value="${v(k)}" oninput="markSlotsDirty(this)" ${cfg.source !== 'database' ? 'disabled' : ''}></td>`).join('')}
         <td class="key">${esc(s.ns)}${s.slot < cfg.num_robots ? '' : ' <span class="muted">(not started)</span>'}</td></tr>`;
     }).join('');
-  document.getElementById('slotsSave').disabled = true;
+  applyGates();
 }
 function markSlotsDirty(el) {
   slotsDirty = true;
   if (el) el.classList.add('dirty');
   const n = +document.getElementById('numRobots').value;
   document.querySelectorAll('#slots tr.slot').forEach(tr => tr.classList.toggle('inactive', +tr.dataset.slot >= n));
-  document.getElementById('slotsSave').disabled = false;
+  applyGates();
 }
 function saveSlots() {
   const slots = [];
@@ -324,7 +359,8 @@ function saveSlots() {
 
 // ------------------------------------------------------------ settings
 function inputFor(s, value) {
-  const dis = cfg.source !== 'database' ? 'disabled' : '';
+  // fixed: set when the database was created (fleetcfg refuses a change), shown read only
+  const dis = cfg.source !== 'database' ? 'disabled' : s.fixed ? 'disabled title="set when the database was first created: it can\'t change now"' : '';
   const attrs = `data-key="${esc(s.key)}" onchange="markDirty(this)" oninput="markDirty(this)" ${dis}`;
   if (s.type === 'enum')
     return `<select ${attrs}>${s.choices.map(c => `<option ${c === value ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>`;
@@ -356,14 +392,14 @@ function renderSettings() {
     const el = document.querySelector(`#settings [data-key="${k}"]`);
     if (el) { el.value = v; el.classList.add('dirty'); }
   }
-  document.getElementById('settingsSave').disabled = !Object.keys(dirtySettings).length;
+  applyGates();
 }
 function markDirty(el) {
   const k = el.dataset.key, s = cfg.catalog.find(c => c.key === k);
   const current = k in cfg.settings ? cfg.settings[k] : s ? s.default : '';
   if (el.value === current) { delete dirtySettings[k]; el.classList.remove('dirty'); }
   else { dirtySettings[k] = el.value; el.classList.add('dirty'); }
-  document.getElementById('settingsSave').disabled = !Object.keys(dirtySettings).length;
+  applyGates();
 }
 function saveSettings() {
   const keys = Object.keys(dirtySettings);

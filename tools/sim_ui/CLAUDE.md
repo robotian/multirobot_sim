@@ -9,6 +9,12 @@ Local web UI: `server.py` (stdlib only; settings through `scripts/fleetcfg.py`, 
 - A body with `password` is refused unless from 127.0.0.1/::1 (plain HTTP over the LAN otherwise).
 - `FLEET_ROOT=<checkout>` drives another checkout's fleet (`.env`, scripts, `sim/`, its `fleetcfg.py`), e.g. from a worktree. The settings database is that checkout's `fleet_config.sqlite` too (`FLEET_CONFIG_DB=<file>` for another).
 
+## Buttons: enabled only when they can work
+
+- A button whose action can't work now carries `data-gate="<rule>"` (plus `data-robot` for a robot's); `applyGates()` (`GATES` in `index.html` / `config.html`) disables it with the reason leading its tooltip ("Not now: ..."). It runs after every status / jobs / base station poll and on the inputs a rule reads. Rebuilt cards (robots, real robots) keep their `data-gate`, so their buttons follow state without a rebuild.
+- `/api/jobs` gives each job's `lock`: a button whose action a running job's lock would refuse is off while it runs (`busy()`). Stop motion, Stop sim, launch stop, logs and RViz have no lock.
+- New button that depends on state: give it a rule, don't set `disabled` inline. `node --check` the page's script, and every `data-gate` needs its `GATES` entry.
+
 ## Modes and targets
 
 - Header mode `sim`/`real`/`both`, per browser in `localStorage` (`--mode` = default); `.only-sim`/`.only-real` hide cards, `/api/status?mode=` picks the robots.
